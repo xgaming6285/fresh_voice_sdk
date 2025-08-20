@@ -51,6 +51,10 @@ import io
 import os
 import sys
 import traceback
+import wave
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -61,6 +65,8 @@ import cv2
 import pyaudio
 import PIL.Image
 import mss
+from pymongo import MongoClient
+from pydub import AudioSegment
 
 import argparse
 
@@ -86,10 +92,176 @@ client = genai.Client(http_options={"api_version": "v1beta"})
 
 CONFIG = {
     "response_modalities": ["AUDIO"], 
-    "speech_config": {"voice_config": {"prebuilt_voice_config": {"voice_name": "Aoede"}}}
+    "speech_config": {"voice_config": {"prebuilt_voice_config": {"voice_name": "Puck"}}}
 }
 
 pya = pyaudio.PyAudio()
+
+
+class SessionLogger:
+    def __init__(self, mongo_host="localhost", mongo_port=27017, db_name="voice_assistant", collection_name="sessions"):
+        self.session_id = str(uuid.uuid4())
+        self.session_start = datetime.now(timezone.utc)
+        self.mongo_client = None
+        self.db = None
+        self.collection = None
+        self.transcript_log = []
+        self.audio_data = {
+            "input": [],
+            "output": []
+        }
+        
+        # Audio recording parameters
+        self.sessions_dir = Path("sessions")
+        self.sessions_dir.mkdir(exist_ok=True)
+        self.session_dir = self.sessions_dir / self.session_id
+        self.session_dir.mkdir(exist_ok=True)
+        
+        # Try to connect to MongoDB
+        try:
+            self.mongo_client = MongoClient(mongo_host, mongo_port, serverSelectionTimeoutMS=5000)
+            # Test connection
+            self.mongo_client.admin.command('ping')
+            self.db = self.mongo_client[db_name]
+            self.collection = self.db[collection_name]
+            print(f"✅ Connected to MongoDB at {mongo_host}:{mongo_port}")
+            print(f"📝 Session ID: {self.session_id}")
+        except Exception as e:
+            print(f"⚠️  MongoDB connection failed: {e}")
+            print("📁 Will save audio files only")
+            self.mongo_client = None
+    
+    def log_transcript(self, message_type, content, timestamp=None):
+        """Log transcript messages (user input or assistant response)"""
+        if timestamp is None:
+            timestamp = datetime.now(timezone.utc)
+        
+        log_entry = {
+            "timestamp": timestamp,
+            "type": message_type,  # "user_input" or "assistant_response"
+            "content": content
+        }
+        
+        self.transcript_log.append(log_entry)
+        print(f"📝 [{message_type}]: {content}")
+    
+    def save_audio_chunk(self, audio_data, audio_type, chunk_index):
+        """Save individual audio chunks for later processing"""
+        self.audio_data[audio_type].append({
+            "data": audio_data,
+            "timestamp": datetime.now(timezone.utc),
+            "chunk_index": chunk_index
+        })
+    
+    def save_audio_files(self):
+        """Convert and save audio data as WAV and MP3 files"""
+        try:
+            for audio_type in ["input", "output"]:
+                if not self.audio_data[audio_type]:
+                    continue
+                
+                # Combine all audio chunks
+                combined_audio = b""
+                for chunk in self.audio_data[audio_type]:
+                    combined_audio += chunk["data"]
+                
+                if not combined_audio:
+                    continue
+                
+                # Save as WAV
+                wav_file = self.session_dir / f"{audio_type}_{self.session_id}.wav"
+                
+                # Determine sample rate based on audio type
+                sample_rate = SEND_SAMPLE_RATE if audio_type == "input" else RECEIVE_SAMPLE_RATE
+                
+                with wave.open(str(wav_file), 'wb') as wav_writer:
+                    wav_writer.setnchannels(CHANNELS)
+                    wav_writer.setsampwidth(pya.get_sample_size(FORMAT))
+                    wav_writer.setframerate(sample_rate)
+                    wav_writer.writeframes(combined_audio)
+                
+                print(f"💾 Saved {audio_type} audio: {wav_file}")
+                
+                # Convert to MP3
+                try:
+                    audio_segment = AudioSegment.from_wav(str(wav_file))
+                    mp3_file = self.session_dir / f"{audio_type}_{self.session_id}.mp3"
+                    audio_segment.export(str(mp3_file), format="mp3")
+                    print(f"💾 Saved {audio_type} audio: {mp3_file}")
+                except Exception as e:
+                    print(f"⚠️  Could not convert {audio_type} to MP3: {e}")
+                    
+        except Exception as e:
+            print(f"❌ Error saving audio files: {e}")
+    
+    def save_session_to_mongodb(self):
+        """Save the complete session to MongoDB"""
+        if not self.mongo_client:
+            return False
+        
+        try:
+            session_doc = {
+                "session_id": self.session_id,
+                "start_time": self.session_start,
+                "end_time": datetime.now(timezone.utc),
+                "transcript": self.transcript_log,
+                "metadata": {
+                    "total_messages": len(self.transcript_log),
+                    "session_duration": (datetime.now(timezone.utc) - self.session_start).total_seconds(),
+                    "audio_files_saved": {
+                        "input": len(self.audio_data["input"]) > 0,
+                        "output": len(self.audio_data["output"]) > 0
+                    }
+                }
+            }
+            
+            result = self.collection.insert_one(session_doc)
+            print(f"✅ Session saved to MongoDB with ID: {result.inserted_id}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error saving to MongoDB: {e}")
+            return False
+    
+    def save_session(self):
+        """Save session data - tries MongoDB first, always saves audio files"""
+        print(f"\n💾 Saving session {self.session_id}...")
+        
+        # Save audio files
+        self.save_audio_files()
+        
+        # Try to save to MongoDB
+        if self.transcript_log:
+            mongodb_saved = self.save_session_to_mongodb()
+            if not mongodb_saved:
+                # Fallback: save transcript as JSON file
+                transcript_file = self.session_dir / f"transcript_{self.session_id}.json"
+                try:
+                    import json
+                    with open(transcript_file, 'w', encoding='utf-8') as f:
+                        json.dump({
+                            "session_id": self.session_id,
+                            "start_time": self.session_start.isoformat(),
+                            "end_time": datetime.now(timezone.utc).isoformat(),
+                            "transcript": [
+                                {
+                                    "timestamp": entry["timestamp"].isoformat(),
+                                    "type": entry["type"],
+                                    "content": entry["content"]
+                                }
+                                for entry in self.transcript_log
+                            ]
+                        }, indent=2, ensure_ascii=False)
+                    print(f"💾 Transcript saved as JSON: {transcript_file}")
+                except Exception as e:
+                    print(f"❌ Error saving transcript JSON: {e}")
+        
+        print(f"✅ Session data saved in: {self.session_dir}")
+    
+    def close(self):
+        """Close MongoDB connection"""
+        if self.mongo_client:
+            self.mongo_client.close()
 
 
 class AudioLoop:
@@ -104,6 +276,11 @@ class AudioLoop:
         self.send_text_task = None
         self.receive_audio_task = None
         self.play_audio_task = None
+        
+        # Initialize session logger
+        self.session_logger = SessionLogger()
+        self.input_audio_chunk_index = 0
+        self.output_audio_chunk_index = 0
 
     async def voice_assistant_feedback(self):
         """Provides feedback that the voice assistant is listening"""
@@ -282,18 +459,32 @@ class AudioLoop:
                 
                 audio_level_check_count += 1
                 
+            # Save input audio chunk for session logging
+            self.session_logger.save_audio_chunk(data, "input", self.input_audio_chunk_index)
+            self.input_audio_chunk_index += 1
+            
             await self.out_queue.put({"data": data, "mime_type": "audio/pcm"})
 
     async def receive_audio(self):
         "Background task to reads from the websocket and write pcm chunks to the output queue"
         while True:
             turn = self.session.receive()
+            current_response_text = ""
             async for response in turn:
                 if data := response.data:
+                    # Save output audio chunk for session logging
+                    self.session_logger.save_audio_chunk(data, "output", self.output_audio_chunk_index)
+                    self.output_audio_chunk_index += 1
+                    
                     self.audio_in_queue.put_nowait(data)
                     continue
                 if text := response.text:
+                    current_response_text += text
                     print(text, end="")
+            
+            # Log the complete response text if we have any
+            if current_response_text.strip():
+                self.session_logger.log_transcript("assistant_response", current_response_text.strip())
 
             # If you interrupt the model, it sends a turn_complete.
             # For interruptions to work, we need to stop playback.
@@ -345,6 +536,13 @@ class AudioLoop:
             if hasattr(self, 'audio_stream') and self.audio_stream:
                 self.audio_stream.close()
             traceback.print_exception(EG)
+        finally:
+            # Save session data before exiting
+            try:
+                self.session_logger.save_session()
+                self.session_logger.close()
+            except Exception as e:
+                print(f"⚠️  Error saving session: {e}")
 
 
 if __name__ == "__main__":

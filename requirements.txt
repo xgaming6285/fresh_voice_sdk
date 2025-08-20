@@ -1,0 +1,11 @@
+google-genai
+opencv-python
+pyaudio
+pillow
+mss
+python-dotenv
+pymongo
+pydub
+wave
+datetime
+uuid
