@@ -18,7 +18,7 @@
 
 To install the dependencies for this script, run:
 
-``` 
+```
 pip install -r requirements.txt
 ```
 
@@ -27,7 +27,7 @@ variable is set to the api-key you obtained from Google AI Studio.
 
 Important: **Use headphones**. This script uses the system default audio
 input and output, which often won't include echo cancellation. So to prevent
-the model from interrupting itself it is important that you use headphones. 
+the model from interrupting itself it is important that you use headphones.
 
 ## Run
 
@@ -59,7 +59,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-load_dotenv()
+load_dotenv(override=True)
 
 import cv2
 import pyaudio
@@ -91,7 +91,7 @@ DEFAULT_MODE = "camera"
 client = genai.Client(http_options={"api_version": "v1beta"})
 
 CONFIG = {
-    "response_modalities": ["AUDIO"], 
+    "response_modalities": ["AUDIO"],
     "speech_config": {"voice_config": {"prebuilt_voice_config": {"voice_name": "Puck"}}}
 }
 
@@ -110,13 +110,13 @@ class SessionLogger:
             "input": [],
             "output": []
         }
-        
+
         # Audio recording parameters
         self.sessions_dir = Path("sessions")
         self.sessions_dir.mkdir(exist_ok=True)
         self.session_dir = self.sessions_dir / self.session_id
         self.session_dir.mkdir(exist_ok=True)
-        
+
         # Try to connect to MongoDB
         try:
             self.mongo_client = MongoClient(mongo_host, mongo_port, serverSelectionTimeoutMS=5000)
@@ -130,21 +130,21 @@ class SessionLogger:
             print(f"⚠️  MongoDB connection failed: {e}")
             print("📁 Will save audio files only")
             self.mongo_client = None
-    
+
     def log_transcript(self, message_type, content, timestamp=None):
         """Log transcript messages (user input or assistant response)"""
         if timestamp is None:
             timestamp = datetime.now(timezone.utc)
-        
+
         log_entry = {
             "timestamp": timestamp,
             "type": message_type,  # "user_input" or "assistant_response"
             "content": content
         }
-        
+
         self.transcript_log.append(log_entry)
         print(f"📝 [{message_type}]: {content}")
-    
+
     def save_audio_chunk(self, audio_data, audio_type, chunk_index):
         """Save individual audio chunks for later processing"""
         self.audio_data[audio_type].append({
@@ -152,36 +152,36 @@ class SessionLogger:
             "timestamp": datetime.now(timezone.utc),
             "chunk_index": chunk_index
         })
-    
+
     def save_audio_files(self):
         """Convert and save audio data as WAV and MP3 files"""
         try:
             for audio_type in ["input", "output"]:
                 if not self.audio_data[audio_type]:
                     continue
-                
+
                 # Combine all audio chunks
                 combined_audio = b""
                 for chunk in self.audio_data[audio_type]:
                     combined_audio += chunk["data"]
-                
+
                 if not combined_audio:
                     continue
-                
+
                 # Save as WAV
                 wav_file = self.session_dir / f"{audio_type}_{self.session_id}.wav"
-                
+
                 # Determine sample rate based on audio type
                 sample_rate = SEND_SAMPLE_RATE if audio_type == "input" else RECEIVE_SAMPLE_RATE
-                
+
                 with wave.open(str(wav_file), 'wb') as wav_writer:
                     wav_writer.setnchannels(CHANNELS)
                     wav_writer.setsampwidth(pya.get_sample_size(FORMAT))
                     wav_writer.setframerate(sample_rate)
                     wav_writer.writeframes(combined_audio)
-                
+
                 print(f"💾 Saved {audio_type} audio: {wav_file}")
-                
+
                 # Convert to MP3
                 try:
                     audio_segment = AudioSegment.from_wav(str(wav_file))
@@ -190,15 +190,15 @@ class SessionLogger:
                     print(f"💾 Saved {audio_type} audio: {mp3_file}")
                 except Exception as e:
                     print(f"⚠️  Could not convert {audio_type} to MP3: {e}")
-                    
+
         except Exception as e:
             print(f"❌ Error saving audio files: {e}")
-    
+
     def save_session_to_mongodb(self):
         """Save the complete session to MongoDB"""
         if not self.mongo_client:
             return False
-        
+
         try:
             session_doc = {
                 "session_id": self.session_id,
@@ -214,22 +214,22 @@ class SessionLogger:
                     }
                 }
             }
-            
+
             result = self.collection.insert_one(session_doc)
             print(f"✅ Session saved to MongoDB with ID: {result.inserted_id}")
             return True
-            
+
         except Exception as e:
             print(f"❌ Error saving to MongoDB: {e}")
             return False
-    
+
     def save_session(self):
         """Save session data - tries MongoDB first, always saves audio files"""
         print(f"\n💾 Saving session {self.session_id}...")
-        
+
         # Save audio files
         self.save_audio_files()
-        
+
         # Try to save to MongoDB
         if self.transcript_log:
             mongodb_saved = self.save_session_to_mongodb()
@@ -255,9 +255,9 @@ class SessionLogger:
                     print(f"💾 Transcript saved as JSON: {transcript_file}")
                 except Exception as e:
                     print(f"❌ Error saving transcript JSON: {e}")
-        
+
         print(f"✅ Session data saved in: {self.session_dir}")
-    
+
     def close(self):
         """Close MongoDB connection"""
         if self.mongo_client:
@@ -276,7 +276,7 @@ class AudioLoop:
         self.send_text_task = None
         self.receive_audio_task = None
         self.play_audio_task = None
-        
+
         # Initialize session logger
         self.session_logger = SessionLogger()
         self.input_audio_chunk_index = 0
@@ -287,7 +287,7 @@ class AudioLoop:
         print("🎤 Voice Assistant Ready - Start speaking! (Press Ctrl+C to exit)")
         print("📢 Make sure you're wearing headphones to prevent feedback")
         print("🔊 Listening for your voice...")
-        
+
         # Keep the assistant running indefinitely - exit with Ctrl+C
         try:
             while True:
@@ -369,43 +369,124 @@ class AudioLoop:
             msg = await self.out_queue.get()
             await self.session.send(input=msg)
 
+    def test_audio_device_config(self, device_index, device_info):
+        """Test different audio configurations for a specific device"""
+        print(f"\n🔧 Testing audio configurations for: {device_info['name']}")
+        print(f"   📊 Device sample rate: {device_info['defaultSampleRate']} Hz")
+        print(f"   📥 Max input channels: {device_info['maxInputChannels']}")
+
+        # Test different sample rates
+        sample_rates = [8000, 16000, 22050, 44100, 48000]
+        channels_to_test = [1, 2] if device_info['maxInputChannels'] >= 2 else [1]
+
+        working_configs = []
+
+        for rate in sample_rates:
+            for channels in channels_to_test:
+                try:
+                    test_stream = pya.open(
+                        format=FORMAT,
+                        channels=channels,
+                        rate=rate,
+                        input=True,
+                        input_device_index=device_index,
+                        frames_per_buffer=CHUNK_SIZE,
+                    )
+                    test_stream.close()
+                    working_configs.append((rate, channels))
+                    print(f"   ✅ Works: {rate} Hz, {channels} channel(s)")
+                except Exception as e:
+                    print(f"   ❌ Fails: {rate} Hz, {channels} channel(s) - {e}")
+
+        return working_configs
+
     def find_best_microphone(self):
         """Find the best available microphone, preferring headphones"""
         print("🔍 Searching for microphones...")
-        
+
         # Prioritize headphone microphones
         headphone_keywords = ['headphone', 'headset', 'bluetooth', 'bt', 'wireless', 'sony', 'bose', 'apple', 'airpods']
-        
+
         devices = []
+        headphone_devices = []
+
         for i in range(pya.get_device_count()):
             try:
                 device_info = pya.get_device_info_by_index(i)
                 if device_info['maxInputChannels'] > 0:
                     devices.append((i, device_info))
                     device_name = device_info['name'].lower()
-                    
+
                     # Check for headphone indicators
                     if any(keyword in device_name for keyword in headphone_keywords):
+                        headphone_devices.append((i, device_info))
                         print(f"🎧 Found headphone microphone: {device_info['name']} (Device {i})")
-                        return i, device_info
-                        
+                        print(f"   📊 Sample rate: {device_info['defaultSampleRate']} Hz")
+                        print(f"   📥 Max input channels: {device_info['maxInputChannels']}")
+
+                        # Skip Bluetooth devices with very low sample rates (likely problematic)
+                        if device_info['defaultSampleRate'] < 16000:
+                            print(f"   ⚠️  Skipping - low sample rate may cause issues")
+                            continue
+
+                        # Test if this device actually works
+                        try:
+                            test_stream = pya.open(
+                                format=FORMAT,
+                                channels=1,
+                                rate=SEND_SAMPLE_RATE,
+                                input=True,
+                                input_device_index=i,
+                                frames_per_buffer=CHUNK_SIZE,
+                            )
+                            test_stream.close()
+                            print(f"   ✅ Device test successful - using this microphone")
+                            return i, device_info
+                        except Exception as e:
+                            print(f"   ❌ Device test failed: {e}")
+                            continue
+
             except Exception as e:
                 continue
-        
-        # If no headphone found, try each available device
-        print("⚠️  No headphone microphone detected. Available devices:")
+
+        # If no working headphone found, try each available device
+        print("⚠️  No working headphone microphone found. Available devices:")
         for i, device_info in devices:
             print(f"   Device {i}: {device_info['name']}")
-        
-        # Use default or first available
+            print(f"      📊 Sample rate: {device_info['defaultSampleRate']} Hz")
+            print(f"      📥 Max input channels: {device_info['maxInputChannels']}")
+
+        # Try to find a device with good sample rate support
+        good_devices = []
+        for i, device_info in devices:
+            if device_info['defaultSampleRate'] >= 16000:
+                good_devices.append((i, device_info))
+
+        if good_devices:
+            print(f"\n🎯 Found {len(good_devices)} device(s) with good sample rate support:")
+            for i, device_info in good_devices:
+                print(f"   - {device_info['name']} (Device {i})")
+
+            # Try the first good device
+            i, device_info = good_devices[0]
+            print(f"\n📡 Trying: {device_info['name']} (Device {i})")
+            print(f"   📊 Sample rate: {device_info['defaultSampleRate']} Hz")
+            print(f"   📥 Max input channels: {device_info['maxInputChannels']}")
+            return i, device_info
+
+        # Use default or first available as last resort
         try:
             default_input = pya.get_default_input_device_info()
-            print(f"📡 Using default: {default_input['name']} (Device {default_input['index']})")
+            print(f"\n📡 Using default: {default_input['name']} (Device {default_input['index']})")
+            print(f"   📊 Sample rate: {default_input['defaultSampleRate']} Hz")
+            print(f"   📥 Max input channels: {default_input['maxInputChannels']}")
             return default_input['index'], default_input
         except:
             if devices:
                 i, device_info = devices[0]
-                print(f"📡 Using first available: {device_info['name']} (Device {i})")
+                print(f"\n📡 Using first available: {device_info['name']} (Device {i})")
+                print(f"   📊 Sample rate: {device_info['defaultSampleRate']} Hz")
+                print(f"   📥 Max input channels: {device_info['maxInputChannels']}")
                 return i, device_info
             else:
                 raise Exception("No microphone found!")
@@ -423,6 +504,9 @@ class AudioLoop:
         for channels in [1, 2]:
             try:
                 print(f"🎤 Testing {channels} channel(s) on {mic_info['name']}")
+                print(f"   📊 Using sample rate: {SEND_SAMPLE_RATE} Hz")
+                print(f"   📥 Device supports up to: {mic_info['maxInputChannels']} channels")
+
                 self.audio_stream = await asyncio.to_thread(
                     pya.open,
                     format=FORMAT,
@@ -443,43 +527,61 @@ class AudioLoop:
                     print("  1. Another application is using the microphone.")
                     print("  2. The microphone is not properly connected or configured.")
                     print("  3. Incorrect audio drivers.")
+                    print("  4. Sample rate mismatch (device supports different rates)")
+                    print(f"  5. Channel count mismatch (device supports {mic_info['maxInputChannels']} channels)")
+
+                    # Run detailed device testing
+                    print("\n🔧 Running detailed device diagnostics...")
+                    working_configs = await asyncio.to_thread(self.test_audio_device_config, device_index, mic_info)
+
+                    if working_configs:
+                        print(f"\n✅ Found {len(working_configs)} working configuration(s):")
+                        for rate, channels in working_configs:
+                            print(f"   - {rate} Hz, {channels} channel(s)")
+                        print("\n💡 Try using a different microphone or check your audio settings.")
+                    else:
+                        print("\n❌ No working configurations found for this device.")
+
                     print("\n💡 Troubleshooting:")
                     print("  - Try running the 'test_microphones.py' script.")
                     print("  - Close other apps that might use the mic (Zoom, etc.).")
                     print("  - Check your system's audio settings.")
+                    print("  - Try disconnecting and reconnecting your microphone.")
+                    print("  - If using Bluetooth, try reconnecting the device.")
+                    print("  - Try using a different microphone device.")
                     print("--- ---")
                     raise Exception("Failed to open audio stream after multiple attempts.")
-        
+
         if __debug__:
             kwargs = {"exception_on_overflow": False}
         else:
             kwargs = {}
-            
+
         print("🔊 Monitoring audio levels... (speak now to test)")
         audio_level_check_count = 0
-        
+
         while True:
             data = await asyncio.to_thread(self.audio_stream.read, CHUNK_SIZE, **kwargs)
-            
+
             # Monitor audio levels for the first few seconds
             if audio_level_check_count < 50:  # Check for ~3 seconds
                 import struct
                 audio_data = struct.unpack(f'{len(data)//2}h', data)
                 max_amplitude = max(abs(sample) for sample in audio_data) if audio_data else 0
-                
+
                 if audio_level_check_count % 10 == 0:  # Print every ~0.6 seconds
                     level_bars = "█" * min(20, max_amplitude // 1000)
                     print(f"🔊 Audio level: {level_bars} ({max_amplitude})")
-                    
+
                 if max_amplitude > 1000:  # Some audio detected
                     print("✅ Audio input detected! Voice assistant is working.")
-                
+
                 audio_level_check_count += 1
-                
+
             # Save input audio chunk for session logging
             self.session_logger.save_audio_chunk(data, "input", self.input_audio_chunk_index)
             self.input_audio_chunk_index += 1
-            
+
             await self.out_queue.put({"data": data, "mime_type": "audio/pcm"})
 
     async def receive_audio(self):
@@ -492,13 +594,13 @@ class AudioLoop:
                     # Save output audio chunk for session logging
                     self.session_logger.save_audio_chunk(data, "output", self.output_audio_chunk_index)
                     self.output_audio_chunk_index += 1
-                    
+
                     self.audio_in_queue.put_nowait(data)
                     continue
                 if text := response.text:
                     current_response_text += text
                     print(text, end="")
-            
+
             # Log the complete response text if we have any
             if current_response_text.strip():
                 self.session_logger.log_transcript("assistant_response", current_response_text.strip())
