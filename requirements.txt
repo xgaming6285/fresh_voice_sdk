@@ -6,6 +6,3 @@ mss
 python-dotenv
 pymongo
 pydub
-wave
-datetime
-uuid

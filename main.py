@@ -19,7 +19,7 @@
 To install the dependencies for this script, run:
 
 ``` 
-pip install google-genai opencv-python pyaudio pillow mss
+pip install -r requirements.txt
 ```
 
 Before running this script, ensure the `GOOGLE_API_KEY` environment
@@ -34,14 +34,14 @@ the model from interrupting itself it is important that you use headphones.
 To run the script:
 
 ```
-python Get_started_LiveAPI.py
+python main.py
 ```
 
 The script takes a video-mode flag `--mode`, this can be "camera", "screen", or "none".
 The default is "camera". To share your screen run:
 
 ```
-python Get_started_LiveAPI.py --mode screen
+python main.py --mode screen
 ```
 """
 
@@ -411,8 +411,14 @@ class AudioLoop:
                 raise Exception("No microphone found!")
 
     async def listen_audio(self):
-        device_index, mic_info = self.find_best_microphone()
-        
+        try:
+            device_index, mic_info = self.find_best_microphone()
+        except Exception as e:
+            print(f"❌ Microphone initialization failed: {e}")
+            print("🎙️ Please ensure you have a microphone connected and configured.")
+            print("💡 You can use 'test_microphones.py' to check your audio devices.")
+            return  # Exit if no microphone is found
+
         # Test different channel configurations
         for channels in [1, 2]:
             try:
@@ -427,11 +433,22 @@ class AudioLoop:
                     frames_per_buffer=CHUNK_SIZE,
                 )
                 print(f"✅ Successfully opened microphone with {channels} channel(s)")
-                break
+                break  # Success
             except Exception as e:
-                print(f"❌ Failed with {channels} channel(s): {e}")
+                print(f"❌ Failed to open with {channels} channel(s): {e}")
                 if channels == 2:  # Last attempt failed
-                    raise Exception("Could not open microphone with any channel configuration")
+                    print("\n---\n")
+                    print("❌ Critical Error: Could not open microphone.")
+                    print("This might be due to a few reasons:")
+                    print("  1. Another application is using the microphone.")
+                    print("  2. The microphone is not properly connected or configured.")
+                    print("  3. Incorrect audio drivers.")
+                    print("\n💡 Troubleshooting:")
+                    print("  - Try running the 'test_microphones.py' script.")
+                    print("  - Close other apps that might use the mic (Zoom, etc.).")
+                    print("  - Check your system's audio settings.")
+                    print("--- ---")
+                    raise Exception("Failed to open audio stream after multiple attempts.")
         
         if __debug__:
             kwargs = {"exception_on_overflow": False}
