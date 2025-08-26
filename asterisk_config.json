@@ -1,0 +1,42 @@
+{
+  "host": "192.168.2.50",
+  "username": "gsm2",
+  "password": "123123",
+  "sip_port": 7070,
+  "ari_port": 8088,
+  "ari_username": "asterisk",
+  "ari_password": "asterisk",
+  "context": "voice-agent",
+  "sip_settings": {
+    "user_agent": "VoiceAgent/1.0",
+    "register_timeout": 300,
+    "registration_uri": "sip:gsm2@192.168.2.50:7070",
+    "proxy_uri": "sip:192.168.2.50:7070",
+    "dtmf_mode": "rfc2833",
+    "nat": "yes"
+  },
+  "voice_agent_settings": {
+    "greeting_message": "Hello! I'm your AI voice assistant. How can I help you today?",
+    "goodbye_message": "Thank you for calling. Have a great day!",
+    "max_call_duration": 1800,
+    "enable_call_recording": true,
+    "dtmf_menu": {
+      "0": "transfer_to_human",
+      "*": "repeat_menu",
+      "#": "hangup"
+    }
+  },
+  "audio_settings": {
+    "input_gain": 1.0,
+    "output_gain": 0.8,
+    "noise_reduction": true,
+    "echo_cancellation": true,
+    "telephony_sample_rate": 8000,
+    "codec_preference": ["PCMU", "PCMA", "G722"]
+  },
+  "logging": {
+    "level": "INFO",
+    "call_logs_retention_days": 30,
+    "audio_logs_retention_days": 7
+  }
+}

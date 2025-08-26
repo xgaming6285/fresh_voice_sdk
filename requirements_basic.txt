@@ -7,18 +7,13 @@ python-dotenv
 pymongo
 pydub
 
-# Telephony and Asterisk integration
+# Web server and API components
 requests
 websockets
 fastapi
 uvicorn[standard]
 python-multipart
-pjsua2
-asterisk-ari-py
-pyst2
-audioop-lts
 
-# Additional audio processing
-librosa
+# Additional audio processing (lightweight)
 scipy
 soundfile

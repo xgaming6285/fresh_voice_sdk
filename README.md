@@ -1,14 +1,26 @@
-# Voice Assistant with Session Logging
+# Voice Assistant with Session Logging & Telephony Integration
 
-A voice assistant powered by Google Gemini Live API with comprehensive session logging capabilities.
+A comprehensive voice assistant powered by Google Gemini Live API with session logging and full telephony integration capabilities.
 
 ## Features
+
+### Core Voice Assistant
 
 - 🎤 Real-time voice interaction with Google Gemini
 - 📝 Automatic transcript logging to MongoDB
 - 🎵 Audio recording (WAV + MP3 format)
 - 📊 Session metadata tracking
 - 💾 Fallback to local file storage if MongoDB is unavailable
+
+### 📞 NEW: Telephony Integration
+
+- ☎️ **Incoming call handling** via SIM gateway/Asterisk
+- 📞 **Outgoing call capabilities** through REST API
+- 🏢 **Enterprise-grade telephony** with SIP trunk support
+- 🔄 **Real-time audio conversion** between telephony and AI formats
+- 📋 **DTMF support** (keypad input during calls)
+- 👥 **Call transfer** to human operators
+- 📊 **Call analytics** and session tracking
 
 ## Setup
 
@@ -42,6 +54,72 @@ Options:
 - `--mode camera` (default): Share camera feed
 - `--mode screen`: Share screen capture
 - `--mode none`: Audio only
+
+## 📞 Telephony Integration Setup
+
+### Prerequisites for Phone Integration
+
+- **Asterisk server** (for SIP/telephony handling)
+- **SIM gateway** or VoIP provider access
+- **Linux environment**:
+  - **Linux server** (Ubuntu/CentOS recommended), OR
+  - **Windows 11 + WSL** (Windows Subsystem for Linux) ✅
+  - **Docker** (alternative option)
+- **Network access** between components
+
+### Quick Telephony Setup
+
+1. **Run the automated setup**:
+
+   ```bash
+   # On Linux systems or WSL
+   bash setup_telephony.sh
+
+   # Windows 11 users: Install WSL first
+   # In PowerShell (as Administrator): wsl --install
+   # Then follow SETUP_WINDOWS_WSL.md
+   ```
+
+2. **Configure your SIM gateway**:
+
+   - Update `asterisk_config.json` with your gateway details
+   - Configure SIP trunk to point to your Asterisk server
+   - Set up call routing in your VoIP panel
+
+3. **Start the telephony voice server**:
+
+   ```bash
+   python agi_voice_server.py --host 0.0.0.0 --port 8000
+   ```
+
+4. **Test the integration**:
+
+   ```bash
+   # Run comprehensive tests
+   python test_telephony.py
+
+   # Make a test call via API
+   curl -X POST http://localhost:8000/api/make_call \
+     -H "Content-Type: application/json" \
+     -d '{"phone_number": "+1234567890"}'
+   ```
+
+### 📖 Detailed Setup Guide
+
+For complete telephony integration instructions, see:
+
+- **`SETUP_TELEPHONY.md`** - Step-by-step Linux configuration guide
+- **`SETUP_WINDOWS_WSL.md`** - Windows 11 + WSL setup guide 🖥️
+- **`INTEGRATION_SUMMARY.md`** - Architecture overview and features
+
+### Telephony API Endpoints
+
+Once running, these endpoints are available:
+
+- `GET /health` - System health check
+- `GET /api/sessions` - View active calls
+- `POST /api/make_call` - Initiate outbound calls
+- `WS /ws/audio/{session_id}` - Real-time audio streaming
 
 ## Session Logging
 

@@ -1,0 +1,2 @@
+# cursor console aws in the venv : (venv) dani0@Vertex:~/fresh_voice_sdk$ python agi_voice_server.py --host 0.0.0.0 --port 8000
+python agi_voice_server.py --host 0.0.0.0 --port 8000
