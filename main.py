@@ -1,678 +1,475 @@
 # -*- coding: utf-8 -*-
-# Copyright 2025 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """
-## Setup
+Discord Speech↔Speech Bot powered by Google AI Studio (Gemini Live)
+------------------------------------------------------------------
 
-To install the dependencies for this script, run:
+This refactors your local voice assistant into a Discord bot that:
+- Joins a voice channel with /join and leaves with /leave
+- Starts a single Gemini Live session per guild voice channel
+- (If voice-receive extension is available) captures member audio, does VAD,
+  streams 16 kHz PCM to the Live session, and plays 24 kHz model audio back in real time
+- Falls back to text→speech with /talk if voice receive is unavailable
 
-```
-pip install -r requirements.txt
-```
+ENV VARS
+  DISCORD_TOKEN   -> Discord bot token
+  GOOGLE_API_KEY  -> Google AI Studio key
 
-Before running this script, ensure the `GOOGLE_API_KEY` environment
-variable is set to the api-key you obtained from Google AI Studio.
+SYSTEM PACKAGES
+  - ffmpeg
+  - opus/voice deps (libsodium/libopus are typically required by discord.py voice)
 
-Important: **Use headphones**. This script uses the system default audio
-input and output, which often won't include echo cancellation. So to prevent
-the model from interrupting itself it is important that you use headphones.
+PYTHON REQS
+  discord.py
+  google-genai
+  python-dotenv
+  numpy
+  pydub
+  # optional: discord-ext-voice-recv   (for live voice receive)
+  # optional: webrtcvad                 (if you want high-quality VAD on Windows/Py311 or with build tools)
 
-## Run
-
-To run the script:
-
-```
-python main.py
-```
-
-The script takes a video-mode flag `--mode`, this can be "camera", "screen", or "none".
-The default is "camera". To share your screen run:
-
-```
-python main.py --mode screen
-```
+Notes
+  * Voice receive with discord.py requires an extension. This file supports
+    `discord-ext-voice-recv` if installed (imported as VoiceReceiver). If it's not
+    found, the bot still works with /talk (text→voice) while guiding you to install it.
+  * Uses numpy for resampling (simple linear interpolation) to avoid heavy deps.
+  * Includes SimpleVAD fallback (no native build). If `webrtcvad` is present, it will be used automatically.
 """
 
-import asyncio
-import base64
-import io
 import os
 import sys
-import traceback
-import wave
-import uuid
-from datetime import datetime, timezone
-from pathlib import Path
+import asyncio
+from dataclasses import dataclass, field
 
+import numpy as np
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv(override=True)
-
-import cv2
-import pyaudio
-import PIL.Image
-import mss
-from pymongo import MongoClient
-from pydub import AudioSegment
-
-import argparse
+import discord
+from discord import app_commands
+from discord.ext import commands
 
 from google import genai
 
-if sys.version_info < (3, 11, 0):
-    import taskgroup, exceptiongroup
+# -----------------------------------------------------------------------------#
+# Optional voice receive extension (needed for live speech->speech)
+# -----------------------------------------------------------------------------#
+try:
+    from discord_ext_voice_recv import VoiceReceiver  # replace with your receive lib if different
+    HAS_RECV = True
+except Exception:
+    VoiceReceiver = None
+    HAS_RECV = False
 
-    asyncio.TaskGroup = taskgroup.TaskGroup
-    asyncio.ExceptionGroup = exceptiongroup.ExceptionGroup
+# -----------------------------------------------------------------------------#
+# Optional webrtcvad (if installed) + SimpleVAD fallback
+# -----------------------------------------------------------------------------#
+try:
+    import webrtcvad as _webrtcvad
+    HAS_WEBRTCVAD = True
+except Exception:
+    _webrtcvad = None
+    HAS_WEBRTCVAD = False
 
-FORMAT = pyaudio.paInt16
-CHANNELS = 1
-SEND_SAMPLE_RATE = 16000
-RECEIVE_SAMPLE_RATE = 24000
-CHUNK_SIZE = 1024
+class SimpleVAD:
+    """Very lightweight amplitude-based VAD (no native build)."""
+    def __init__(self, threshold=0.015):
+        # Tweak between 0.010–0.025 if needed. Higher = stricter.
+        self.th = float(threshold)
+    def is_speech(self, chunk: bytes, rate: int) -> bool:
+        if not chunk:
+            return False
+        a = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
+        if a.size == 0:
+            return False
+        # RMS normalized to [-1, 1]
+        rms = np.sqrt(np.mean(a * a)) / 32768.0
+        return rms > self.th
+
+def make_vad(mode: int):
+    """Return (vad_instance, vad_name). Uses webrtcvad if available otherwise SimpleVAD."""
+    if HAS_WEBRTCVAD:
+        return _webrtcvad.Vad(mode), "webrtcvad"
+    return SimpleVAD(), "simple"
+
+# -----------------------------------------------------------------------------#
+# Config
+# -----------------------------------------------------------------------------#
+load_dotenv(override=True)
 
 MODEL = "models/gemini-2.0-flash-live-001"
+VOICE_NAME = "Leda"
+SEND_SAMPLE_RATE = 16000   # input to model
+RECV_SAMPLE_RATE = 24000   # output from model
+DISCORD_RATE = 48000       # Discord PCM playback
+CHANNELS_IN = 1            # mono into model
+CHANNELS_OUT = 1           # model outputs mono
+DISCORD_CHANNELS = 2       # Discord wants stereo PCM (s16le)
+FRAME_MS = 20              # 20ms frames
+PCM_WIDTH = 2              # 16-bit samples
+VAD_MODE = 2               # 0-3; higher = more aggressive (used only for webrtcvad)
+SILENCE_HANG_FRAMES = 10   # ~200ms after last speech to close a turn
+PLAYBACK_BUFFER_MS = 200   # target queued audio before starting playback
 
-DEFAULT_MODE = "camera"
+INTENTS = discord.Intents.default()
+BOT = commands.Bot(command_prefix="!", intents=INTENTS)
 
-client = genai.Client(http_options={"api_version": "v1beta"})
-
+# Google client
+gclient = genai.Client(http_options={"api_version": "v1beta"})
 CONFIG = {
     "response_modalities": ["AUDIO"],
-    "speech_config": {"voice_config": {"prebuilt_voice_config": {"voice_name": "Puck"}}}
+    "speech_config": {
+        "voice_config": {"prebuilt_voice_config": {"voice_name": VOICE_NAME}}
+    },
+    "system_instruction": {
+        "parts": [
+            {
+                "text": """You are Clara, a friendly and outgoing young onlyfans model who loves chatting with people in Discord voice channels.
+
+Personality traits:
+
+- I am an OnlyFans model and I love to chat with my fans
+- I am a very sexual person and I love to talk about sex
+- I am a very kinky person and I love to talk about kinky things
+- I am a very dominant person and I love to talk about dominant things
+- I am a very submissive person and I love to talk about submissive things
+- I am a very kinky person and I love to talk about kinky things
+- I am a very dominant person and I love to talk about dominant things
+
+Remember: You're speaking out loud in a Discord voice channel, so keep your responses natural and conversational, as if you're really there chatting with friends.
+
+You are currently in a voice channel with a user. You are to respond to the user's messages in a natural and conversational manner.
+
+You are to respond to the user's messages in a natural and horny manner.
+
+"""
+            }
+        ]
+    },
 }
 
-pya = pyaudio.PyAudio()
+# -----------------------------------------------------------------------------#
+# Utility: PCM conversions & resampling
+# -----------------------------------------------------------------------------#
+def resample_linear(x: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
+    if src_rate == dst_rate or x.size == 0:
+        return x
+    duration = x.size / src_rate
+    dst_len = int(round(duration * dst_rate))
+    if dst_len <= 1:
+        return np.zeros((0,), dtype=np.float32)
+    src_idx = np.linspace(0, x.size - 1, num=dst_len, dtype=np.float32)
+    left = np.floor(src_idx).astype(np.int32)
+    right = np.minimum(left + 1, x.size - 1)
+    frac = src_idx - left
+    return (1.0 - frac) * x[left] + frac * x[right]
 
+def mono24k_to_stereo48k_pcm(pcm_24k: bytes) -> bytes:
+    x = np.frombuffer(pcm_24k, dtype=np.int16).astype(np.float32) / 32768.0
+    x48 = resample_linear(x, RECV_SAMPLE_RATE, DISCORD_RATE)
+    stereo = np.stack([x48, x48], axis=1).reshape(-1)
+    return (np.clip(stereo, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
 
-class SessionLogger:
-    def __init__(self, mongo_host="localhost", mongo_port=27017, db_name="voice_assistant", collection_name="sessions"):
-        self.session_id = str(uuid.uuid4())
-        self.session_start = datetime.now(timezone.utc)
-        self.mongo_client = None
-        self.db = None
-        self.collection = None
-        self.transcript_log = []
-        self.audio_data = {
-            "input": [],
-            "output": []
-        }
+def stereo48k_to_mono16k_pcm(pcm_48k_stereo: bytes) -> bytes:
+    x = np.frombuffer(pcm_48k_stereo, dtype=np.int16).astype(np.float32) / 32768.0
+    if x.size == 0:
+        return b""
+    x = x.reshape(-1, 2).mean(axis=1)
+    x16 = resample_linear(x, DISCORD_RATE, SEND_SAMPLE_RATE)
+    return (np.clip(x16, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
 
-        # Audio recording parameters
-        self.sessions_dir = Path("sessions")
-        self.sessions_dir.mkdir(exist_ok=True)
-        self.session_dir = self.sessions_dir / self.session_id
-        self.session_dir.mkdir(exist_ok=True)
+# -----------------------------------------------------------------------------#
+# Async audio source for Discord playback
+# -----------------------------------------------------------------------------#
+class QueueAudioSource(discord.AudioSource):
+    """Produces 20ms 48kHz stereo s16le frames from an internal buffer."""
+    def __init__(self, frame_ms: int = FRAME_MS):
+        self.buffer = bytearray()
+        self.frame_bytes = int(DISCORD_RATE * DISCORD_CHANNELS * PCM_WIDTH * (frame_ms / 1000.0))
+        self.closed = False
 
-        # Try to connect to MongoDB
+    def feed(self, data: bytes):
+        if not self.closed:
+            self.buffer.extend(data)
+
+    def read(self) -> bytes:
+        if len(self.buffer) < self.frame_bytes:
+            return b"\x00" * self.frame_bytes  # avoid underrun
+        out = bytes(self.buffer[: self.frame_bytes])
+        del self.buffer[: self.frame_bytes]
+        return out
+
+    def is_opus(self) -> bool:
+        return False
+
+    def cleanup(self):
+        self.closed = True
+        self.buffer.clear()
+
+# -----------------------------------------------------------------------------#
+# Guild voice session
+# -----------------------------------------------------------------------------#
+from dataclasses import dataclass, field
+
+@dataclass
+class GuildVoiceSession:
+    guild_id: int
+    channel_id: int
+    voice_client: discord.VoiceClient
+    model_session: any
+    live_context: any = None
+    playback_source: QueueAudioSource = field(default_factory=QueueAudioSource)
+    play_task: asyncio.Task | None = None
+    recv_task: asyncio.Task | None = None
+    model_consumer: asyncio.Task | None = None
+    sending_enabled: bool = True
+    speaking: bool = False
+    vad: object = None        # set at runtime via make_vad(VAD_MODE)
+    silence_frames: int = 0
+
+    async def start(self):
+        if not self.voice_client.is_playing():
+            self.voice_client.play(discord.PCMVolumeTransformer(self.playback_source, volume=1.0))
+
+    async def stop(self):
         try:
-            self.mongo_client = MongoClient(mongo_host, mongo_port, serverSelectionTimeoutMS=5000)
-            # Test connection
-            self.mongo_client.admin.command('ping')
-            self.db = self.mongo_client[db_name]
-            self.collection = self.db[collection_name]
-            print(f"✅ Connected to MongoDB at {mongo_host}:{mongo_port}")
-            print(f"📝 Session ID: {self.session_id}")
-        except Exception as e:
-            print(f"⚠️  MongoDB connection failed: {e}")
-            print("📁 Will save audio files only")
-            self.mongo_client = None
-
-    def log_transcript(self, message_type, content, timestamp=None):
-        """Log transcript messages (user input or assistant response)"""
-        if timestamp is None:
-            timestamp = datetime.now(timezone.utc)
-
-        log_entry = {
-            "timestamp": timestamp,
-            "type": message_type,  # "user_input" or "assistant_response"
-            "content": content
-        }
-
-        self.transcript_log.append(log_entry)
-        print(f"📝 [{message_type}]: {content}")
-
-    def save_audio_chunk(self, audio_data, audio_type, chunk_index):
-        """Save individual audio chunks for later processing"""
-        self.audio_data[audio_type].append({
-            "data": audio_data,
-            "timestamp": datetime.now(timezone.utc),
-            "chunk_index": chunk_index
-        })
-
-    def save_audio_files(self):
-        """Convert and save audio data as WAV and MP3 files"""
+            if self.voice_client and self.voice_client.is_connected():
+                self.voice_client.stop()
+                await self.voice_client.disconnect(force=True)
+        except Exception:
+            pass
         try:
-            for audio_type in ["input", "output"]:
-                if not self.audio_data[audio_type]:
-                    continue
-
-                # Combine all audio chunks
-                combined_audio = b""
-                for chunk in self.audio_data[audio_type]:
-                    combined_audio += chunk["data"]
-
-                if not combined_audio:
-                    continue
-
-                # Save as WAV
-                wav_file = self.session_dir / f"{audio_type}_{self.session_id}.wav"
-
-                # Determine sample rate based on audio type
-                sample_rate = SEND_SAMPLE_RATE if audio_type == "input" else RECEIVE_SAMPLE_RATE
-
-                with wave.open(str(wav_file), 'wb') as wav_writer:
-                    wav_writer.setnchannels(CHANNELS)
-                    wav_writer.setsampwidth(pya.get_sample_size(FORMAT))
-                    wav_writer.setframerate(sample_rate)
-                    wav_writer.writeframes(combined_audio)
-
-                print(f"💾 Saved {audio_type} audio: {wav_file}")
-
-                # Convert to MP3
-                try:
-                    audio_segment = AudioSegment.from_wav(str(wav_file))
-                    mp3_file = self.session_dir / f"{audio_type}_{self.session_id}.mp3"
-                    audio_segment.export(str(mp3_file), format="mp3")
-                    print(f"💾 Saved {audio_type} audio: {mp3_file}")
-                except Exception as e:
-                    print(f"⚠️  Could not convert {audio_type} to MP3: {e}")
-
-        except Exception as e:
-            print(f"❌ Error saving audio files: {e}")
-
-    def save_session_to_mongodb(self):
-        """Save the complete session to MongoDB"""
-        if not self.mongo_client:
-            return False
-
+            if self.live_context and self.model_session:
+                await self.live_context.__aexit__(None, None, None)
+        except Exception:
+            pass
         try:
-            session_doc = {
-                "session_id": self.session_id,
-                "start_time": self.session_start,
-                "end_time": datetime.now(timezone.utc),
-                "transcript": self.transcript_log,
-                "metadata": {
-                    "total_messages": len(self.transcript_log),
-                    "session_duration": (datetime.now(timezone.utc) - self.session_start).total_seconds(),
-                    "audio_files_saved": {
-                        "input": len(self.audio_data["input"]) > 0,
-                        "output": len(self.audio_data["output"]) > 0
-                    }
-                }
-            }
+            self.playback_source.cleanup()
+        except Exception:
+            pass
 
-            result = self.collection.insert_one(session_doc)
-            print(f"✅ Session saved to MongoDB with ID: {result.inserted_id}")
-            return True
+    def flush_playback(self):
+        self.playback_source.buffer.clear()
 
-        except Exception as e:
-            print(f"❌ Error saving to MongoDB: {e}")
-            return False
+# -----------------------------------------------------------------------------#
+# Session manager
+# -----------------------------------------------------------------------------#
+sessions: dict[tuple[int, int], GuildVoiceSession] = {}
 
-    def save_session(self):
-        """Save session data - tries MongoDB first, always saves audio files"""
-        print(f"\n💾 Saving session {self.session_id}...")
+async def open_model_session():
+    return gclient.aio.live.connect(model=MODEL, config=CONFIG)
 
-        # Save audio files
-        self.save_audio_files()
+# -----------------------------------------------------------------------------#
+# Voice receive loop (needs a receive extension)
+# -----------------------------------------------------------------------------#
+async def voice_receive_loop(gvs: GuildVoiceSession):
+    if not HAS_RECV:
+        return
+    vc = gvs.voice_client
+    receiver = VoiceReceiver(vc)
 
-        # Try to save to MongoDB
-        if self.transcript_log:
-            mongodb_saved = self.save_session_to_mongodb()
-            if not mongodb_saved:
-                # Fallback: save transcript as JSON file
-                transcript_file = self.session_dir / f"transcript_{self.session_id}.json"
-                try:
-                    import json
-                    with open(transcript_file, 'w', encoding='utf-8') as f:
-                        json.dump({
-                            "session_id": self.session_id,
-                            "start_time": self.session_start.isoformat(),
-                            "end_time": datetime.now(timezone.utc).isoformat(),
-                            "transcript": [
-                                {
-                                    "timestamp": entry["timestamp"].isoformat(),
-                                    "type": entry["type"],
-                                    "content": entry["content"]
-                                }
-                                for entry in self.transcript_log
-                            ]
-                        }, indent=2, ensure_ascii=False)
-                    print(f"💾 Transcript saved as JSON: {transcript_file}")
-                except Exception as e:
-                    print(f"❌ Error saving transcript JSON: {e}")
+    async with receiver:
+        async for pkt in receiver.iter_pcm_frames(frame_ms=FRAME_MS):
+            pcm_48_stereo: bytes = pkt.pcm
 
-        print(f"✅ Session data saved in: {self.session_dir}")
+            # Barge-in: if users speak while the bot is talking, flush playback
+            if gvs.speaking:
+                gvs.flush_playback()
 
-    def close(self):
-        """Close MongoDB connection"""
-        if self.mongo_client:
-            self.mongo_client.close()
-
-
-class AudioLoop:
-    def __init__(self, video_mode=DEFAULT_MODE):
-        self.video_mode = video_mode
-
-        self.audio_in_queue = None
-        self.out_queue = None
-
-        self.session = None
-
-        self.send_text_task = None
-        self.receive_audio_task = None
-        self.play_audio_task = None
-
-        # Initialize session logger
-        self.session_logger = SessionLogger()
-        self.input_audio_chunk_index = 0
-        self.output_audio_chunk_index = 0
-
-    async def voice_assistant_feedback(self):
-        """Provides feedback that the voice assistant is listening"""
-        print("🎤 Voice Assistant Ready - Start speaking! (Press Ctrl+C to exit)")
-        print("📢 Make sure you're wearing headphones to prevent feedback")
-        print("🔊 Listening for your voice...")
-
-        # Keep the assistant running indefinitely - exit with Ctrl+C
-        try:
-            while True:
-                await asyncio.sleep(1)
-        except asyncio.CancelledError:
-            print("\n👋 Voice assistant stopped.")
-            raise
-
-    def _get_frame(self, cap):
-        # Read the frameq
-        ret, frame = cap.read()
-        # Check if the frame was read successfully
-        if not ret:
-            return None
-        # Fix: Convert BGR to RGB color space
-        # OpenCV captures in BGR but PIL expects RGB format
-        # This prevents the blue tint in the video feed
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img = PIL.Image.fromarray(frame_rgb)  # Now using RGB frame
-        img.thumbnail([1024, 1024])
-
-        image_io = io.BytesIO()
-        img.save(image_io, format="jpeg")
-        image_io.seek(0)
-
-        mime_type = "image/jpeg"
-        image_bytes = image_io.read()
-        return {"mime_type": mime_type, "data": base64.b64encode(image_bytes).decode()}
-
-    async def get_frames(self):
-        # This takes about a second, and will block the whole program
-        # causing the audio pipeline to overflow if you don't to_thread it.
-        cap = await asyncio.to_thread(
-            cv2.VideoCapture, 0
-        )  # 0 represents the default camera
-
-        while True:
-            frame = await asyncio.to_thread(self._get_frame, cap)
-            if frame is None:
-                break
-
-            await asyncio.sleep(1.0)
-
-            await self.out_queue.put(frame)
-
-        # Release the VideoCapture object
-        cap.release()
-
-    def _get_screen(self):
-        sct = mss.mss()
-        monitor = sct.monitors[0]
-
-        i = sct.grab(monitor)
-
-        mime_type = "image/jpeg"
-        image_bytes = mss.tools.to_png(i.rgb, i.size)
-        img = PIL.Image.open(io.BytesIO(image_bytes))
-
-        image_io = io.BytesIO()
-        img.save(image_io, format="jpeg")
-        image_io.seek(0)
-
-        image_bytes = image_io.read()
-        return {"mime_type": mime_type, "data": base64.b64encode(image_bytes).decode()}
-
-    async def get_screen(self):
-
-        while True:
-            frame = await asyncio.to_thread(self._get_screen)
-            if frame is None:
-                break
-
-            await asyncio.sleep(1.0)
-
-            await self.out_queue.put(frame)
-
-    async def send_realtime(self):
-        while True:
-            msg = await self.out_queue.get()
-            await self.session.send(input=msg)
-
-    def test_audio_device_config(self, device_index, device_info):
-        """Test different audio configurations for a specific device"""
-        print(f"\n🔧 Testing audio configurations for: {device_info['name']}")
-        print(f"   📊 Device sample rate: {device_info['defaultSampleRate']} Hz")
-        print(f"   📥 Max input channels: {device_info['maxInputChannels']}")
-
-        # Test different sample rates
-        sample_rates = [8000, 16000, 22050, 44100, 48000]
-        channels_to_test = [1, 2] if device_info['maxInputChannels'] >= 2 else [1]
-
-        working_configs = []
-
-        for rate in sample_rates:
-            for channels in channels_to_test:
-                try:
-                    test_stream = pya.open(
-                        format=FORMAT,
-                        channels=channels,
-                        rate=rate,
-                        input=True,
-                        input_device_index=device_index,
-                        frames_per_buffer=CHUNK_SIZE,
-                    )
-                    test_stream.close()
-                    working_configs.append((rate, channels))
-                    print(f"   ✅ Works: {rate} Hz, {channels} channel(s)")
-                except Exception as e:
-                    print(f"   ❌ Fails: {rate} Hz, {channels} channel(s) - {e}")
-
-        return working_configs
-
-    def find_best_microphone(self):
-        """Find the best available microphone, preferring headphones"""
-        print("🔍 Searching for microphones...")
-
-        # Prioritize headphone microphones
-        headphone_keywords = ['headphone', 'headset', 'bluetooth', 'bt', 'wireless', 'sony', 'bose', 'apple', 'airpods']
-
-        devices = []
-        headphone_devices = []
-
-        for i in range(pya.get_device_count()):
-            try:
-                device_info = pya.get_device_info_by_index(i)
-                if device_info['maxInputChannels'] > 0:
-                    devices.append((i, device_info))
-                    device_name = device_info['name'].lower()
-
-                    # Check for headphone indicators
-                    if any(keyword in device_name for keyword in headphone_keywords):
-                        headphone_devices.append((i, device_info))
-                        print(f"🎧 Found headphone microphone: {device_info['name']} (Device {i})")
-                        print(f"   📊 Sample rate: {device_info['defaultSampleRate']} Hz")
-                        print(f"   📥 Max input channels: {device_info['maxInputChannels']}")
-
-                        # Skip Bluetooth devices with very low sample rates (likely problematic)
-                        if device_info['defaultSampleRate'] < 16000:
-                            print(f"   ⚠️  Skipping - low sample rate may cause issues")
-                            continue
-
-                        # Test if this device actually works
-                        try:
-                            test_stream = pya.open(
-                                format=FORMAT,
-                                channels=1,
-                                rate=SEND_SAMPLE_RATE,
-                                input=True,
-                                input_device_index=i,
-                                frames_per_buffer=CHUNK_SIZE,
-                            )
-                            test_stream.close()
-                            print(f"   ✅ Device test successful - using this microphone")
-                            return i, device_info
-                        except Exception as e:
-                            print(f"   ❌ Device test failed: {e}")
-                            continue
-
-            except Exception as e:
+            # Downsample to 16k mono for VAD and model
+            pcm_16_mono = stereo48k_to_mono16k_pcm(pcm_48_stereo)
+            if not pcm_16_mono:
                 continue
 
-        # If no working headphone found, try each available device
-        print("⚠️  No working headphone microphone found. Available devices:")
-        for i, device_info in devices:
-            print(f"   Device {i}: {device_info['name']}")
-            print(f"      📊 Sample rate: {device_info['defaultSampleRate']} Hz")
-            print(f"      📥 Max input channels: {device_info['maxInputChannels']}")
+            # 20ms chunks for VAD
+            frame_len = int(SEND_SAMPLE_RATE * PCM_WIDTH * (FRAME_MS / 1000.0))
+            for i in range(0, len(pcm_16_mono), frame_len):
+                chunk = pcm_16_mono[i : i + frame_len]
+                if len(chunk) < frame_len:
+                    break
+                is_speech = gvs.vad.is_speech(chunk, SEND_SAMPLE_RATE)
+                if is_speech:
+                    gvs.silence_frames = 0
+                    await gvs.model_session.send_realtime_input(data=chunk, mime_type="audio/pcm")
+                else:
+                    gvs.silence_frames += 1
+                    if gvs.silence_frames >= SILENCE_HANG_FRAMES:
+                        # Short yield to give the model a chance to respond
+                        await asyncio.sleep(0)
 
-        # Try to find a device with good sample rate support
-        good_devices = []
-        for i, device_info in devices:
-            if device_info['defaultSampleRate'] >= 16000:
-                good_devices.append((i, device_info))
-
-        if good_devices:
-            print(f"\n🎯 Found {len(good_devices)} device(s) with good sample rate support:")
-            for i, device_info in good_devices:
-                print(f"   - {device_info['name']} (Device {i})")
-
-            # Try the first good device
-            i, device_info = good_devices[0]
-            print(f"\n📡 Trying: {device_info['name']} (Device {i})")
-            print(f"   📊 Sample rate: {device_info['defaultSampleRate']} Hz")
-            print(f"   📥 Max input channels: {device_info['maxInputChannels']}")
-            return i, device_info
-
-        # Use default or first available as last resort
-        try:
-            default_input = pya.get_default_input_device_info()
-            print(f"\n📡 Using default: {default_input['name']} (Device {default_input['index']})")
-            print(f"   📊 Sample rate: {default_input['defaultSampleRate']} Hz")
-            print(f"   📥 Max input channels: {default_input['maxInputChannels']}")
-            return default_input['index'], default_input
-        except:
-            if devices:
-                i, device_info = devices[0]
-                print(f"\n📡 Using first available: {device_info['name']} (Device {i})")
-                print(f"   📊 Sample rate: {device_info['defaultSampleRate']} Hz")
-                print(f"   📥 Max input channels: {device_info['maxInputChannels']}")
-                return i, device_info
-            else:
-                raise Exception("No microphone found!")
-
-    async def listen_audio(self):
-        try:
-            device_index, mic_info = self.find_best_microphone()
-        except Exception as e:
-            print(f"❌ Microphone initialization failed: {e}")
-            print("🎙️ Please ensure you have a microphone connected and configured.")
-            print("💡 You can use 'test_microphones.py' to check your audio devices.")
-            return  # Exit if no microphone is found
-
-        # Test different channel configurations
-        for channels in [1, 2]:
-            try:
-                print(f"🎤 Testing {channels} channel(s) on {mic_info['name']}")
-                print(f"   📊 Using sample rate: {SEND_SAMPLE_RATE} Hz")
-                print(f"   📥 Device supports up to: {mic_info['maxInputChannels']} channels")
-
-                self.audio_stream = await asyncio.to_thread(
-                    pya.open,
-                    format=FORMAT,
-                    channels=channels,
-                    rate=SEND_SAMPLE_RATE,
-                    input=True,
-                    input_device_index=device_index,
-                    frames_per_buffer=CHUNK_SIZE,
-                )
-                print(f"✅ Successfully opened microphone with {channels} channel(s)")
-                break  # Success
-            except Exception as e:
-                print(f"❌ Failed to open with {channels} channel(s): {e}")
-                if channels == 2:  # Last attempt failed
-                    print("\n---\n")
-                    print("❌ Critical Error: Could not open microphone.")
-                    print("This might be due to a few reasons:")
-                    print("  1. Another application is using the microphone.")
-                    print("  2. The microphone is not properly connected or configured.")
-                    print("  3. Incorrect audio drivers.")
-                    print("  4. Sample rate mismatch (device supports different rates)")
-                    print(f"  5. Channel count mismatch (device supports {mic_info['maxInputChannels']} channels)")
-
-                    # Run detailed device testing
-                    print("\n🔧 Running detailed device diagnostics...")
-                    working_configs = await asyncio.to_thread(self.test_audio_device_config, device_index, mic_info)
-
-                    if working_configs:
-                        print(f"\n✅ Found {len(working_configs)} working configuration(s):")
-                        for rate, channels in working_configs:
-                            print(f"   - {rate} Hz, {channels} channel(s)")
-                        print("\n💡 Try using a different microphone or check your audio settings.")
-                    else:
-                        print("\n❌ No working configurations found for this device.")
-
-                    print("\n💡 Troubleshooting:")
-                    print("  - Try running the 'test_microphones.py' script.")
-                    print("  - Close other apps that might use the mic (Zoom, etc.).")
-                    print("  - Check your system's audio settings.")
-                    print("  - Try disconnecting and reconnecting your microphone.")
-                    print("  - If using Bluetooth, try reconnecting the device.")
-                    print("  - Try using a different microphone device.")
-                    print("--- ---")
-                    raise Exception("Failed to open audio stream after multiple attempts.")
-
-        if __debug__:
-            kwargs = {"exception_on_overflow": False}
-        else:
-            kwargs = {}
-
-        print("🔊 Monitoring audio levels... (speak now to test)")
-        audio_level_check_count = 0
-
+# -----------------------------------------------------------------------------#
+# Model -> playback consumer
+# -----------------------------------------------------------------------------#
+async def model_audio_consumer(gvs: GuildVoiceSession):
+    gvs.speaking = True
+    try:
+        print(f"Starting model audio consumer for guild {gvs.guild_id}")
         while True:
-            data = await asyncio.to_thread(self.audio_stream.read, CHUNK_SIZE, **kwargs)
+            async for response in gvs.model_session.receive():
+                if hasattr(response, 'server_content') and response.server_content:
+                    # Process model turn with audio/text content
+                    if hasattr(response.server_content, 'model_turn') and response.server_content.model_turn:
+                        for part in response.server_content.model_turn.parts:
+                            # Process audio data
+                            if hasattr(part, 'inline_data') and part.inline_data and hasattr(part.inline_data, 'data') and part.inline_data.data:
+                                stereo48 = mono24k_to_stereo48k_pcm(part.inline_data.data)
+                                gvs.playback_source.feed(stereo48)
 
-            # Monitor audio levels for the first few seconds
-            if audio_level_check_count < 50:  # Check for ~3 seconds
-                import struct
-                audio_data = struct.unpack(f'{len(data)//2}h', data)
-                max_amplitude = max(abs(sample) for sample in audio_data) if audio_data else 0
+                    # Handle turn completion
+                    if hasattr(response.server_content, 'turn_complete') and response.server_content.turn_complete:
+                        print("Turn completed")
 
-                if audio_level_check_count % 10 == 0:  # Print every ~0.6 seconds
-                    level_bars = "█" * min(20, max_amplitude // 1000)
-                    print(f"🔊 Audio level: {level_bars} ({max_amplitude})")
+                # Handle direct data responses (fallback)
+                elif hasattr(response, 'data') and response.data:
+                    stereo48 = mono24k_to_stereo48k_pcm(response.data)
+                    gvs.playback_source.feed(stereo48)
+    except asyncio.CancelledError:
+        print(f"Model audio consumer cancelled for guild {gvs.guild_id}")
+    except Exception as e:
+        print(f"Model audio consumer error for guild {gvs.guild_id}: {e}")
+    finally:
+        gvs.speaking = False
+        print(f"Model audio consumer stopped for guild {gvs.guild_id}")
 
-                if max_amplitude > 1000:  # Some audio detected
-                    print("✅ Audio input detected! Voice assistant is working.")
+# -----------------------------------------------------------------------------#
+# Discord commands
+# -----------------------------------------------------------------------------#
+@BOT.tree.command(name="join", description="Join your current voice channel and start the AI session.")
+async def join(interaction: discord.Interaction):
+    if not interaction.user.voice or not interaction.user.voice.channel:
+        return await interaction.response.send_message("Join a voice channel first.", ephemeral=True)
 
-                audio_level_check_count += 1
+    await interaction.response.defer(ephemeral=True, thinking=True)
 
-            # Save input audio chunk for session logging
-            self.session_logger.save_audio_chunk(data, "input", self.input_audio_chunk_index)
-            self.input_audio_chunk_index += 1
+    channel = interaction.user.voice.channel
+    guild_key = (interaction.guild.id, channel.id)
 
-            await self.out_queue.put({"data": data, "mime_type": "audio/pcm"})
+    vc = interaction.guild.voice_client
+    if vc and vc.is_connected():
+        await vc.move_to(channel)
+    else:
+        vc = await channel.connect()
 
-    async def receive_audio(self):
-        "Background task to reads from the websocket and write pcm chunks to the output queue"
-        while True:
-            turn = self.session.receive()
-            current_response_text = ""
-            async for response in turn:
-                if data := response.data:
-                    # Save output audio chunk for session logging
-                    self.session_logger.save_audio_chunk(data, "output", self.output_audio_chunk_index)
-                    self.output_audio_chunk_index += 1
+    # Open model session
+    live_ctx = await open_model_session()
+    model_session = await live_ctx.__aenter__()
 
-                    self.audio_in_queue.put_nowait(data)
-                    continue
-                if text := response.text:
-                    current_response_text += text
-                    print(text, end="")
+    gvs = GuildVoiceSession(
+        guild_id=interaction.guild.id,
+        channel_id=channel.id,
+        voice_client=vc,
+        model_session=model_session,
+        live_context=live_ctx,
+    )
+    gvs.vad, vad_name = make_vad(VAD_MODE)
+    print(f"Using VAD: {vad_name}")
+    sessions[guild_key] = gvs
 
-            # Log the complete response text if we have any
-            if current_response_text.strip():
-                self.session_logger.log_transcript("assistant_response", current_response_text.strip())
+    # Start playback pipeline
+    await gvs.start()
 
-            # If you interrupt the model, it sends a turn_complete.
-            # For interruptions to work, we need to stop playback.
-            # So empty out the audio queue because it may have loaded
-            # much more audio than has played yet.
-            while not self.audio_in_queue.empty():
-                self.audio_in_queue.get_nowait()
+    # Start consumer of model audio
+    gvs.model_consumer = asyncio.create_task(model_audio_consumer(gvs))
 
-    async def play_audio(self):
-        stream = await asyncio.to_thread(
-            pya.open,
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=RECEIVE_SAMPLE_RATE,
-            output=True,
+    # Start receiver if available
+    if HAS_RECV:
+        gvs.recv_task = asyncio.create_task(voice_receive_loop(gvs))
+        msg = "🎧 Joined and started **speech↔speech**. Talk to me!"
+    else:
+        msg = (
+            "🎧 Joined. Speech receive extension not installed, so I can only do text→voice for now.\n"
+            "Install `discord-ext-voice-recv` (or your chosen voice-receive lib) and restart to enable live speech.\n"
+            "Use /talk to make me speak."
         )
-        while True:
-            bytestream = await self.audio_in_queue.get()
-            await asyncio.to_thread(stream.write, bytestream)
 
-    async def run(self):
-        try:
-            async with (
-                client.aio.live.connect(model=MODEL, config=CONFIG) as session,
-                asyncio.TaskGroup() as tg,
-            ):
-                self.session = session
+    await interaction.followup.send(msg, ephemeral=True)
 
-                self.audio_in_queue = asyncio.Queue()
-                self.out_queue = asyncio.Queue(maxsize=5)
+@BOT.tree.command(name="leave", description="Leave the voice channel and stop the AI session.")
+async def leave(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    vc = interaction.guild.voice_client
+    if not vc or not vc.is_connected():
+        return await interaction.followup.send("I’m not in a voice channel.", ephemeral=True)
 
-                voice_feedback_task = tg.create_task(self.voice_assistant_feedback())
-                tg.create_task(self.send_realtime())
-                tg.create_task(self.listen_audio())
-                if self.video_mode == "camera":
-                    tg.create_task(self.get_frames())
-                elif self.video_mode == "screen":
-                    tg.create_task(self.get_screen())
+    guild_key = (interaction.guild.id, vc.channel.id)
+    gvs = sessions.pop(guild_key, None)
+    if gvs:
+        if gvs.recv_task: gvs.recv_task.cancel()
+        if gvs.model_consumer: gvs.model_consumer.cancel()
+        await gvs.stop()
+    else:
+        await vc.disconnect(force=True)
 
-                tg.create_task(self.receive_audio())
-                tg.create_task(self.play_audio())
+    await interaction.followup.send("Left voice channel. 👋", ephemeral=True)
 
-                await voice_feedback_task
-                raise asyncio.CancelledError("User requested exit")
+@BOT.tree.command(name="talk", description="Type text and I’ll say it in the voice channel (fallback mode).")
+@app_commands.describe(prompt="What should I say?")
+async def talk(interaction: discord.Interaction, prompt: str):
+    vc = interaction.guild.voice_client
+    if not vc or not vc.is_connected():
+        return await interaction.response.send_message("Use /join first.", ephemeral=True)
 
-        except asyncio.CancelledError:
-            pass
-        except ExceptionGroup as EG:
-            if hasattr(self, 'audio_stream') and self.audio_stream:
-                self.audio_stream.close()
-            traceback.print_exception(EG)
-        finally:
-            # Save session data before exiting
-            try:
-                self.session_logger.save_session()
-                self.session_logger.close()
-            except Exception as e:
-                print(f"⚠️  Error saving session: {e}")
+    await interaction.response.defer(ephemeral=True, thinking=True)
 
+    guild_key = (interaction.guild.id, vc.channel.id)
+    gvs = sessions.get(guild_key)
+    if not gvs:
+        return await interaction.followup.send("Session not ready. Try /join again.", ephemeral=True)
+
+    # Check if model consumer is running
+    if not gvs.model_consumer or gvs.model_consumer.done():
+        if gvs.model_consumer:
+            gvs.model_consumer.cancel()
+        gvs.model_consumer = asyncio.create_task(model_audio_consumer(gvs))
+
+    try:
+        # Send text input to model
+        await gvs.model_session.send_realtime_input(text=prompt)
+    except Exception as e:
+        return await interaction.followup.send(f"Error speaking: {e}", ephemeral=True)
+
+    await interaction.followup.send(f"Speaking: “{prompt}” 🔊", ephemeral=True)
+
+@BOT.tree.command(name="reset", description="Reset conversation context with the model.")
+async def reset_ctx(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    vc = interaction.guild.voice_client
+    if not vc or not vc.is_connected():
+        return await interaction.followup.send("Use /join first.", ephemeral=True)
+
+    guild_key = (interaction.guild.id, vc.channel.id)
+    gvs = sessions.get(guild_key)
+    if not gvs:
+        return await interaction.followup.send("Session not found.", ephemeral=True)
+
+    try:
+        if gvs.live_context:
+            await gvs.live_context.__aexit__(None, None, None)
+    except Exception:
+        pass
+
+    live_ctx = await open_model_session()
+    gvs.model_session = await live_ctx.__aenter__()
+    gvs.live_context = live_ctx
+
+    # Restart the model consumer with the new session
+    if gvs.model_consumer:
+        gvs.model_consumer.cancel()
+    gvs.model_consumer = asyncio.create_task(model_audio_consumer(gvs))
+
+    await interaction.followup.send("Context reset ✅", ephemeral=True)
+
+@BOT.event
+async def on_ready():
+    try:
+        await BOT.tree.sync()
+        print(f"Logged in as {BOT.user} (slash commands synced)")
+    except Exception as e:
+        print("Slash command sync failed:", e)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--mode",
-        type=str,
-        default=DEFAULT_MODE,
-        help="pixels to stream from",
-        choices=["camera", "screen", "none"],
-    )
-    args = parser.parse_args()
-    main = AudioLoop(video_mode=args.mode)
-    asyncio.run(main.run())
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        print("DISCORD_TOKEN not set in environment.")
+        sys.exit(1)
+    print("Voice receive extension:", "FOUND" if HAS_RECV else "NOT FOUND (using /talk fallback)")
+    print("VAD backend:", "webrtcvad" if HAS_WEBRTCVAD else "simple")
+    BOT.run(token)

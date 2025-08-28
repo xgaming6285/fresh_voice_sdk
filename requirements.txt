@@ -1,8 +1,12 @@
+discord.py
 google-genai
+python-dotenv
+numpy
+pydub
+# Your originals if you still need them elsewhere:
 opencv-python
-pyaudio
 pillow
 mss
-python-dotenv
 pymongo
-pydub
+# Voice receive extension (recommended for full speech→speech)
+discord-ext-voice-recv
