@@ -75,9 +75,9 @@ echo
 
 # Check if voice agent is reachable
 echo "📋 VOICE AGENT CONNECTIVITY TEST"
-echo "Command: ping -c 3 192.168.50.159"
+echo "Command: ping -c 3 192.168.43.122"
 echo "--------------------------------------------------"
-ping -c 3 192.168.50.159 2>/dev/null | tail -n 2 || echo "   ❌ Voice agent not reachable"
+ping -c 3 192.168.43.122 2>/dev/null | tail -n 2 || echo "   ❌ Voice agent not reachable"
 echo "--------------------------------------------------"
 echo
 

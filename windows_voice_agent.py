@@ -70,7 +70,7 @@ VOICE_CONFIG = {
     "system_instruction": {
         "parts": [
             {
-                "text": "You are a helpful AI voice assistant answering phone calls. Keep responses conversational and concise since this is a voice-only interaction."
+                "text": "You are a helpful AI voice assistant answering phone calls. Start by greeting the caller with 'Hello, how can I help you today?' Keep responses conversational and concise since this is a voice-only interaction."
             }
         ]
     }
@@ -135,10 +135,24 @@ class RTPServer:
                     audio_payload = data[header_length:]
                     
                     # Find session for this SSRC/address
+                    session_found = False
                     for session_id, rtp_session in self.sessions.items():
-                        if rtp_session.remote_addr == addr:
+                        # Match by IP address only (port can be different for RTP vs SIP)
+                        if rtp_session.remote_addr[0] == addr[0]:
+                            logger.info(f"🎵 Received RTP audio from {addr}: {len(audio_payload)} bytes, PT={payload_type}")
+                            
+                            # Update the RTP session's actual RTP address if it changed
+                            if rtp_session.remote_addr != addr:
+                                logger.info(f"📍 Updating RTP address from {rtp_session.remote_addr} to {addr}")
+                                rtp_session.remote_addr = addr
+                            
                             rtp_session.process_incoming_audio(audio_payload, payload_type, timestamp)
+                            session_found = True
                             break
+                    
+                    if not session_found:
+                        # No session found for this address
+                        logger.warning(f"⚠️ Received RTP audio from unknown address {addr}: {len(audio_payload)} bytes")
                 
             except Exception as e:
                 logger.error(f"Error in RTP listener: {e}")
@@ -178,6 +192,10 @@ class RTPSession:
         self.audio_queue = queue.Queue()
         self.processing = False
         
+        # Output audio queue for paced delivery
+        self.output_queue = queue.Queue()
+        self.output_thread = None
+        
     def process_incoming_audio(self, audio_data: bytes, payload_type: int, timestamp: int):
         """Process incoming RTP audio packet"""
         try:
@@ -192,74 +210,260 @@ class RTPSession:
             
             # Queue audio for processing
             self.audio_queue.put(pcm_data)
+            logger.info(f"🎤 Queued {len(pcm_data)} bytes of PCM audio for processing")
             
             # Start processing if not already running
             if not self.processing:
                 self.processing = True
                 threading.Thread(target=self._process_audio_queue, daemon=True).start()
+                # Start output thread for paced audio delivery
+                threading.Thread(target=self._process_output_queue, daemon=True).start()
                 
         except Exception as e:
             logger.error(f"Error processing incoming audio: {e}")
     
     def _process_audio_queue(self):
-        """Process queued audio through voice session"""
+        """Process queued audio through voice session with improved async handling"""
         audio_buffer = b""
         chunk_size = 1600  # 100ms at 8kHz, 16-bit = 1600 bytes
         
+        # Create dedicated event loop for this thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
         try:
+            # Run the async processing in the dedicated loop
+            loop.run_until_complete(self._async_process_audio_queue(audio_buffer, chunk_size))
+        except Exception as e:
+            logger.error(f"Error in audio processing thread: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+        finally:
+            loop.close()
+            self.processing = False
+    
+    async def _async_process_audio_queue(self, audio_buffer: bytes, chunk_size: int):
+        """Async version of audio queue processing with proper streaming"""
+        try:
+            # Initialize voice session first
+            if not await self.voice_session.initialize_voice_session():
+                logger.error("Failed to initialize voice session")
+                return
+                
+            # Start receive task for continuous response handling
+            receive_task = asyncio.create_task(self._continuous_receive_responses())
+            
+            # Use reasonable chunk size for good quality
+            chunk_size = 1600  # 100ms at 8kHz, 16-bit = 1600 bytes
+            
             while self.processing:
                 try:
-                    # Get audio chunk with timeout
-                    audio_chunk = self.audio_queue.get(timeout=0.1)
-                    audio_buffer += audio_chunk
+                    # Get audio chunk with timeout - use asyncio-compatible approach
+                    try:
+                        # Use a small timeout to check if processing should continue
+                        audio_chunk = self.audio_queue.get_nowait()
+                        audio_buffer += audio_chunk
+                    except queue.Empty:
+                        # No audio available, wait a bit and continue
+                        await asyncio.sleep(0.1)
+                        
+                        # Process remaining buffer if we have some audio but not enough for full chunk
+                        if len(audio_buffer) > 0 and self.voice_session.gemini_session:
+                            await self._send_audio_to_gemini(audio_buffer)
+                            audio_buffer = b""
+                        continue
                     
                     # Process when we have enough audio
                     if len(audio_buffer) >= chunk_size:
                         chunk_to_process = audio_buffer[:chunk_size]
                         audio_buffer = audio_buffer[chunk_size:]
                         
-                        # Process through voice session asynchronously
-                        asyncio.create_task(self._process_chunk(chunk_to_process))
-                        
-                except queue.Empty:
-                    # No audio for 100ms, continue
-                    if len(audio_buffer) > 0:
-                        # Process remaining buffer
-                        asyncio.create_task(self._process_chunk(audio_buffer))
-                        audio_buffer = b""
+                        # Send audio to Gemini (don't wait for response)
+                        if self.voice_session.gemini_session:
+                            await self._send_audio_to_gemini(chunk_to_process)
                         
                 except Exception as e:
-                    logger.error(f"Error in audio processing queue: {e}")
-                    break
+                    logger.error(f"Error in async audio processing: {e}")
+                    await asyncio.sleep(0.1)  # Brief pause before retrying
                     
-        finally:
-            self.processing = False
-    
-    async def _process_chunk(self, audio_chunk: bytes):
-        """Process audio chunk through voice session"""
-        try:
-            response_audio = await self.voice_session.process_audio(audio_chunk)
-            if response_audio:
-                self.send_audio(response_audio)
         except Exception as e:
-            logger.error(f"Error processing audio chunk: {e}")
+            logger.error(f"Error in async audio queue processing: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+        finally:
+            # Cancel receive task when done
+            if 'receive_task' in locals():
+                receive_task.cancel()
+                try:
+                    await receive_task
+                except asyncio.CancelledError:
+                    pass
+    
+    async def _send_audio_to_gemini(self, audio_chunk: bytes):
+        """Send audio chunk to Gemini without waiting for response"""
+        try:
+            if not self.voice_session.gemini_session:
+                logger.warning("No Gemini session available")
+                return
+                
+            # Convert telephony audio to Gemini format
+            processed_audio = self.voice_session.convert_telephony_to_gemini(audio_chunk)
+            logger.info(f"🎙️ Sending audio chunk to Gemini: {len(audio_chunk)} bytes → {len(processed_audio)} bytes")
+            
+            # Send audio to Gemini
+            await self.voice_session.gemini_session.send(
+                input={"data": processed_audio, "mime_type": "audio/pcm"}
+            )
+        except Exception as e:
+            logger.error(f"Error sending audio to Gemini: {e}")
+            
+    async def _continuous_receive_responses(self):
+        """Continuously receive responses from Gemini in a separate task"""
+        logger.info("🎧 Starting continuous response receiver")
+        
+        while self.processing and self.voice_session.gemini_session:
+            try:
+                # Get response from Gemini - this is a continuous stream
+                turn = self.voice_session.gemini_session.receive()
+                
+                async for response in turn:
+                    try:
+                        # First check for server_content which contains the actual audio
+                        if hasattr(response, 'server_content') and response.server_content:
+                            if hasattr(response.server_content, 'model_turn') and response.server_content.model_turn:
+                                for part in response.server_content.model_turn.parts:
+                                    if hasattr(part, 'inline_data') and part.inline_data:
+                                        if hasattr(part.inline_data, 'mime_type') and 'audio' in part.inline_data.mime_type:
+                                            audio_data = part.inline_data.data
+                                            if isinstance(audio_data, str):
+                                                # Base64 encoded audio
+                                                try:
+                                                    audio_bytes = base64.b64decode(audio_data)
+                                                    logger.info(f"📥 Received {len(audio_bytes)} bytes of audio from Gemini")
+                                                    # Convert and send in smaller chunks
+                                                    telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_bytes)
+                                                    
+                                                    # Send in smaller chunks with slight pacing
+                                                    chunk_size = 480  # 60ms worth of audio at 8kHz
+                                                    for i in range(0, len(telephony_audio), chunk_size):
+                                                        chunk = telephony_audio[i:i + chunk_size]
+                                                        self.send_audio(chunk)
+                                                        # Small delay between chunks
+                                                        await asyncio.sleep(0.06)  # 60ms delay
+                                                except Exception as e:
+                                                    logger.error(f"Error decoding base64 audio: {e}")
+                                            elif isinstance(audio_data, bytes):
+                                                logger.info(f"📥 Received {len(audio_data)} bytes of audio from Gemini")
+                                                # Convert and send in smaller chunks to avoid overwhelming the receiver
+                                                telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_data)
+                                                
+                                                # Send in smaller chunks with slight pacing
+                                                chunk_size = 480  # 60ms worth of audio at 8kHz
+                                                for i in range(0, len(telephony_audio), chunk_size):
+                                                    chunk = telephony_audio[i:i + chunk_size]
+                                                    self.send_audio(chunk)
+                                                    # Small delay between chunks
+                                                    await asyncio.sleep(0.06)  # 60ms delay
+                                    
+                                    # Also handle text parts for logging
+                                    if hasattr(part, 'text') and part.text:
+                                        self.voice_session.session_logger.log_transcript(
+                                            "assistant_response", part.text.strip()
+                                        )
+                                        logger.info(f"AI Response: {part.text.strip()}")
+                        
+                        # Also check direct data field (older format)
+                        elif hasattr(response, 'data') and response.data:
+                            if isinstance(response.data, bytes):
+                                logger.info(f"📥 Received {len(response.data)} bytes of audio from Gemini (direct)")
+                                telephony_audio = self.voice_session.convert_gemini_to_telephony(response.data)
+                                # Send in smaller chunks
+                                chunk_size = 480  # 60ms worth of audio at 8kHz
+                                for i in range(0, len(telephony_audio), chunk_size):
+                                    chunk = telephony_audio[i:i + chunk_size]
+                                    self.send_audio(chunk)
+                                    await asyncio.sleep(0.06)  # 60ms delay
+                            elif isinstance(response.data, str):
+                                try:
+                                    audio_bytes = base64.b64decode(response.data)
+                                    logger.info(f"📥 Received {len(audio_bytes)} bytes of audio from Gemini (direct base64)")
+                                    telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_bytes)
+                                    # Send in smaller chunks
+                                    chunk_size = 480  # 60ms worth of audio at 8kHz
+                                    for i in range(0, len(telephony_audio), chunk_size):
+                                        chunk = telephony_audio[i:i + chunk_size]
+                                        self.send_audio(chunk)
+                                        await asyncio.sleep(0.06)  # 60ms delay
+                                except:
+                                    pass
+                        
+                        # Handle text response
+                        if hasattr(response, 'text') and response.text:
+                            self.voice_session.session_logger.log_transcript(
+                                "assistant_response", response.text
+                            )
+                            logger.info(f"AI Response: {response.text}")
+                            
+                    except Exception as e:
+                        logger.error(f"Error processing response item: {e}")
+                        # Continue processing other responses
+                        continue
+                        
+            except Exception as e:
+                if self.processing:  # Only log if we're still processing
+                    logger.error(f"Error receiving from Gemini: {e}")
+                    await asyncio.sleep(0.1)  # Brief pause before retrying
+                    
+        logger.info("🎧 Stopped continuous response receiver")
+    
+    # Removed _process_chunk - we use continuous streaming instead
     
     def send_audio(self, audio_data: bytes):
-        """Send audio back via RTP"""
+        """Queue audio for paced RTP transmission"""
         try:
             # Convert PCM to μ-law for transmission
             ulaw_data = self.pcm_to_ulaw(audio_data)
             
-            # Create RTP packet
-            rtp_packet = self._create_rtp_packet(ulaw_data, payload_type=0)
-            
-            # Send packet
-            self.rtp_socket.sendto(rtp_packet, self.remote_addr)
-            
-            logger.debug(f"Sent RTP audio packet: {len(rtp_packet)} bytes")
+            # Queue the audio data for paced delivery
+            self.output_queue.put(ulaw_data)
+            logger.info(f"📤 Queued {len(ulaw_data)} bytes for RTP transmission")
             
         except Exception as e:
-            logger.error(f"Error sending RTP audio: {e}")
+            logger.error(f"Error queueing audio: {e}")
+    
+    def _process_output_queue(self):
+        """Process output queue with proper RTP pacing"""
+        packet_size = 160  # 20ms of μ-law audio at 8kHz
+        packet_duration_s = 0.020  # 20ms per packet
+        last_packet_time = time.time()
+        
+        while self.processing:
+            try:
+                # Get audio from queue with timeout
+                try:
+                    audio_data = self.output_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                
+                # Send audio in properly paced packets
+                for i in range(0, len(audio_data), packet_size):
+                    chunk = audio_data[i:i + packet_size]
+                    
+                    # Create RTP packet
+                    rtp_packet = self._create_rtp_packet(chunk, payload_type=0)
+                    
+                    # Calculate time to wait
+                    current_time = time.time()
+                    time_since_last = current_time - last_packet_time
+                    if time_since_last < packet_duration_s:
+                        time.sleep(packet_duration_s - time_since_last)
+                    
+                    # Send packet
+                    self.rtp_socket.sendto(rtp_packet, self.remote_addr)
+                    last_packet_time = time.time()
+                    
+            except Exception as e:
+                logger.error(f"Error in output queue processing: {e}")
     
     def _create_rtp_packet(self, payload: bytes, payload_type: int = 0):
         """Create RTP packet with payload"""
@@ -554,7 +758,12 @@ Content-Length: 0
                     
                     # Cleanup voice session
                     voice_session = session_data["voice_session"]
-                    asyncio.create_task(voice_session.cleanup())
+                    try:
+                        if hasattr(voice_session, 'cleanup'):
+                            # Handle cleanup properly without creating async task in wrong context
+                            voice_session.cleanup()
+                    except Exception as e:
+                        logger.error(f"Error cleaning up voice session: {e}")
                     
                     # Cleanup RTP session
                     self.rtp_server.remove_session(session_id)
@@ -982,6 +1191,13 @@ class WindowsVoiceSession:
         self.start_time = datetime.now(timezone.utc)
         self.session_logger = SessionLogger()
         self.voice_session = None
+        self.gemini_session = None  # The actual session object from the context manager
+        
+        # Connection management
+        self.connection_attempts = 0
+        self.max_connection_attempts = 5
+        self.connection_backoff = 1.0  # seconds
+        self.last_connection_attempt = 0
         
         # Log call start
         self.session_logger.log_transcript(
@@ -990,19 +1206,88 @@ class WindowsVoiceSession:
         )
     
     async def initialize_voice_session(self):
-        """Initialize the Google Gemini voice session"""
+        """Initialize the Google Gemini voice session with improved error handling"""
+        current_time = time.time()
+        
+        # Check if we should wait before retrying
+        if (current_time - self.last_connection_attempt) < self.connection_backoff:
+            logger.info(f"Waiting {self.connection_backoff}s before retry...")
+            await asyncio.sleep(self.connection_backoff)
+        
+        # Check if we've exceeded max attempts
+        if self.connection_attempts >= self.max_connection_attempts:
+            logger.error(f"❌ Max connection attempts ({self.max_connection_attempts}) exceeded for session {self.session_id}")
+            return False
+        
+        self.connection_attempts += 1
+        self.last_connection_attempt = time.time()
+        
         try:
-            logger.info(f"Attempting to connect to Gemini live session...")
+            logger.info(f"Attempting to connect to Gemini live session (attempt {self.connection_attempts}/{self.max_connection_attempts})...")
             logger.info(f"Using model: {MODEL}")
             logger.info(f"Voice config: {VOICE_CONFIG}")
             
-            self.voice_session = await voice_client.aio.live.connect(
-                model=MODEL, 
-                config=VOICE_CONFIG
-            ).__aenter__()
+            # Create the connection with timeout
+            try:
+                # Create the context manager
+                context_manager = voice_client.aio.live.connect(
+                    model=MODEL, 
+                    config=VOICE_CONFIG
+                )
+                
+                # Enter the context manager to get the actual session
+                self.gemini_session = await context_manager.__aenter__()
+                self.voice_session = context_manager  # Store context manager for cleanup
+                
+                logger.info(f"✅ Voice session connected successfully for {self.session_id}")
+                logger.info(f"📞 Call from {self.caller_id} is now ready for voice interaction")
+                
+            except asyncio.TimeoutError:
+                logger.error("❌ Connection to Gemini timed out")
+                return False
+            except Exception as e:
+                logger.error(f"❌ Failed to create Gemini connection: {e}")
+                return False
             
-            logger.info(f"✅ Voice session connected successfully for {self.session_id}")
-            logger.info(f"📞 Call from {self.caller_id} is now ready for voice interaction")
+            # Reset connection attempts on success
+            self.connection_attempts = 0
+            self.connection_backoff = 1.0
+            
+            # Wait a bit to ensure the connection is fully established
+            await asyncio.sleep(0.1)
+            
+            # Wait for connection to stabilize
+            await asyncio.sleep(0.5)
+            
+            # Send initial audio to trigger greeting immediately
+            # Use a short burst of very quiet noise instead of pure silence
+            logger.info(f"🔇 Triggering initial greeting...")
+            try:
+                # Create 1 second of very quiet noise at 16kHz
+                import random
+                noise_duration_ms = 1000
+                noise_samples = int(SEND_SAMPLE_RATE * noise_duration_ms / 1000)
+                # Very low amplitude noise (±1 on 16-bit scale)
+                noise_audio = bytes([random.randint(0, 1) for _ in range(noise_samples * 2)])
+                
+                # Send the noise to trigger Gemini
+                await self.gemini_session.send(
+                    input={"data": noise_audio, "mime_type": "audio/pcm"}
+                )
+                
+                # Small pause
+                await asyncio.sleep(0.1)
+                
+                # Now send explicit instruction
+                await self.gemini_session.send(
+                    text="Start the conversation by greeting the caller with 'Hello, how can I help you today?'"
+                )
+                
+                logger.info("✅ Initial greeting triggered")
+            except Exception as e:
+                logger.warning(f"Failed to send initial prompt: {e}")
+            
+            logger.info(f"🎤 Waiting for caller audio to trigger AI responses...")
             
             # Log successful initialization
             self.session_logger.log_transcript(
@@ -1013,15 +1298,93 @@ class WindowsVoiceSession:
             return True
             
         except Exception as e:
-            logger.error(f"❌ Failed to initialize voice session: {e}")
+            logger.error(f"❌ Failed to initialize voice session (attempt {self.connection_attempts}): {e}")
+            
+            # Log specific error types for better debugging
+            error_type = type(e).__name__
+            if "websocket" in str(e).lower():
+                logger.error("🔌 WebSocket connection error - check network connectivity")
+            elif "auth" in str(e).lower() or "permission" in str(e).lower():
+                logger.error("🔑 Authentication error - check API key and permissions")
+            elif "quota" in str(e).lower() or "rate" in str(e).lower():
+                logger.error("⚠️ Rate limiting or quota exceeded")
+            else:
+                logger.error(f"🔧 Generic error ({error_type}): {str(e)}")
+            
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            self.voice_session = None
+            self.gemini_session = None
+            
+            # Exponential backoff for retries
+            self.connection_backoff = min(self.connection_backoff * 2, 30.0)  # Max 30 seconds
+            
             return False
     
-    async def process_audio(self, audio_data: bytes) -> bytes:
-        """Process incoming audio through the voice agent"""
+    async def _receive_response(self) -> bytes:
+        """Helper method to receive response from Gemini with proper error handling"""
+        response_audio = b""
+        
         try:
-            if not self.voice_session:
+            # Get a turn from the session
+            turn = self.gemini_session.receive()
+            # Iterate over responses in the turn
+            async for response in turn:
+                # Handle audio response
+                if hasattr(response, 'data') and response.data:
+                    # Try to use audio data directly first
+                    if isinstance(response.data, bytes):
+                        response_audio += response.data
+                        logger.info(f"📥 Received raw audio response from Gemini: {len(response.data)} bytes")
+                    elif isinstance(response.data, str):
+                        # If it's a string, try to decode as base64
+                        try:
+                            decoded_audio = base64.b64decode(response.data)
+                            response_audio += decoded_audio
+                            logger.info(f"📥 Received base64 audio response from Gemini: {len(decoded_audio)} bytes")
+                        except Exception as decode_error:
+                            logger.warning(f"Could not decode base64 audio: {decode_error}")
+                    
+                    # Handle text response (for logging)
+                    if hasattr(response, 'text') and response.text:
+                        self.session_logger.log_transcript(
+                            "assistant_response", response.text
+                        )
+                        logger.info(f"AI Response: {response.text}")
+                    
+                    # Handle server content (audio in server_content)
+                    if hasattr(response, 'server_content') and response.server_content:
+                        if hasattr(response.server_content, 'model_turn') and response.server_content.model_turn:
+                            for part in response.server_content.model_turn.parts:
+                                if hasattr(part, 'inline_data') and part.inline_data:
+                                    audio_data = part.inline_data.data
+                                    if isinstance(audio_data, bytes):
+                                        response_audio += audio_data
+                                        logger.info(f"📥 Received inline audio from Gemini: {len(audio_data)} bytes")
+                                    elif isinstance(audio_data, str):
+                                        try:
+                                            decoded_audio = base64.b64decode(audio_data)
+                                            response_audio += decoded_audio
+                                            logger.info(f"📥 Received base64 inline audio from Gemini: {len(decoded_audio)} bytes")
+                                        except:
+                                            pass
+                    
+                    # Break after receiving first response to avoid hanging
+                    # In a real conversation, there might be multiple responses, but for now we'll take the first
+                    if response_audio:
+                        break
+        
+        except Exception as e:
+            logger.error(f"Error in receive loop: {e}")
+            raise  # Re-raise to be handled by caller
+        
+        return response_audio
+    
+    async def process_audio(self, audio_data: bytes) -> bytes:
+        """Process incoming audio through the voice agent with improved error handling"""
+        try:
+            if not self.gemini_session:
                 logger.info("Voice session not initialized, attempting to initialize...")
                 if not await self.initialize_voice_session():
                     logger.error("Failed to initialize voice session")
@@ -1029,74 +1392,179 @@ class WindowsVoiceSession:
             
             # Convert telephony audio to Gemini format if needed
             processed_audio = self.convert_telephony_to_gemini(audio_data)
-            logger.debug(f"Sending audio chunk: {len(processed_audio)} bytes")
+            logger.info(f"🎙️ Processing audio chunk: {len(audio_data)} bytes → Gemini: {len(processed_audio)} bytes")
             
-            # Send audio to Gemini
-            await self.voice_session.send(
-                input={"data": processed_audio, "mime_type": "audio/pcm"}
-            )
-            
-            # Get response
-            response_audio = b""
-            turn = self.voice_session.receive()
-            async for response in turn:
-                if hasattr(response, 'data') and response.data:
-                    response_audio += response.data
-                    logger.debug(f"Received audio response: {len(response.data)} bytes")
-                if hasattr(response, 'text') and response.text:
-                    self.session_logger.log_transcript(
-                        "assistant_response", response.text
+            # Send audio to Gemini with connection error handling
+            send_success = False
+            for attempt in range(2):  # Try twice
+                try:
+                    # Send audio in the correct format for Gemini Live API
+                    await self.gemini_session.send(
+                        input={"data": processed_audio, "mime_type": "audio/pcm"}
                     )
-                    logger.info(f"AI Response: {response.text}")
+                    send_success = True
+                    break
+                except Exception as send_error:
+                    error_str = str(send_error)
+                    logger.error(f"Error sending audio to Gemini (attempt {attempt + 1}): {send_error}")
+                    
+                    # Handle specific WebSocket errors
+                    if "ConnectionClosedOK" in error_str or "ConnectionClosed" in error_str:
+                        logger.warning("🔌 WebSocket connection closed, attempting to reconnect...")
+                    elif "ConnectionResetError" in error_str:
+                        logger.warning("🔌 Connection reset by server, attempting to reconnect...")
+                    elif "TimeoutError" in error_str:
+                        logger.warning("⏱️ Connection timeout, attempting to reconnect...")
+                    else:
+                        logger.warning(f"🔧 Unexpected error type: {type(send_error).__name__}")
+                    
+                    # Try to reinitialize the session
+                    self.voice_session = None
+                    self.gemini_session = None
+                    if attempt == 0:  # Only retry once
+                        logger.info("Attempting to reinitialize voice session...")
+                        if await self.initialize_voice_session():
+                            logger.info("✅ Voice session reinitialized, retrying audio send...")
+                        else:
+                            logger.error("❌ Failed to reinitialize voice session")
+                            return b""
+                    else:
+                        logger.error("❌ Failed to send audio after retry")
+                        return b""
+            
+            if not send_success:
+                logger.error("❌ Unable to send audio to Gemini after retries")
+                return b""
+            
+            # Get response with timeout and better error handling
+            response_audio = b""
+            response_timeout = 5.0  # 5 second timeout for receiving response
+            
+            try:
+                # Add timeout to prevent hanging
+                receive_task = asyncio.create_task(self._receive_response())
+                try:
+                    response_audio = await asyncio.wait_for(receive_task, timeout=response_timeout)
+                except asyncio.TimeoutError:
+                    logger.warning(f"⏱️ Response timeout after {response_timeout}s - no response from Gemini")
+                    receive_task.cancel()
+                    return b""
+                    
+            except Exception as receive_error:
+                error_str = str(receive_error)
+                logger.error(f"Error receiving response from Gemini: {receive_error}")
+                
+                # Handle specific errors
+                if "ConnectionClosedOK" in error_str or "ConnectionClosed" in error_str:
+                    logger.warning("🔌 WebSocket connection closed while receiving response")
+                elif "ConnectionResetError" in error_str:
+                    logger.warning("🔌 Connection reset while receiving response")
+                else:
+                    logger.warning(f"🔧 Unexpected receive error: {type(receive_error).__name__}")
+                
+                # Close the session to force reinitialize on next call
+                self.voice_session = None
+                self.gemini_session = None
+                return b""
             
             # Convert back to telephony format
             if response_audio:
                 telephony_audio = self.convert_gemini_to_telephony(response_audio)
-                logger.debug(f"Converted to telephony format: {len(telephony_audio)} bytes")
+                logger.info(f"🔊 Converted to telephony format: {len(telephony_audio)} bytes - sending back via RTP")
                 return telephony_audio
             else:
-                logger.debug("No audio response received")
+                logger.debug("No audio response received from Gemini")
                 return b""
             
         except Exception as e:
             logger.error(f"Error processing audio: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
+            # Clear the session to force reinitialize
+            self.voice_session = None
+            self.gemini_session = None
             return b""
     
     def convert_telephony_to_gemini(self, audio_data: bytes) -> bytes:
         """Convert 8kHz telephony audio to 16kHz for Gemini"""
         try:
+            logger.debug(f"Converting {len(audio_data)} bytes from 8kHz to {SEND_SAMPLE_RATE}Hz")
             audio = AudioSegment(
                 data=audio_data,
-                sample_width=2,
-                frame_rate=8000,
-                channels=1
+                sample_width=2,  # 16-bit
+                frame_rate=8000,  # 8kHz input
+                channels=1       # Mono
             )
+            # Convert to Gemini's expected sample rate
             audio_16k = audio.set_frame_rate(SEND_SAMPLE_RATE)
-            return audio_16k.raw_data
-        except:
+            converted_data = audio_16k.raw_data
+            logger.debug(f"Converted to {len(converted_data)} bytes at {SEND_SAMPLE_RATE}Hz")
+            return converted_data
+        except Exception as e:
+            logger.error(f"Error converting telephony to Gemini audio: {e}")
             return audio_data
     
     def convert_gemini_to_telephony(self, audio_data: bytes) -> bytes:
         """Convert 24kHz Gemini audio to 8kHz for telephony"""
         try:
+            logger.debug(f"Converting {len(audio_data)} bytes from {RECEIVE_SAMPLE_RATE}Hz to 8kHz")
             audio = AudioSegment(
                 data=audio_data,
-                sample_width=2,
-                frame_rate=RECEIVE_SAMPLE_RATE,
-                channels=1
+                sample_width=2,  # 16-bit
+                frame_rate=RECEIVE_SAMPLE_RATE,  # Gemini's output rate
+                channels=1       # Mono
             )
+            # Convert to 8kHz for telephony
             audio_8k = audio.set_frame_rate(8000)
-            return audio_8k.raw_data
-        except:
+            converted_data = audio_8k.raw_data
+            logger.debug(f"Converted to {len(converted_data)} bytes at 8kHz")
+            return converted_data
+        except Exception as e:
+            logger.error(f"Error converting Gemini to telephony audio: {e}")
             return audio_data
     
-    async def cleanup(self):
-        """Clean up the session"""
+    def cleanup(self):
+        """Clean up the session synchronously"""
         try:
             if self.voice_session:
+                # Try to cleanup async voice session in a safe way
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    # Just set to None instead of trying to call __aexit__
+                    loop.run_until_complete(self._async_close_session())
+                    loop.close()
+                except Exception as e:
+                    logger.warning(f"Could not properly close voice session: {e}")
+                    
+            # Close voice session properly
+            self.voice_session = None
+            self.gemini_session = None
+            
+            self.session_logger.log_transcript("system", "Call ended")
+            self.session_logger.save_session()
+            self.session_logger.close()
+            
+        except Exception as e:
+            logger.error(f"Error cleaning up session: {e}")
+    
+    async def _async_close_session(self):
+        """Helper to close the voice session asynchronously"""
+        if self.voice_session:
+            try:
+                # Exit the context manager properly
                 await self.voice_session.__aexit__(None, None, None)
+                logger.info("✅ Voice session context closed properly")
+            except Exception as e:
+                logger.warning(f"Error closing voice session: {e}")
+            finally:
+                self.voice_session = None
+                self.gemini_session = None
+    
+    async def async_cleanup(self):
+        """Clean up the session asynchronously"""
+        try:
+            await self._async_close_session()
             
             self.session_logger.log_transcript("system", "Call ended")
             self.session_logger.save_session()
