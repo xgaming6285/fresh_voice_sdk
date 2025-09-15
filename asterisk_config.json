@@ -1,19 +1,25 @@
 {
-  "host": "192.168.2.50",
-  "username": "gsm2",
-  "password": "123123",
-  "sip_port": 7070,
+  "host": "192.168.50.50",
+  "username": "voice-agent",
+  "password": "voice-agent123",
+  "voice_agent_ip": "192.168.50.159",
+  "public_ip": "78.130.238.50",
+  "sip_port": 5060,
   "ari_port": 8088,
   "ari_username": "asterisk",
   "ari_password": "asterisk",
   "context": "voice-agent",
+  "phone_number": "+359898995151",
+  "local_ip": "192.168.50.159",
+  "gateway_ip": "192.168.50.1",
   "sip_settings": {
     "user_agent": "VoiceAgent/1.0",
     "register_timeout": 300,
-    "registration_uri": "sip:gsm2@192.168.2.50:7070",
-    "proxy_uri": "sip:192.168.2.50:7070",
+    "registration_uri": "sip:voice-agent@192.168.50.50:5060",
+    "proxy_uri": "sip:192.168.50.50:5060",
     "dtmf_mode": "rfc2833",
-    "nat": "yes"
+    "nat": "yes",
+    "allow_codecs": ["ulaw", "alaw", "g722"]
   },
   "voice_agent_settings": {
     "greeting_message": "Hello! I'm your AI voice assistant. How can I help you today?",

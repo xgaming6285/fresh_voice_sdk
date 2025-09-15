@@ -1,0 +1,38 @@
+# Windows-specific requirements for VoIP Voice Agent
+# Core dependencies
+fastapi>=0.104.1
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+websockets>=12.0
+
+# Audio processing
+pyaudio>=0.2.11
+pydub>=0.25.1
+
+# Google AI
+google-genai>=0.1.0
+
+# Data handling
+requests>=2.31.0
+python-dotenv>=1.0.0
+
+# MongoDB (optional)
+pymongo>=4.6.0
+
+# Image processing (for camera mode)
+opencv-python>=4.8.1.78
+Pillow>=10.1.0
+mss>=9.0.1
+
+# Audio format support
+# Note: For MP3 support, you may need to install ffmpeg separately
+# Download from: https://ffmpeg.org/download.html#build-windows
+# Or use chocolatey: choco install ffmpeg
+
+# Windows-specific audio libraries (may be needed)
+# pywin32>=306  # Uncomment if needed for Windows audio APIs
+
+# Development tools (optional)
+# pytest>=7.4.3
+# black>=23.11.0
+# flake8>=6.1.0

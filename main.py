@@ -92,7 +92,7 @@ client = genai.Client(http_options={"api_version": "v1beta"})
 
 CONFIG = {
     "response_modalities": ["AUDIO"], 
-    "speech_config": {"voice_config": {"prebuilt_voice_config": {"voice_name": "Puck"}}}
+    "speech_config": {"voice_config": {"prebuilt_voice_config": {"voice_name": "Charon"}}}
 }
 
 pya = pyaudio.PyAudio()
