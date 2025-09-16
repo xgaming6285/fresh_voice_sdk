@@ -225,7 +225,7 @@ class RTPSession:
     def _process_audio_queue(self):
         """Process queued audio through voice session with improved async handling"""
         audio_buffer = b""
-        chunk_size = 1600  # 100ms at 8kHz, 16-bit = 1600 bytes
+        chunk_size = 3200  # 200ms at 8kHz, 16-bit = 3200 bytes - larger for less processing overhead
         
         # Create dedicated event loop for this thread
         loop = asyncio.new_event_loop()
@@ -253,8 +253,8 @@ class RTPSession:
             # Start receive task for continuous response handling
             receive_task = asyncio.create_task(self._continuous_receive_responses())
             
-            # Use reasonable chunk size for good quality
-            chunk_size = 1600  # 100ms at 8kHz, 16-bit = 1600 bytes
+            # Use larger chunk size for better quality and lower latency
+            chunk_size = 3200  # 200ms at 8kHz, 16-bit = 3200 bytes
             
             while self.processing:
                 try:
@@ -265,7 +265,7 @@ class RTPSession:
                         audio_buffer += audio_chunk
                     except queue.Empty:
                         # No audio available, wait a bit and continue
-                        await asyncio.sleep(0.1)
+                        await asyncio.sleep(0.01)  # Reduced from 0.1 to 0.01 for lower latency
                         
                         # Process remaining buffer if we have some audio but not enough for full chunk
                         if len(audio_buffer) > 0 and self.voice_session.gemini_session:
@@ -284,7 +284,7 @@ class RTPSession:
                         
                 except Exception as e:
                     logger.error(f"Error in async audio processing: {e}")
-                    await asyncio.sleep(0.1)  # Brief pause before retrying
+                    await asyncio.sleep(0.05)  # Reduced pause before retrying
                     
         except Exception as e:
             logger.error(f"Error in async audio queue processing: {e}")
@@ -343,13 +343,8 @@ class RTPSession:
                                                     # Convert and send in smaller chunks
                                                     telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_bytes)
                                                     
-                                                    # Send in smaller chunks with slight pacing
-                                                    chunk_size = 480  # 60ms worth of audio at 8kHz
-                                                    for i in range(0, len(telephony_audio), chunk_size):
-                                                        chunk = telephony_audio[i:i + chunk_size]
-                                                        self.send_audio(chunk)
-                                                        # Small delay between chunks
-                                                        await asyncio.sleep(0.06)  # 60ms delay
+                                                    # Send audio immediately without chunking delays
+                                                    self.send_audio(telephony_audio)
                                                 except Exception as e:
                                                     logger.error(f"Error decoding base64 audio: {e}")
                                             elif isinstance(audio_data, bytes):
@@ -357,13 +352,8 @@ class RTPSession:
                                                 # Convert and send in smaller chunks to avoid overwhelming the receiver
                                                 telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_data)
                                                 
-                                                # Send in smaller chunks with slight pacing
-                                                chunk_size = 480  # 60ms worth of audio at 8kHz
-                                                for i in range(0, len(telephony_audio), chunk_size):
-                                                    chunk = telephony_audio[i:i + chunk_size]
-                                                    self.send_audio(chunk)
-                                                    # Small delay between chunks
-                                                    await asyncio.sleep(0.06)  # 60ms delay
+                                                # Send audio immediately without chunking delays
+                                                self.send_audio(telephony_audio)
                                     
                                     # Also handle text parts for logging
                                     if hasattr(part, 'text') and part.text:
@@ -377,23 +367,15 @@ class RTPSession:
                             if isinstance(response.data, bytes):
                                 logger.info(f"📥 Received {len(response.data)} bytes of audio from Gemini (direct)")
                                 telephony_audio = self.voice_session.convert_gemini_to_telephony(response.data)
-                                # Send in smaller chunks
-                                chunk_size = 480  # 60ms worth of audio at 8kHz
-                                for i in range(0, len(telephony_audio), chunk_size):
-                                    chunk = telephony_audio[i:i + chunk_size]
-                                    self.send_audio(chunk)
-                                    await asyncio.sleep(0.06)  # 60ms delay
+                                # Send audio immediately
+                                self.send_audio(telephony_audio)
                             elif isinstance(response.data, str):
                                 try:
                                     audio_bytes = base64.b64decode(response.data)
                                     logger.info(f"📥 Received {len(audio_bytes)} bytes of audio from Gemini (direct base64)")
                                     telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_bytes)
-                                    # Send in smaller chunks
-                                    chunk_size = 480  # 60ms worth of audio at 8kHz
-                                    for i in range(0, len(telephony_audio), chunk_size):
-                                        chunk = telephony_audio[i:i + chunk_size]
-                                        self.send_audio(chunk)
-                                        await asyncio.sleep(0.06)  # 60ms delay
+                                    # Send audio immediately
+                                    self.send_audio(telephony_audio)
                                 except:
                                     pass
                         
@@ -412,7 +394,7 @@ class RTPSession:
             except Exception as e:
                 if self.processing:  # Only log if we're still processing
                     logger.error(f"Error receiving from Gemini: {e}")
-                    await asyncio.sleep(0.1)  # Brief pause before retrying
+                    await asyncio.sleep(0.05)  # Reduced pause before retrying
                     
         logger.info("🎧 Stopped continuous response receiver")
     
@@ -433,8 +415,8 @@ class RTPSession:
     
     def _process_output_queue(self):
         """Process output queue with proper RTP pacing"""
-        packet_size = 160  # 20ms of μ-law audio at 8kHz
-        packet_duration_s = 0.020  # 20ms per packet
+        packet_size = 320  # 40ms of μ-law audio at 8kHz - larger packets for less overhead
+        packet_duration_s = 0.040  # 40ms per packet
         last_packet_time = time.time()
         
         while self.processing:
@@ -1256,36 +1238,9 @@ class WindowsVoiceSession:
             # Wait a bit to ensure the connection is fully established
             await asyncio.sleep(0.1)
             
-            # Wait for connection to stabilize
-            await asyncio.sleep(0.5)
-            
-            # Send initial audio to trigger greeting immediately
-            # Use a short burst of very quiet noise instead of pure silence
-            logger.info(f"🔇 Triggering initial greeting...")
-            try:
-                # Create 1 second of very quiet noise at 16kHz
-                import random
-                noise_duration_ms = 1000
-                noise_samples = int(SEND_SAMPLE_RATE * noise_duration_ms / 1000)
-                # Very low amplitude noise (±1 on 16-bit scale)
-                noise_audio = bytes([random.randint(0, 1) for _ in range(noise_samples * 2)])
-                
-                # Send the noise to trigger Gemini
-                await self.gemini_session.send(
-                    input={"data": noise_audio, "mime_type": "audio/pcm"}
-                )
-                
-                # Small pause
-                await asyncio.sleep(0.1)
-                
-                # Now send explicit instruction
-                await self.gemini_session.send(
-                    text="Start the conversation by greeting the caller with 'Hello, how can I help you today?'"
-                )
-                
-                logger.info("✅ Initial greeting triggered")
-            except Exception as e:
-                logger.warning(f"Failed to send initial prompt: {e}")
+            # Skip the initial greeting trigger to reduce startup delay
+            # The AI will respond naturally when it receives actual caller audio
+            logger.info(f"🎤 Voice session ready - waiting for caller audio...")
             
             logger.info(f"🎤 Waiting for caller audio to trigger AI responses...")
             
@@ -1438,17 +1393,11 @@ class WindowsVoiceSession:
             
             # Get response with timeout and better error handling
             response_audio = b""
-            response_timeout = 5.0  # 5 second timeout for receiving response
+            response_timeout = 2.0  # Reduced timeout for faster response
             
             try:
-                # Add timeout to prevent hanging
-                receive_task = asyncio.create_task(self._receive_response())
-                try:
-                    response_audio = await asyncio.wait_for(receive_task, timeout=response_timeout)
-                except asyncio.TimeoutError:
-                    logger.warning(f"⏱️ Response timeout after {response_timeout}s - no response from Gemini")
-                    receive_task.cancel()
-                    return b""
+                # Receive response without timeout for continuous streaming
+                response_audio = await self._receive_response()
                     
             except Exception as receive_error:
                 error_str = str(receive_error)
@@ -1486,7 +1435,7 @@ class WindowsVoiceSession:
             return b""
     
     def convert_telephony_to_gemini(self, audio_data: bytes) -> bytes:
-        """Convert 8kHz telephony audio to 16kHz for Gemini"""
+        """Convert 8kHz telephony audio to 16kHz for Gemini with better quality"""
         try:
             logger.debug(f"Converting {len(audio_data)} bytes from 8kHz to {SEND_SAMPLE_RATE}Hz")
             audio = AudioSegment(
@@ -1495,6 +1444,8 @@ class WindowsVoiceSession:
                 frame_rate=8000,  # 8kHz input
                 channels=1       # Mono
             )
+            # Apply slight volume boost to improve clarity
+            audio = audio + 3  # +3 dB boost
             # Convert to Gemini's expected sample rate
             audio_16k = audio.set_frame_rate(SEND_SAMPLE_RATE)
             converted_data = audio_16k.raw_data
@@ -1505,7 +1456,7 @@ class WindowsVoiceSession:
             return audio_data
     
     def convert_gemini_to_telephony(self, audio_data: bytes) -> bytes:
-        """Convert 24kHz Gemini audio to 8kHz for telephony"""
+        """Convert 24kHz Gemini audio to 8kHz for telephony with better quality"""
         try:
             logger.debug(f"Converting {len(audio_data)} bytes from {RECEIVE_SAMPLE_RATE}Hz to 8kHz")
             audio = AudioSegment(
@@ -1514,8 +1465,14 @@ class WindowsVoiceSession:
                 frame_rate=RECEIVE_SAMPLE_RATE,  # Gemini's output rate
                 channels=1       # Mono
             )
+            # Apply compression to improve clarity over telephone
+            audio = audio.compress_dynamic_range(threshold=-20.0, ratio=4.0, attack=5.0, release=50.0)
+            # Apply slight volume boost
+            audio = audio + 2  # +2 dB boost
             # Convert to 8kHz for telephony
             audio_8k = audio.set_frame_rate(8000)
+            # Apply low-pass filter to remove artifacts
+            audio_8k = audio_8k.low_pass_filter(3400)  # Standard telephony cutoff
             converted_data = audio_8k.raw_data
             logger.debug(f"Converted to {len(converted_data)} bytes at 8kHz")
             return converted_data
