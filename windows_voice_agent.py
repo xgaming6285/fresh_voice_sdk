@@ -71,7 +71,7 @@ VOICE_CONFIG = {
     "system_instruction": {
         "parts": [
             {
-                "text": "You are a helpful AI voice assistant answering phone calls. Start by greeting the caller with 'Hello, how can I help you today?' Keep responses conversational and concise since this is a voice-only interaction. Speak clearly with good enunciation, at a moderate pace, and avoid mumbling or speaking too softly. Project your voice as if speaking over a phone line."
+                "text": "You are a helpful AI voice assistant answering phone calls in Bulgarian. Start by greeting the caller with 'Здравейте, как мога да Ви помогна днес?' Always respond in Bulgarian language. Keep responses conversational and concise since this is a voice-only interaction. Speak clearly with good enunciation, at a moderate pace, and avoid mumbling or speaking too softly. Project your voice as if speaking over a phone line. Use formal Bulgarian address (Вие) when speaking to callers."
             }
         ]
     }
@@ -240,7 +240,7 @@ class RTPSession:
     def _process_audio_queue(self):
         """Process queued audio through voice session with improved async handling"""
         audio_buffer = b""
-        chunk_size = 3200  # 200ms at 8kHz, 16-bit = 3200 bytes - larger for less processing overhead
+        chunk_size = 320  # 20ms at 8kHz for immediate processing
         
         # Create dedicated event loop for this thread
         loop = asyncio.new_event_loop()
@@ -268,14 +268,14 @@ class RTPSession:
             # Start receive task for continuous response handling
             receive_task = asyncio.create_task(self._continuous_receive_responses())
             
-            # Use consistent chunk size for predictable latency
-            # 80ms chunks provide good balance between latency and quality
-            chunk_size = 1280  # 80ms at 8kHz, 16-bit = 1280 bytes
-            min_chunk_size = 640  # 40ms minimum to avoid too small chunks
+            # Use smaller chunk size for lower latency
+            # 20ms chunks for immediate response
+            chunk_size = 320  # 20ms at 8kHz, 16-bit = 320 bytes
+            min_chunk_size = 160  # 10ms minimum - send as soon as possible
             
-            # Track timing for consistent chunk delivery
+            # No artificial timing delays - send immediately
             last_send_time = time.time()
-            target_interval = 0.08  # 80ms between chunks
+            target_interval = 0  # No delay between chunks
             
             while self.processing:
                 try:
@@ -285,40 +285,28 @@ class RTPSession:
                         audio_chunk = self.audio_queue.get_nowait()
                         audio_buffer += audio_chunk
                     except queue.Empty:
-                        # No audio available, wait a bit and continue
-                        await asyncio.sleep(0.005)  # Even shorter sleep for lower latency
-                        
-                        # Process remaining buffer if we have some audio but not enough for full chunk
+                        # Process immediately if we have any audio
                         if len(audio_buffer) >= min_chunk_size and self.voice_session.gemini_session:
-                            # Pad to chunk size for consistency
-                            if len(audio_buffer) < chunk_size:
-                                # Pad with silence instead of waiting
-                                padding_needed = chunk_size - len(audio_buffer)
-                                audio_buffer += b'\x00\x00' * (padding_needed // 2)
-                            
-                            await self._send_audio_to_gemini(audio_buffer[:chunk_size])
-                            audio_buffer = audio_buffer[chunk_size:] if len(audio_buffer) > chunk_size else b""
+                            # Send whatever we have immediately - no padding needed
+                            await self._send_audio_to_gemini(audio_buffer)
+                            audio_buffer = b""
+                        else:
+                            # Only sleep if we have no audio at all
+                            await asyncio.sleep(0.001)  # Minimal sleep just to yield
                         continue
                     
-                    # Process when we have enough audio
+                    # Process audio immediately without timing delays
                     while len(audio_buffer) >= chunk_size:
-                        # Ensure consistent timing between chunks
-                        current_time = time.time()
-                        time_since_last = current_time - last_send_time
-                        if time_since_last < target_interval:
-                            await asyncio.sleep(target_interval - time_since_last)
-                        
                         chunk_to_process = audio_buffer[:chunk_size]
                         audio_buffer = audio_buffer[chunk_size:]
                         
-                        # Send audio to Gemini (don't wait for response)
+                        # Send audio to Gemini immediately
                         if self.voice_session.gemini_session:
                             await self._send_audio_to_gemini(chunk_to_process)
-                            last_send_time = time.time()
                         
                 except Exception as e:
                     logger.error(f"Error in async audio processing: {e}")
-                    await asyncio.sleep(0.05)  # Reduced pause before retrying
+                    await asyncio.sleep(0.01)  # Minimal retry delay
                     
         except Exception as e:
             logger.error(f"Error in async audio queue processing: {e}")
@@ -377,20 +365,8 @@ class RTPSession:
                                                     # Convert and send in smaller chunks
                                                     telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_bytes)
                                                     
-                                                    # Buffer small chunks to avoid fragmentation
-                                                    if len(telephony_audio) < 160:  # Less than 20ms
-                                                        # Store in buffer for later
-                                                        if not hasattr(self, '_audio_buffer'):
-                                                            self._audio_buffer = b""
-                                                        self._audio_buffer += telephony_audio
-                                                        
-                                                        # Send when we have enough
-                                                        if len(self._audio_buffer) >= 160:
-                                                            self.send_audio(self._audio_buffer)
-                                                            self._audio_buffer = b""
-                                                    else:
-                                                        # Send immediately if large enough
-                                                        self.send_audio(telephony_audio)
+                                                    # Send immediately for lowest latency
+                                                    self.send_audio(telephony_audio)
                                                 except Exception as e:
                                                     logger.error(f"Error decoding base64 audio: {e}")
                                             elif isinstance(audio_data, bytes):
@@ -398,20 +374,8 @@ class RTPSession:
                                                 # Convert and send in smaller chunks to avoid overwhelming the receiver
                                                 telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_data)
                                                 
-                                                # Buffer small chunks to avoid fragmentation
-                                                if len(telephony_audio) < 160:  # Less than 20ms
-                                                    # Store in buffer for later
-                                                    if not hasattr(self, '_audio_buffer'):
-                                                        self._audio_buffer = b""
-                                                    self._audio_buffer += telephony_audio
-                                                    
-                                                    # Send when we have enough
-                                                    if len(self._audio_buffer) >= 160:
-                                                        self.send_audio(self._audio_buffer)
-                                                        self._audio_buffer = b""
-                                                else:
-                                                    # Send immediately if large enough
-                                                    self.send_audio(telephony_audio)
+                                                # Send immediately for lowest latency
+                                                self.send_audio(telephony_audio)
                                     
                                     # Also handle text parts for logging
                                     if hasattr(part, 'text') and part.text:
@@ -425,31 +389,15 @@ class RTPSession:
                             if isinstance(response.data, bytes):
                                 logger.info(f"📥 Received {len(response.data)} bytes of audio from Gemini (direct)")
                                 telephony_audio = self.voice_session.convert_gemini_to_telephony(response.data)
-                                # Apply same buffering logic
-                                if len(telephony_audio) < 160:  # Less than 20ms
-                                    if not hasattr(self, '_audio_buffer'):
-                                        self._audio_buffer = b""
-                                    self._audio_buffer += telephony_audio
-                                    if len(self._audio_buffer) >= 160:
-                                        self.send_audio(self._audio_buffer)
-                                        self._audio_buffer = b""
-                                else:
-                                    self.send_audio(telephony_audio)
+                                # Send immediately for lowest latency
+                                self.send_audio(telephony_audio)
                             elif isinstance(response.data, str):
                                 try:
                                     audio_bytes = base64.b64decode(response.data)
                                     logger.info(f"📥 Received {len(audio_bytes)} bytes of audio from Gemini (direct base64)")
                                     telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_bytes)
-                                    # Apply same buffering logic
-                                    if len(telephony_audio) < 160:  # Less than 20ms
-                                        if not hasattr(self, '_audio_buffer'):
-                                            self._audio_buffer = b""
-                                        self._audio_buffer += telephony_audio
-                                        if len(self._audio_buffer) >= 160:
-                                            self.send_audio(self._audio_buffer)
-                                            self._audio_buffer = b""
-                                    else:
-                                        self.send_audio(telephony_audio)
+                                    # Send immediately for lowest latency
+                                    self.send_audio(telephony_audio)
                                 except:
                                     pass
                         
@@ -468,7 +416,7 @@ class RTPSession:
             except Exception as e:
                 if self.processing:  # Only log if we're still processing
                     logger.error(f"Error receiving from Gemini: {e}")
-                    await asyncio.sleep(0.05)  # Reduced pause before retrying
+                    await asyncio.sleep(0.01)  # Minimal retry delay
                     
         logger.info("🎧 Stopped continuous response receiver")
     
@@ -480,20 +428,9 @@ class RTPSession:
             # Convert PCM to μ-law for transmission
             ulaw_data = self.pcm_to_ulaw(audio_data)
             
-            # Split large audio chunks into smaller pieces for smoother delivery
-            # This prevents large chunks from causing audio glitches
-            chunk_size = 320  # 40ms of μ-law audio at 8kHz
-            
-            if len(ulaw_data) > chunk_size:
-                # Split into smaller chunks
-                for i in range(0, len(ulaw_data), chunk_size):
-                    chunk = ulaw_data[i:i + chunk_size]
-                    self.output_queue.put(chunk)
-                logger.info(f"📤 Queued {len(ulaw_data)} bytes as {len(ulaw_data)//chunk_size + 1} chunks for RTP transmission")
-            else:
-                # Small enough to send as-is
-                self.output_queue.put(ulaw_data)
-                logger.info(f"📤 Queued {len(ulaw_data)} bytes for RTP transmission")
+            # Send audio immediately without chunking for lowest latency
+            self.output_queue.put(ulaw_data)
+            logger.debug(f"📤 Queued {len(ulaw_data)} bytes for immediate RTP transmission")
             
         except Exception as e:
             logger.error(f"Error queueing audio: {e}")
@@ -514,15 +451,15 @@ class RTPSession:
         
         # Buffer to accumulate audio for smoother delivery
         audio_buffer = b""
-        buffer_threshold = packet_size * 3  # Buffer 60ms for better smoothing
+        buffer_threshold = packet_size  # Send immediately - only buffer 1 packet
         
         # Silence/comfort noise for gaps
         silence_counter = 0
-        max_silence_packets = 5  # Send up to 100ms of silence
+        max_silence_packets = 2  # Only 40ms of silence max
         
-        # Adaptive pacing variables
-        jitter_buffer_size = 2  # Start with 2 packets buffer
-        max_jitter_buffer = 5   # Maximum 5 packets
+        # Minimal buffering for lowest latency
+        jitter_buffer_size = 1  # Minimal buffer
+        max_jitter_buffer = 2   # Maximum 2 packets
         
         # Statistics for adaptive adjustment
         late_packets = 0
@@ -530,13 +467,12 @@ class RTPSession:
         
         while self.processing:
             try:
-                # Adaptive timeout based on buffer state
+                # Use minimal timeout for immediate processing
                 buffer_packets = len(audio_buffer) // packet_size
-                timeout = 0.005 if buffer_packets < jitter_buffer_size else 0.020
                 
-                # Get audio from queue with adaptive timeout
+                # Get audio from queue with minimal timeout
                 try:
-                    audio_data = self.output_queue.get(timeout=timeout)
+                    audio_data = self.output_queue.get(timeout=0.001)  # 1ms timeout for responsiveness
                     audio_buffer += audio_data
                     silence_counter = 0  # Reset silence counter when we get audio
                     
@@ -842,9 +778,7 @@ class WindowsSIPHandler:
             self.socket.sendto(ringing_response.encode(), addr)
             logger.info("🔔 180 Ringing sent")
             
-            # Brief delay before 200 OK
-            import time
-            time.sleep(1)
+            # Send 200 OK immediately - no delay needed
             
             # Send 200 OK response
             logger.info("📤 Sending 200 OK response...")
@@ -1458,10 +1392,7 @@ class WindowsVoiceSession:
             self.connection_attempts = 0
             self.connection_backoff = 1.0
             
-            # Wait a bit to ensure the connection is fully established
-            await asyncio.sleep(0.1)
-            
-            # Skip the initial greeting trigger to reduce startup delay
+            # Connection is ready immediately - no delay needed
             # The AI will respond naturally when it receives actual caller audio
             logger.info(f"🎤 Voice session ready - waiting for caller audio...")
             
@@ -1703,42 +1634,21 @@ class WindowsVoiceSession:
                 channels=1       # Mono
             )
             
-            # Step 1: Apply pre-emphasis to boost high frequencies before downsampling
-            # This compensates for the loss of clarity in telephony systems
-            from pydub.effects import high_pass_filter
-            audio = high_pass_filter(audio, 50)  # Remove subsonic frequencies
+            # Simplified pipeline for lowest latency
             
-            # Step 2: Apply dynamic range compression for consistent levels
-            audio = self._apply_dynamic_compression(audio)
+            # Step 1: Simple anti-aliasing before downsampling
+            audio = audio.low_pass_filter(3800)  # Standard Nyquist for 8kHz
             
-            # Step 3: Apply anti-aliasing filter with optimal cutoff
-            # Use a Butterworth filter approximation for smoother rolloff
-            audio = audio.low_pass_filter(3500)  # Slightly higher for voice clarity
-            
-            # Step 4: Convert to 8kHz using high-quality resampling
+            # Step 2: Convert to 8kHz
             audio_8k = audio.set_frame_rate(target_rate)
             
-            # Step 5: Apply telephony band-pass filter with optimized parameters
-            from pydub.effects import band_pass_filter
-            audio_8k = band_pass_filter(audio_8k, 300, 3400)
+            # Step 3: Simple normalization instead of complex AGC
+            if audio_8k.dBFS < -25:
+                audio_8k = audio_8k + 10  # Boost quiet audio
+            elif audio_8k.dBFS > -3:
+                audio_8k = audio_8k - (audio_8k.dBFS + 3)  # Prevent clipping
             
-            # Step 6: Apply automatic gain control (AGC)
-            audio_8k = self._apply_agc(audio_8k)
-            
-            # Step 7: Apply de-emphasis to restore natural sound
-            # Compensate for telephony system emphasis
-            audio_8k = audio_8k.low_pass_filter(3000)
-            
-            # Step 8: Apply crossfade if we have previous audio
-            if hasattr(self, '_last_audio_tail') and self._last_audio_tail:
-                audio_8k = self._apply_crossfade(audio_8k, self._last_audio_tail)
-            
-            # Store tail for next crossfade
-            if len(audio_8k) > 10:  # Store last 10ms for crossfade
-                tail_samples = int(0.01 * target_rate * 2)  # 10ms of 16-bit samples
-                self._last_audio_tail = audio_8k.raw_data[-tail_samples:]
-            
-            # Step 9: Apply final limiting to prevent any clipping
+            # Step 4: Final safety check to prevent any clipping
             if audio_8k.max_dBFS > -1:
                 audio_8k = audio_8k.apply_gain(-audio_8k.max_dBFS - 1)
             
