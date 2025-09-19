@@ -17,6 +17,7 @@ import threading
 import time
 import audioop
 import os
+import re
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
@@ -61,23 +62,178 @@ app.add_middleware(
 active_sessions: Dict[str, Dict] = {}
 voice_client = genai.Client(http_options={"api_version": "v1beta"})
 
-VOICE_CONFIG = {
-    "response_modalities": ["AUDIO"],
-    "speech_config": {
-        "voice_config": {
-            "prebuilt_voice_config": {
-                "voice_name": "Puck"
-            }
-        }
-    },
-    "system_instruction": {
-        "parts": [
-            {
-                "text": "You are a helpful AI voice assistant answering phone calls in Bulgarian. The caller has already been greeted, so respond directly to their questions or requests. Always respond in Bulgarian language. Keep responses conversational and concise since this is a voice-only interaction. Speak clearly with good enunciation, at a moderate pace, and avoid mumbling or speaking too softly. Project your voice as if speaking over a phone line. Use formal Bulgarian address (Вие) when speaking to callers."
-            }
-        ]
-    }
+# Country code to language mapping
+COUNTRY_LANGUAGE_MAP = {
+    # European countries
+    'BG': {'lang': 'Bulgarian', 'code': 'bg', 'formal_address': 'Вие'},
+    'RO': {'lang': 'Romanian', 'code': 'ro', 'formal_address': 'Dumneavoastră'},
+    'GR': {'lang': 'Greek', 'code': 'el', 'formal_address': 'Εσείς'},
+    'RS': {'lang': 'Serbian', 'code': 'sr', 'formal_address': 'Ви'},
+    'MK': {'lang': 'Macedonian', 'code': 'mk', 'formal_address': 'Вие'},
+    'AL': {'lang': 'Albanian', 'code': 'sq', 'formal_address': 'Ju'},
+    'TR': {'lang': 'Turkish', 'code': 'tr', 'formal_address': 'Siz'},
+    'DE': {'lang': 'German', 'code': 'de', 'formal_address': 'Sie'},
+    'IT': {'lang': 'Italian', 'code': 'it', 'formal_address': 'Lei'},
+    'ES': {'lang': 'Spanish', 'code': 'es', 'formal_address': 'Usted'},
+    'FR': {'lang': 'French', 'code': 'fr', 'formal_address': 'Vous'},
+    'GB': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    'IE': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    'NL': {'lang': 'Dutch', 'code': 'nl', 'formal_address': 'U'},
+    'BE': {'lang': 'Dutch', 'code': 'nl', 'formal_address': 'U'},
+    'AT': {'lang': 'German', 'code': 'de', 'formal_address': 'Sie'},
+    'CH': {'lang': 'German', 'code': 'de', 'formal_address': 'Sie'},
+    'PL': {'lang': 'Polish', 'code': 'pl', 'formal_address': 'Pan/Pani'},
+    'CZ': {'lang': 'Czech', 'code': 'cs', 'formal_address': 'Vy'},
+    'SK': {'lang': 'Slovak', 'code': 'sk', 'formal_address': 'Vy'},
+    'HU': {'lang': 'Hungarian', 'code': 'hu', 'formal_address': 'Ön'},
+    'HR': {'lang': 'Croatian', 'code': 'hr', 'formal_address': 'Vi'},
+    'SI': {'lang': 'Slovenian', 'code': 'sl', 'formal_address': 'Vi'},
+    'PT': {'lang': 'Portuguese', 'code': 'pt', 'formal_address': 'Você'},
+    # Other regions
+    'US': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    'CA': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    'AU': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    'RU': {'lang': 'Russian', 'code': 'ru', 'formal_address': 'Вы'},
+    'UA': {'lang': 'Ukrainian', 'code': 'uk', 'formal_address': 'Ви'},
+    'BY': {'lang': 'Russian', 'code': 'ru', 'formal_address': 'Вы'},
 }
+
+# Phone number prefixes to country mapping (simplified)
+PHONE_COUNTRY_MAP = {
+    # Bulgaria
+    '+359': 'BG', '359': 'BG',
+    # Romania  
+    '+40': 'RO', '40': 'RO',
+    # Greece
+    '+30': 'GR', '30': 'GR',
+    # Serbia
+    '+381': 'RS', '381': 'RS',
+    # North Macedonia
+    '+389': 'MK', '389': 'MK',
+    # Albania
+    '+355': 'AL', '355': 'AL',
+    # Turkey
+    '+90': 'TR', '90': 'TR',
+    # Germany
+    '+49': 'DE', '49': 'DE',
+    # Italy
+    '+39': 'IT', '39': 'IT',
+    # Spain
+    '+34': 'ES', '34': 'ES',
+    # France
+    '+33': 'FR', '33': 'FR',
+    # UK
+    '+44': 'GB', '44': 'GB',
+    # Netherlands
+    '+31': 'NL', '31': 'NL',
+    # Austria
+    '+43': 'AT', '43': 'AT',
+    # Switzerland
+    '+41': 'CH', '41': 'CH',
+    # Poland
+    '+48': 'PL', '48': 'PL',
+    # Czech Republic
+    '+420': 'CZ', '420': 'CZ',
+    # Slovakia
+    '+421': 'SK', '421': 'SK',
+    # Hungary
+    '+36': 'HU', '36': 'HU',
+    # Croatia
+    '+385': 'HR', '385': 'HR',
+    # Slovenia
+    '+386': 'SI', '386': 'SI',
+    # Portugal
+    '+351': 'PT', '351': 'PT',
+    # USA
+    '+1': 'US', '1': 'US',
+    # Russia
+    '+7': 'RU', '7': 'RU',
+    # Ukraine
+    '+380': 'UA', '380': 'UA',
+    # Belarus
+    '+375': 'BY', '375': 'BY',
+}
+
+def detect_caller_country(phone_number: str) -> str:
+    """
+    Detect caller's country from phone number.
+    Returns country code (e.g., 'BG', 'RO') or 'BG' as default.
+    """
+    if not phone_number or phone_number == "Unknown":
+        logger.info(f"📍 No phone number provided, defaulting to Bulgaria")
+        return 'BG'  # Default to Bulgaria
+    
+    logger.debug(f"📍 Analyzing phone number: {phone_number}")
+    
+    # Clean the phone number - keep + and digits only
+    clean_number = re.sub(r'[^0-9+]', '', phone_number)
+    
+    # Handle different number formats
+    # If it starts with 00, replace with +
+    if clean_number.startswith('00'):
+        clean_number = '+' + clean_number[2:]
+    
+    # If it doesn't start with + and is long enough, try adding +
+    elif not clean_number.startswith('+') and len(clean_number) > 7:
+        clean_number = '+' + clean_number
+    
+    logger.debug(f"📍 Cleaned phone number: {clean_number}")
+    
+    # Check for exact matches first (longer prefixes first)
+    sorted_prefixes = sorted(PHONE_COUNTRY_MAP.keys(), key=len, reverse=True)
+    
+    for prefix in sorted_prefixes:
+        if clean_number.startswith(prefix):
+            country = PHONE_COUNTRY_MAP[prefix]
+            logger.info(f"📍 ✅ Detected country {country} from phone number {phone_number} → {clean_number} (matched prefix: {prefix})")
+            return country
+    
+    # If no match found, default to Bulgaria
+    logger.warning(f"📍 ⚠️ Could not detect country from phone number {phone_number} → {clean_number}, defaulting to Bulgaria")
+    return 'BG'
+
+def get_language_config(country_code: str) -> Dict[str, Any]:
+    """
+    Get language configuration for a country.
+    Returns language info or Bulgarian as default.
+    """
+    return COUNTRY_LANGUAGE_MAP.get(country_code, COUNTRY_LANGUAGE_MAP['BG'])
+
+def create_voice_config(language_info: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Create dynamic voice configuration based on detected language.
+    """
+    lang_name = language_info['lang']
+    formal_address = language_info['formal_address']
+    
+    # Create system instruction in the detected language
+    if lang_name == 'English':
+        system_text = f"You are an expert affiliate marketing consultant answering phone calls in {lang_name}. The caller has already been greeted, so respond directly to their questions or requests. You specialize in affiliate marketing strategies, lead generation, FTDs (First Time Deposits), CPA networks, affiliate networks, commission structures, traffic generation, conversion optimization, and building successful affiliate campaigns. You have deep knowledge of performance marketing, lead qualification, deposit optimization for trading/forex/fintech offers, working with affiliate networks like MaxBounty, ClickBank, ShareASale, and CPA networks. Share actionable insights about choosing profitable verticals, generating high-quality leads, optimizing FTD rates, building audiences, media buying, and scaling affiliate income. Always respond in {lang_name} and maintain a professional but enthusiastic tone about affiliate marketing opportunities. Keep responses conversational and concise since this is a voice-only interaction. Speak clearly with good enunciation, at a moderate pace, and avoid mumbling or speaking too softly. Project your voice as if speaking over a phone line. Use formal address ({formal_address}) when speaking to callers."
+    elif lang_name == 'Bulgarian':
+        system_text = f"You are an expert affiliate marketing consultant answering phone calls in {lang_name}. The caller has already been greeted, so respond directly to their questions or requests. You specialize in affiliate marketing strategies, lead generation, FTDs (First Time Deposits), CPA networks, affiliate networks, commission structures, traffic generation, conversion optimization, and building successful affiliate campaigns. You have deep knowledge of performance marketing, lead qualification, deposit optimization for trading/forex/fintech offers, working with affiliate networks like MaxBounty, ClickBank, ShareASale, and CPA networks. Share actionable insights about choosing profitable verticals, generating high-quality leads, optimizing FTD rates, building audiences, media buying, and scaling affiliate income. Always respond in {lang_name} language and maintain a professional but enthusiastic tone about affiliate marketing opportunities. Keep responses conversational and concise since this is a voice-only interaction. Speak clearly with good enunciation, at a moderate pace, and avoid mumbling or speaking too softly. Project your voice as if speaking over a phone line. Use formal {lang_name} address ({formal_address}) when speaking to callers."
+    else:
+        system_text = f"You are an expert affiliate marketing consultant answering phone calls in {lang_name}. The caller has already been greeted, so respond directly to their questions or requests. You specialize in affiliate marketing strategies, lead generation, FTDs (First Time Deposits), CPA networks, affiliate networks, commission structures, traffic generation, conversion optimization, and building successful affiliate campaigns. You have deep knowledge of performance marketing, lead qualification, deposit optimization for trading/forex/fintech offers, working with affiliate networks like MaxBounty, ClickBank, ShareASale, and CPA networks. Share actionable insights about choosing profitable verticals, generating high-quality leads, optimizing FTD rates, building audiences, media buying, and scaling affiliate income. Always respond in {lang_name} language and maintain a professional but enthusiastic tone about affiliate marketing opportunities. Keep responses conversational and concise since this is a voice-only interaction. Speak clearly with good enunciation, at a moderate pace, and avoid mumbling or speaking too softly. Project your voice as if speaking over a phone line. Use formal address ({formal_address}) when speaking to callers."
+    
+    return {
+        "response_modalities": ["AUDIO"],
+        "speech_config": {
+            "voice_config": {
+                "prebuilt_voice_config": {
+                    "voice_name": "Puck"
+                }
+            }
+        },
+        "system_instruction": {
+            "parts": [
+                {
+                    "text": system_text
+                }
+            ]
+        }
+    }
+
+# Default voice config (Bulgarian) - will be overridden dynamically
+DEFAULT_VOICE_CONFIG = create_voice_config(get_language_config('BG'))
 MODEL = "models/gemini-2.0-flash-live-001"
 
 class RTPServer:
@@ -712,6 +868,7 @@ class WindowsSIPHandler:
             
             logger.info(f"📞 Incoming call from {caller_id} (Call-ID: {call_id})")
             logger.info(f"📞 From address: {addr}")
+            logger.info(f"📞 Raw caller info for language detection: {caller_id}")
             
             # Generate session ID
             session_id = str(uuid.uuid4())
@@ -731,9 +888,22 @@ class WindowsSIPHandler:
             self.socket.sendto(ok_response.encode(), addr)
             logger.info("✅ 200 OK response sent")
             
-            # Create voice session
-            logger.info(f"🎙️  Creating voice session {session_id}")
-            voice_session = WindowsVoiceSession(session_id, caller_id, self.phone_number)
+            # Detect caller's country and language
+            logger.info(f"🌍 ======== LANGUAGE DETECTION ========")
+            logger.info(f"📞 Caller ID: {caller_id}")
+            
+            caller_country = detect_caller_country(caller_id)
+            language_info = get_language_config(caller_country)
+            voice_config = create_voice_config(language_info)
+            
+            logger.info(f"🌍 ✅ Detected country: {caller_country}")
+            logger.info(f"🗣️ ✅ Selected language: {language_info['lang']} ({language_info['code']})")
+            logger.info(f"👤 ✅ Formal address: {language_info['formal_address']}")
+            logger.info(f"🌍 =====================================")
+            
+            # Create voice session with language-specific configuration
+            logger.info(f"🎙️  Creating voice session {session_id} with {language_info['lang']} language config")
+            voice_session = WindowsVoiceSession(session_id, caller_id, self.phone_number, voice_config)
             
             # Create RTP session for audio
             rtp_session = self.rtp_server.create_session(session_id, addr, voice_session)
@@ -1284,7 +1454,7 @@ Content-Length: 0
 class WindowsVoiceSession:
     """Voice session for Windows - simpler than Linux version"""
     
-    def __init__(self, session_id: str, caller_id: str, called_number: str):
+    def __init__(self, session_id: str, caller_id: str, called_number: str, voice_config: Dict[str, Any] = None):
         self.session_id = session_id
         self.caller_id = caller_id
         self.called_number = called_number
@@ -1292,6 +1462,9 @@ class WindowsVoiceSession:
         self.session_logger = SessionLogger()
         self.voice_session = None
         self.gemini_session = None  # The actual session object from the context manager
+        
+        # Use provided voice config or default
+        self.voice_config = voice_config if voice_config else DEFAULT_VOICE_CONFIG
         
         # Connection management
         self.connection_attempts = 0
@@ -1303,10 +1476,22 @@ class WindowsVoiceSession:
         self._to16k_state = None  # 8k -> 16k state
         self._to8k_state = None   # 24k -> 8k state
         
-        # Log call start
+        # Log call start with language info
+        system_text = self.voice_config.get('system_instruction', {}).get('parts', [{}])[0].get('text', '')
+        if 'Bulgarian' in system_text:
+            detected_lang = 'Bulgarian'
+        elif 'English' in system_text:
+            detected_lang = 'English'
+        elif 'Romanian' in system_text:
+            detected_lang = 'Romanian'
+        elif 'Greek' in system_text:
+            detected_lang = 'Greek'
+        else:
+            detected_lang = 'Unknown'
+        
         self.session_logger.log_transcript(
             "system", 
-            f"Call started - From: {caller_id}, To: {called_number}"
+            f"Call started - From: {caller_id}, To: {called_number}, Language: {detected_lang}"
         )
     
     async def initialize_voice_session(self):
@@ -1329,14 +1514,26 @@ class WindowsVoiceSession:
         try:
             logger.info(f"Attempting to connect to Gemini live session (attempt {self.connection_attempts}/{self.max_connection_attempts})...")
             logger.info(f"Using model: {MODEL}")
-            logger.info(f"Voice config: {VOICE_CONFIG}")
+            # Extract language from voice config for logging
+            system_text = self.voice_config.get('system_instruction', {}).get('parts', [{}])[0].get('text', '')
+            if 'Bulgarian' in system_text:
+                detected_lang = 'Bulgarian'
+            elif 'English' in system_text:
+                detected_lang = 'English'
+            elif 'Romanian' in system_text:
+                detected_lang = 'Romanian'
+            elif 'Greek' in system_text:
+                detected_lang = 'Greek'
+            else:
+                detected_lang = 'Unknown'
+            logger.info(f"Voice config language: {detected_lang}")
             
             # Create the connection with timeout
             try:
-                # Create the context manager
+                # Create the context manager with the dynamic voice config
                 context_manager = voice_client.aio.live.connect(
                     model=MODEL, 
-                    config=VOICE_CONFIG
+                    config=self.voice_config
                 )
                 
                 # Enter the context manager to get the actual session
