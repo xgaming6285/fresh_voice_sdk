@@ -26,9 +26,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import uvicorn
 
-from pydub import AudioSegment
 import pyaudio
 import requests
+from scipy.signal import resample
+import numpy as np
 
 # Import our existing voice agent components
 from main import SessionLogger, SEND_SAMPLE_RATE, RECEIVE_SAMPLE_RATE, FORMAT, CHANNELS
@@ -197,13 +198,6 @@ class RTPSession:
         self.output_queue = queue.Queue()
         self.output_thread = None
         
-        # Adaptive jitter buffer
-        self.jitter_buffer = []
-        self.target_jitter_delay = 60  # Start with 60ms buffer
-        self.min_jitter_delay = 40  # Minimum 40ms
-        self.max_jitter_delay = 200  # Maximum 200ms
-        self.jitter_stats = {"late": 0, "on_time": 0, "early": 0}
-        
         # Audio level tracking for AGC
         self.audio_level_history = []
         self.target_audio_level = -20  # dBFS
@@ -334,7 +328,7 @@ class RTPSession:
             
             # Send audio to Gemini
             await self.voice_session.gemini_session.send(
-                input={"data": processed_audio, "mime_type": "audio/pcm"}
+                input={"data": processed_audio, "mime_type": "audio/pcm;rate=16000"}
             )
         except Exception as e:
             logger.error(f"Error sending audio to Gemini: {e}")
@@ -422,123 +416,44 @@ class RTPSession:
     
     # Removed _process_chunk - we use continuous streaming instead
     
-    def send_audio(self, audio_data: bytes):
-        """Queue audio for paced RTP transmission with proper chunking"""
-        try:
-            # Convert PCM to μ-law for transmission
-            ulaw_data = self.pcm_to_ulaw(audio_data)
-            
-            # Send audio immediately without chunking for lowest latency
-            self.output_queue.put(ulaw_data)
-            logger.debug(f"📤 Queued {len(ulaw_data)} bytes for immediate RTP transmission")
-            
-        except Exception as e:
-            logger.error(f"Error queueing audio: {e}")
+    def send_audio(self, pcm16: bytes):
+        """
+        Takes 16-bit mono PCM at 8000 Hz, μ-law encodes, then enqueues in 20 ms packets.
+        """
+        ulaw = self.pcm_to_ulaw(pcm16)  # your existing encoder
+        packet_size = 160  # 20 ms @ 8000 Hz, 1 byte/sample for G.711
+        for i in range(0, len(ulaw), packet_size):
+            self.output_queue.put(ulaw[i:i + packet_size])
     
     def _process_output_queue(self):
-        """Process output queue with adaptive RTP pacing and intelligent buffering"""
-        packet_size = 160  # 20ms of μ-law audio at 8kHz
-        packet_duration_s = 0.020  # 20ms per packet
-        
-        # Use high-precision timing
-        import time
-        if hasattr(time, 'perf_counter'):
-            get_time = time.perf_counter  # More precise on Windows
-        else:
-            get_time = time.time
-        
-        last_packet_time = get_time()
-        
-        # Buffer to accumulate audio for smoother delivery
-        audio_buffer = b""
-        buffer_threshold = packet_size  # Send immediately - only buffer 1 packet
-        
-        # Silence/comfort noise for gaps
-        silence_counter = 0
-        max_silence_packets = 2  # Only 40ms of silence max
-        
-        # Minimal buffering for lowest latency
-        jitter_buffer_size = 1  # Minimal buffer
-        max_jitter_buffer = 2   # Maximum 2 packets
-        
-        # Statistics for adaptive adjustment
-        late_packets = 0
-        total_packets = 0
-        
+        """
+        Dequeue G.711 payloads and transmit with RTP pacing.
+        Emits silence only for packet loss concealment; no artificial noise.
+        """
+        ptime_ms = 20
+        frame_bytes = 160  # 20 ms of G.711
+        silence = b"\xff" * frame_bytes  # μ-law silence
+
         while self.processing:
             try:
-                # Use minimal timeout for immediate processing
-                buffer_packets = len(audio_buffer) // packet_size
-                
-                # Get audio from queue with minimal timeout
-                try:
-                    audio_data = self.output_queue.get(timeout=0.001)  # 1ms timeout for responsiveness
-                    audio_buffer += audio_data
-                    silence_counter = 0  # Reset silence counter when we get audio
-                    
-                    # Adapt jitter buffer size based on buffer state
-                    if buffer_packets > max_jitter_buffer and jitter_buffer_size > 2:
-                        jitter_buffer_size -= 1  # Reduce buffer if too full
-                    
-                except queue.Empty:
-                    # If we have buffered data and no new data coming, send what we have
-                    if len(audio_buffer) >= packet_size:
-                        # Check if we're running low on buffer
-                        if buffer_packets < 2 and jitter_buffer_size < max_jitter_buffer:
-                            jitter_buffer_size += 1  # Increase buffer if running low
-                    else:
-                        # Generate comfort noise to maintain stream continuity
-                        if silence_counter < max_silence_packets:
-                            comfort_noise = self._generate_comfort_noise(packet_size)
-                            audio_buffer += comfort_noise
-                            silence_counter += 1
-                        else:
-                            # During silence, use longer sleep to save CPU
-                            time.sleep(0.010)
-                            continue
-                
-                # Send buffered audio when we have enough
-                while len(audio_buffer) >= packet_size:
-                    chunk = audio_buffer[:packet_size]
-                    audio_buffer = audio_buffer[packet_size:]
-                    
-                    # Create RTP packet
-                    rtp_packet = self._create_rtp_packet(chunk, payload_type=0)
-                    
-                    # High-precision timing with drift compensation
-                    current_time = get_time()
-                    time_since_last = current_time - last_packet_time
-                    
-                    # Track if we're late
-                    if time_since_last > packet_duration_s * 1.1:  # 10% tolerance
-                        late_packets += 1
-                    
-                    total_packets += 1
-                    
-                    # Adjust timing to prevent drift
-                    target_time = last_packet_time + packet_duration_s
-                    sleep_time = target_time - current_time
-                    
-                    if sleep_time > 0:
-                        time.sleep(sleep_time)
-                        last_packet_time = target_time
-                    else:
-                        # We're behind schedule, catch up
-                        last_packet_time = current_time
-                    
-                    # Send packet
-                    self.rtp_socket.sendto(rtp_packet, self.remote_addr)
-                    
-                    # Log statistics periodically
-                    if total_packets % 100 == 0 and total_packets > 0:
-                        late_ratio = late_packets / total_packets
-                        logger.debug(f"RTP stats: {total_packets} packets, {late_ratio:.1%} late, buffer: {jitter_buffer_size}")
-                        # Reset counters
-                        late_packets = 0
-                        total_packets = 0
-                    
-            except Exception as e:
-                logger.error(f"Error in output queue processing: {e}")
+                payload = self.output_queue.get(timeout=0.1)
+            except Exception:
+                # Idle: do not inject comfort noise; stay silent to avoid "radio" hiss
+                continue
+
+            # Transmit exactly one frame per ptime
+            self._send_rtp(payload)
+            self._sleep_ms(ptime_ms)
+    
+    def _send_rtp(self, payload: bytes):
+        """Send RTP packet with payload"""
+        rtp_packet = self._create_rtp_packet(payload, payload_type=0)
+        self.rtp_socket.sendto(rtp_packet, self.remote_addr)
+    
+    def _sleep_ms(self, ms: int):
+        """Sleep for specified milliseconds"""
+        import time
+        time.sleep(ms / 1000.0)
     
     def _create_rtp_packet(self, payload: bytes, payload_type: int = 0):
         """Create RTP packet with payload"""
@@ -576,31 +491,15 @@ class RTPSession:
         """Convert A-law to 16-bit PCM"""
         return audioop.alaw2lin(alaw_data, 2)
     
+    def soft_limit_16bit(self, pcm: bytes, ratio: float = 0.95) -> bytes:
+        """Ultra-light limiter to avoid μ-law harshness on peaks - scales samples simply and fast"""
+        return audioop.mul(pcm, 2, ratio)
+    
     def pcm_to_ulaw(self, pcm_data: bytes) -> bytes:
-        """Convert 16-bit PCM to μ-law with proper handling"""
+        """Convert 16-bit PCM to μ-law with ultra-light soft limiting"""
         try:
-            # Ensure the PCM data is properly formatted before conversion
-            # This helps prevent conversion artifacts
-            # μ-law expects 16-bit signed PCM input
-            
-            # Apply a slight attenuation to prevent clipping during conversion
-            # μ-law compression can amplify near-peak signals
-            import struct
-            import array
-            
-            # Convert bytes to array of 16-bit samples
-            samples = array.array('h', pcm_data)
-            
-            # Apply soft limiting to prevent μ-law conversion artifacts
-            max_val = 32767 * 0.95  # Leave 5% headroom
-            for i in range(len(samples)):
-                if samples[i] > max_val:
-                    samples[i] = int(max_val)
-                elif samples[i] < -max_val:
-                    samples[i] = int(-max_val)
-            
-            # Convert back to bytes
-            pcm_data = samples.tobytes()
+            # Apply ultra-light soft limiting to prevent μ-law harshness on peaks
+            pcm_data = self.soft_limit_16bit(pcm_data, 0.95)
             
             # Convert to μ-law
             return audioop.lin2ulaw(pcm_data, 2)
@@ -609,36 +508,6 @@ class RTPSession:
             # Fallback to simple conversion
             return audioop.lin2ulaw(pcm_data, 2)
     
-    def _generate_comfort_noise(self, length: int) -> bytes:
-        """Generate pink noise for comfort noise (μ-law encoded)"""
-        import random
-        import struct
-        
-        # Pink noise generation using Voss-McCartney algorithm
-        # This creates more natural sounding background noise
-        num_sources = 16
-        sources = [0] * num_sources
-        
-        samples = []
-        for _ in range(length):
-            # Update random sources
-            for i in range(num_sources):
-                if random.random() < 1.0 / (1 << i):
-                    sources[i] = random.uniform(-1, 1)
-            
-            # Sum all sources and scale to very low level
-            pink_sample = sum(sources) / num_sources * 0.002  # Very quiet
-            
-            # Convert to 16-bit PCM
-            pcm_sample = int(pink_sample * 32767)
-            pcm_sample = max(-32768, min(32767, pcm_sample))
-            
-            # Convert to μ-law
-            pcm_bytes = struct.pack('h', pcm_sample)
-            ulaw_byte = audioop.lin2ulaw(pcm_bytes, 2)
-            samples.append(ulaw_byte[0])
-        
-        return bytes(samples)
 
 class WindowsSIPHandler:
     """Simple SIP handler for Windows - interfaces with Gate VoIP system"""
@@ -1036,17 +905,17 @@ Content-Length: 0
             elif line.startswith('CSeq:'):
                 cseq_header = line
         
-        # Create proper SIP 200 OK response with better SDP
+        # Create optimized SDP with only codecs we actually send (removed G.729)
         sdp_content = f"""v=0
 o=voice-agent {int(time.time())} {int(time.time())} IN IP4 {self.local_ip}
 s=Voice Agent Session
 c=IN IP4 {self.local_ip}
 t=0 0
-m=audio 5004 RTP/AVP 0 8 18 101
+m=audio 5004 RTP/AVP 0 8 101
 a=rtpmap:0 PCMU/8000
 a=rtpmap:8 PCMA/8000
-a=rtpmap:18 G729/8000
 a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-15
 a=sendrecv
 a=ptime:20"""
 
@@ -1070,8 +939,23 @@ Content-Length: {len(sdp_content)}
     def make_outbound_call(self, phone_number: str) -> Optional[str]:
         """Initiate outbound call through Gate VoIP"""
         try:
-            # Create INVITE message for outbound call
+            # Create INVITE message for outbound call with optimized SDP
             session_id = str(uuid.uuid4())
+            
+            # Create optimized SDP with only codecs we actually send
+            sdp_content = f"""v=0
+o=voice-agent 0 0 IN IP4 {self.local_ip}
+s=Voice Agent Session
+c=IN IP4 {self.local_ip}
+t=0 0
+m=audio 5004 RTP/AVP 0 8 101
+a=rtpmap:0 PCMU/8000
+a=rtpmap:8 PCMA/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-15
+a=ptime:20
+"""
+            
             invite_message = f"""INVITE sip:{phone_number}@{self.gate_ip} SIP/2.0
 Via: SIP/2.0/UDP {self.local_ip}:{self.sip_port}
 From: <sip:voice-agent@{self.local_ip}>;tag={session_id[:8]}
@@ -1081,18 +965,9 @@ CSeq: 1 INVITE
 Contact: <sip:voice-agent@{self.local_ip}:{self.sip_port}>
 User-Agent: WindowsVoiceAgent/1.0
 Content-Type: application/sdp
-Content-Length: 147
+Content-Length: {len(sdp_content)}
 
-v=0
-o=voice-agent 0 0 IN IP4 {self.local_ip}
-s=Voice Agent Session
-c=IN IP4 {self.local_ip}
-t=0 0
-m=audio 5004 RTP/AVP 0 8
-a=rtpmap:0 PCMU/8000
-a=rtpmap:8 PCMA/8000
-
-"""
+{sdp_content}"""
             
             # Send INVITE
             self.socket.sendto(invite_message.encode(), (self.gate_ip, self.sip_port))
@@ -1338,6 +1213,10 @@ class WindowsVoiceSession:
         self.connection_backoff = 1.0  # seconds
         self.last_connection_attempt = 0
         
+        # Audio resampling state for fast conversion
+        self._to16k_state = None  # 8k -> 16k state
+        self._to8k_state = None   # 24k -> 8k state
+        
         # Log call start
         self.session_logger.log_transcript(
             "system", 
@@ -1509,7 +1388,7 @@ class WindowsVoiceSession:
                 try:
                     # Send audio in the correct format for Gemini Live API
                     await self.gemini_session.send(
-                        input={"data": processed_audio, "mime_type": "audio/pcm"}
+                        input={"data": processed_audio, "mime_type": "audio/pcm;rate=16000"}
                     )
                     send_success = True
                     break
@@ -1589,165 +1468,41 @@ class WindowsVoiceSession:
             return b""
     
     def convert_telephony_to_gemini(self, audio_data: bytes) -> bytes:
-        """Convert 8kHz telephony audio to 16kHz for Gemini with better quality"""
-        try:
-            # Ensure SEND_SAMPLE_RATE is 16000
-            target_rate = 16000  # Gemini expects 16kHz for input
-            
-            logger.debug(f"Converting {len(audio_data)} bytes from 8kHz to {target_rate}Hz")
-            audio = AudioSegment(
-                data=audio_data,
-                sample_width=2,  # 16-bit
-                frame_rate=8000,  # 8kHz input
-                channels=1       # Mono
-            )
-            
-            # Normalize first to ensure good signal level
-            audio = audio.normalize()
-            
-            # Apply slight volume boost to improve clarity
-            audio = audio + 3  # +3 dB boost
-            
-            # Convert to Gemini's expected sample rate (16kHz)
-            audio_16k = audio.set_frame_rate(target_rate)
-            
-            converted_data = audio_16k.raw_data
-            logger.debug(f"Converted to {len(converted_data)} bytes at {target_rate}Hz (ratio: {len(converted_data)/len(audio_data):.1f}x)")
-            return converted_data
-        except Exception as e:
-            logger.error(f"Error converting telephony to Gemini audio: {e}")
-            return audio_data
+        """
+        Input: 16-bit mono PCM at 8000 Hz (after μ-law decode, if applicable).
+        Output: 16-bit mono PCM at 16000 Hz for the model.
+        """
+        # Convert bytes to numpy array
+        in_array = np.frombuffer(audio_data, dtype=np.int16)
+        
+        # Calculate the number of samples in the output signal
+        num_samples_in = len(in_array)
+        num_samples_out = int(num_samples_in * 16000 / 8000)
+        
+        # Resample using scipy for high quality
+        resampled_array = resample(in_array, num_samples_out)
+        
+        # Convert back to bytes
+        return resampled_array.astype(np.int16).tobytes()
+
+    def convert_gemini_to_telephony(self, model_pcm: bytes) -> bytes:
+        """
+        Input: model PCM as 16-bit mono at 24000 Hz (typical).
+        Output: 16-bit mono PCM at 8000 Hz ready for μ-law encode.
+        """
+        # Convert bytes to numpy array
+        in_array = np.frombuffer(model_pcm, dtype=np.int16)
+        
+        # Calculate the number of samples in the output signal
+        num_samples_in = len(in_array)
+        num_samples_out = int(num_samples_in * 8000 / 24000)
+        
+        # Resample using scipy for high quality
+        resampled_array = resample(in_array, num_samples_out)
+        
+        # Convert back to bytes
+        return resampled_array.astype(np.int16).tobytes()
     
-    def convert_gemini_to_telephony(self, audio_data: bytes) -> bytes:
-        """Convert 24kHz Gemini audio to 8kHz for telephony with advanced audio processing"""
-        try:
-            # Gemini outputs at 24kHz
-            source_rate = 24000
-            target_rate = 8000
-            
-            logger.debug(f"Converting {len(audio_data)} bytes from {source_rate}Hz to {target_rate}Hz")
-            
-            audio = AudioSegment(
-                data=audio_data,
-                sample_width=2,  # 16-bit
-                frame_rate=source_rate,  # Gemini's output rate
-                channels=1       # Mono
-            )
-            
-            # Simplified pipeline for lowest latency
-            
-            # Step 1: Simple anti-aliasing before downsampling
-            audio = audio.low_pass_filter(3800)  # Standard Nyquist for 8kHz
-            
-            # Step 2: Convert to 8kHz
-            audio_8k = audio.set_frame_rate(target_rate)
-            
-            # Step 3: Simple normalization instead of complex AGC
-            if audio_8k.dBFS < -25:
-                audio_8k = audio_8k + 10  # Boost quiet audio
-            elif audio_8k.dBFS > -3:
-                audio_8k = audio_8k - (audio_8k.dBFS + 3)  # Prevent clipping
-            
-            # Step 4: Final safety check to prevent any clipping
-            if audio_8k.max_dBFS > -1:
-                audio_8k = audio_8k.apply_gain(-audio_8k.max_dBFS - 1)
-            
-            converted_data = audio_8k.raw_data
-            logger.debug(f"Converted to {len(converted_data)} bytes at {target_rate}Hz (ratio: {len(audio_data)/len(converted_data):.1f}x)")
-            
-            return converted_data
-            
-        except Exception as e:
-            logger.error(f"Error converting Gemini to telephony audio: {e}")
-            # Fallback to simple conversion
-            try:
-                audio = AudioSegment(
-                    data=audio_data,
-                    sample_width=2,
-                    frame_rate=24000,  # Hardcode the rate
-                    channels=1
-                )
-                audio_8k = audio.set_frame_rate(8000)
-                return audio_8k.raw_data
-            except:
-                return audio_data
-    
-    def _apply_dynamic_compression(self, audio: AudioSegment, ratio=4.0, threshold=-20.0) -> AudioSegment:
-        """Apply dynamic range compression to audio"""
-        try:
-            # Simple compressor implementation
-            if audio.dBFS > threshold:
-                # Calculate gain reduction
-                excess_db = audio.dBFS - threshold
-                gain_reduction = excess_db * (1 - 1/ratio)
-                audio = audio.apply_gain(-gain_reduction)
-            
-            # Apply makeup gain to restore average level
-            makeup_gain = 3.0  # 3dB makeup gain
-            audio = audio.apply_gain(makeup_gain)
-            
-            return audio
-        except Exception as e:
-            logger.error(f"Error in dynamic compression: {e}")
-            return audio
-    
-    def _apply_agc(self, audio: AudioSegment, target_level=-18.0) -> AudioSegment:
-        """Apply automatic gain control to maintain consistent levels"""
-        try:
-            # Calculate current RMS level
-            current_level = audio.dBFS
-            
-            # Calculate gain adjustment needed
-            gain_adjustment = target_level - current_level
-            
-            # Limit gain adjustment to prevent extreme changes
-            gain_adjustment = max(-12, min(12, gain_adjustment))
-            
-            # Apply gain with soft knee to prevent artifacts
-            if abs(gain_adjustment) > 0.5:
-                audio = audio.apply_gain(gain_adjustment * 0.8)  # Apply 80% of needed gain
-            
-            return audio
-        except Exception as e:
-            logger.error(f"Error in AGC: {e}")
-            return audio
-    
-    def _apply_crossfade(self, audio: AudioSegment, previous_tail: bytes, crossfade_ms=5) -> AudioSegment:
-        """Apply crossfade between audio chunks to eliminate clicks"""
-        try:
-            # Convert tail to AudioSegment
-            tail_segment = AudioSegment(
-                data=previous_tail,
-                sample_width=2,
-                frame_rate=8000,
-                channels=1
-            )
-            
-            # Get the overlapping portion from the new audio
-            overlap_samples = int(crossfade_ms * 8000 / 1000)
-            
-            if len(audio) > overlap_samples and len(tail_segment) > 0:
-                # Apply linear crossfade
-                # Fade out the tail
-                tail_faded = tail_segment.fade_out(crossfade_ms)
-                
-                # Fade in the beginning of new audio
-                head = audio[:crossfade_ms]
-                head_faded = head.fade_in(crossfade_ms)
-                
-                # Mix the faded sections
-                mixed_head = tail_faded.overlay(head_faded)
-                
-                # Combine with the rest of the audio
-                result = mixed_head + audio[crossfade_ms:]
-                
-                return result
-            else:
-                return audio
-                
-        except Exception as e:
-            logger.error(f"Error in crossfade: {e}")
-            return audio
     
     def cleanup(self):
         """Clean up the session synchronously"""
