@@ -16,6 +16,7 @@ import struct
 import threading
 import time
 import audioop
+import os
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
@@ -72,7 +73,7 @@ VOICE_CONFIG = {
     "system_instruction": {
         "parts": [
             {
-                "text": "You are a helpful AI voice assistant answering phone calls in Bulgarian. Start by greeting the caller with 'Здравейте, как мога да Ви помогна днес?' Always respond in Bulgarian language. Keep responses conversational and concise since this is a voice-only interaction. Speak clearly with good enunciation, at a moderate pace, and avoid mumbling or speaking too softly. Project your voice as if speaking over a phone line. Use formal Bulgarian address (Вие) when speaking to callers."
+                "text": "You are a helpful AI voice assistant answering phone calls in Bulgarian. The caller has already been greeted, so respond directly to their questions or requests. Always respond in Bulgarian language. Keep responses conversational and concise since this is a voice-only interaction. Speak clearly with good enunciation, at a moderate pace, and avoid mumbling or speaking too softly. Project your voice as if speaking over a phone line. Use formal Bulgarian address (Вие) when speaking to callers."
             }
         ]
     }
@@ -192,11 +193,12 @@ class RTPSession:
         
         # Audio processing
         self.audio_queue = queue.Queue()
-        self.processing = False
+        self.input_processing = False  # For incoming audio processing
         
         # Output audio queue for paced delivery
         self.output_queue = queue.Queue()
         self.output_thread = None
+        self.output_processing = True  # For outgoing audio processing
         
         # Audio level tracking for AGC
         self.audio_level_history = []
@@ -204,6 +206,14 @@ class RTPSession:
         
         # Crossfade buffer for smooth transitions
         self.last_audio_tail = b""  # Last 10ms of previous chunk
+        
+        # Start output processing thread immediately for greeting playback
+        self.output_thread = threading.Thread(target=self._process_output_queue, daemon=True)
+        self.output_thread.start()
+        logger.info(f"🎵 Started output queue processing for session {session_id}")
+        
+        # Keep processing flag for backward compatibility with other parts of the code
+        self.processing = self.output_processing
         
     def process_incoming_audio(self, audio_data: bytes, payload_type: int, timestamp: int):
         """Process incoming RTP audio packet"""
@@ -221,12 +231,10 @@ class RTPSession:
             self.audio_queue.put(pcm_data)
             logger.info(f"🎤 Queued {len(pcm_data)} bytes of PCM audio for processing")
             
-            # Start processing if not already running
-            if not self.processing:
-                self.processing = True
+            # Start input processing if not already running
+            if not self.input_processing:
+                self.input_processing = True
                 threading.Thread(target=self._process_audio_queue, daemon=True).start()
-                # Start output thread for paced audio delivery
-                threading.Thread(target=self._process_output_queue, daemon=True).start()
                 
         except Exception as e:
             logger.error(f"Error processing incoming audio: {e}")
@@ -249,7 +257,7 @@ class RTPSession:
             logger.error(f"Traceback: {traceback.format_exc()}")
         finally:
             loop.close()
-            self.processing = False
+            self.input_processing = False
     
     async def _async_process_audio_queue(self, audio_buffer: bytes, chunk_size: int):
         """Async version of audio queue processing with proper streaming"""
@@ -271,7 +279,7 @@ class RTPSession:
             last_send_time = time.time()
             target_interval = 0  # No delay between chunks
             
-            while self.processing:
+            while self.input_processing:
                 try:
                     # Get audio chunk with timeout - use asyncio-compatible approach
                     try:
@@ -337,7 +345,7 @@ class RTPSession:
         """Continuously receive responses from Gemini in a separate task"""
         logger.info("🎧 Starting continuous response receiver")
         
-        while self.processing and self.voice_session.gemini_session:
+        while self.input_processing and self.voice_session.gemini_session:
             try:
                 # Get response from Gemini - this is a continuous stream
                 turn = self.voice_session.gemini_session.receive()
@@ -408,7 +416,7 @@ class RTPSession:
                         continue
                         
             except Exception as e:
-                if self.processing:  # Only log if we're still processing
+                if self.input_processing:  # Only log if we're still processing
                     logger.error(f"Error receiving from Gemini: {e}")
                     await asyncio.sleep(0.01)  # Minimal retry delay
                     
@@ -425,6 +433,73 @@ class RTPSession:
         for i in range(0, len(ulaw), packet_size):
             self.output_queue.put(ulaw[i:i + packet_size])
     
+    def play_greeting_file(self, greeting_file: str = "greeting.wav"):
+        """Play a greeting WAV file at the start of the call"""
+        try:
+            if not os.path.exists(greeting_file):
+                logger.warning(f"Greeting file {greeting_file} not found, skipping greeting")
+                return
+                
+            logger.info(f"🎵 Playing greeting file: {greeting_file}")
+            
+            # Load WAV file
+            with wave.open(greeting_file, 'rb') as wav_file:
+                # Get WAV parameters
+                frames = wav_file.getnframes()
+                sample_rate = wav_file.getframerate()
+                channels = wav_file.getnchannels()
+                sample_width = wav_file.getsampwidth()
+                
+                logger.info(f"Greeting file info: {frames} frames, {sample_rate}Hz, {channels}ch, {sample_width}bytes/sample")
+                
+                # Read all audio data
+                audio_data = wav_file.readframes(frames)
+                
+                # Convert to mono if stereo
+                if channels == 2:
+                    audio_data = audioop.tomono(audio_data, sample_width, 1, 1)
+                    logger.info("Converted stereo to mono")
+                
+                # Convert to 16-bit if needed
+                if sample_width == 1:
+                    audio_data = audioop.bias(audio_data, 1, -128)  # Convert unsigned to signed
+                    audio_data = audioop.lin2lin(audio_data, 1, 2)  # Convert to 16-bit
+                elif sample_width == 3:
+                    audio_data = audioop.lin2lin(audio_data, 3, 2)  # Convert 24-bit to 16-bit
+                elif sample_width == 4:
+                    audio_data = audioop.lin2lin(audio_data, 4, 2)  # Convert 32-bit to 16-bit
+                
+                # Resample to 8kHz if needed
+                if sample_rate != 8000:
+                    import numpy as np
+                    from scipy.signal import resample
+                    
+                    # Convert to numpy array for resampling
+                    audio_array = np.frombuffer(audio_data, dtype=np.int16)
+                    
+                    # Calculate target sample count
+                    target_samples = int(len(audio_array) * 8000 / sample_rate)
+                    
+                    # Resample
+                    resampled_array = resample(audio_array, target_samples)
+                    
+                    # Convert back to bytes
+                    audio_data = resampled_array.astype(np.int16).tobytes()
+                    
+                    logger.info(f"Resampled from {sample_rate}Hz to 8000Hz")
+                
+                # Send the greeting audio
+                logger.info(f"🎙️ Sending greeting audio: {len(audio_data)} bytes")
+                self.send_audio(audio_data)
+                
+                logger.info("✅ Greeting played successfully")
+                
+        except Exception as e:
+            logger.error(f"Error playing greeting file: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            # Continue without greeting - don't let this break the call
+    
     def _process_output_queue(self):
         """
         Dequeue G.711 payloads and transmit with RTP pacing.
@@ -434,7 +509,7 @@ class RTPSession:
         frame_bytes = 160  # 20 ms of G.711
         silence = b"\xff" * frame_bytes  # μ-law silence
 
-        while self.processing:
+        while self.output_processing:
             try:
                 payload = self.output_queue.get(timeout=0.1)
             except Exception:
@@ -680,6 +755,15 @@ class WindowsSIPHandler:
                     if session_id in active_sessions:
                         active_sessions[session_id]["status"] = "active"
                         logger.info(f"🎯 Voice session {session_id} is now active and ready")
+                        
+                        # Play greeting after a short delay to ensure RTP is ready
+                        def play_greeting_delayed():
+                            time.sleep(0.5)  # Small delay to ensure RTP connection is established
+                            logger.info("🎵 Playing greeting to caller...")
+                            rtp_session.play_greeting_file("greeting.wav")
+                        
+                        threading.Thread(target=play_greeting_delayed, daemon=True).start()
+                        
                 except Exception as e:
                     logger.error(f"❌ Failed to start voice session: {e}")
                     import traceback
@@ -764,7 +848,9 @@ Content-Length: 0
                     
                     # Stop RTP processing first
                     if rtp_session:
-                        rtp_session.processing = False
+                        rtp_session.input_processing = False
+                        rtp_session.output_processing = False
+                        rtp_session.processing = False  # For backward compatibility
                     
                     try:
                         if hasattr(voice_session, 'cleanup'):
