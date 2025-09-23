@@ -933,6 +933,13 @@ class WindowsSIPHandler:
         self.max_registration_attempts = 3
         self.last_nonce = None
         
+        # Extension registration for outbound calls
+        self.extension_registered = False
+        self.registration_call_id = None
+        
+        # Store pending outbound calls for authentication
+        self.pending_invites = {}  # call_id -> invite_info
+        
         # Initialize RTP server
         self.rtp_server = RTPServer(self.local_ip)
         
@@ -952,8 +959,12 @@ class WindowsSIPHandler:
             # Start listening thread
             threading.Thread(target=self._listen_loop, daemon=True).start()
             
-            # Note: We don't need to register with Gate VoIP since it registers with us as a trunk
+            # Note: We act as SIP trunk for INCOMING calls (Gate VoIP registers with us)
             logger.info("🎯 Acting as SIP trunk - waiting for Gate VoIP to register with us")
+            
+            # Also register as Extension 200 for OUTBOUND calls
+            logger.info("📞 Registering as Extension 200 for outbound calling capability...")
+            self._register_as_extension()
             
         except Exception as e:
             logger.error(f"Failed to start SIP listener: {e}")
@@ -1371,15 +1382,24 @@ Content-Length: {len(sdp_content)}
         return response
     
     def make_outbound_call(self, phone_number: str) -> Optional[str]:
-        """Initiate outbound call through Gate VoIP"""
+        """Initiate outbound call as registered Extension 200"""
         try:
-            # Create INVITE message for outbound call with optimized SDP
-            session_id = str(uuid.uuid4())
+            # Check if extension is registered
+            if not self.extension_registered:
+                logger.error("❌ Cannot make outbound call - Extension 200 not registered")
+                logger.error("💡 Wait for extension registration to complete")
+                return None
             
-            # Create optimized SDP with only codecs we actually send
+            logger.info(f"📞 Initiating outbound call to {phone_number} as Extension 200")
+            logger.info(f"📞 Call will be routed through Gate VoIP → {self.config.get('outbound_trunk', 'gsm2')} trunk")
+            
+            session_id = str(uuid.uuid4())
+            username = self.config.get('username', '200')
+            
+            # Create SDP for outbound call
             sdp_content = f"""v=0
-o=voice-agent 0 0 IN IP4 {self.local_ip}
-s=Voice Agent Session
+o={username} {int(time.time())} {int(time.time())} IN IP4 {self.local_ip}
+s=Voice Agent Outbound Call
 c=IN IP4 {self.local_ip}
 t=0 0
 m=audio 5004 RTP/AVP 0 8 101
@@ -1387,31 +1407,86 @@ a=rtpmap:0 PCMU/8000
 a=rtpmap:8 PCMA/8000
 a=rtpmap:101 telephone-event/8000
 a=fmtp:101 0-15
-a=ptime:20
-"""
+a=sendrecv
+a=ptime:20"""
             
+            # Create INVITE as Extension 200
             invite_message = f"""INVITE sip:{phone_number}@{self.gate_ip} SIP/2.0
-Via: SIP/2.0/UDP {self.local_ip}:{self.sip_port}
-From: <sip:voice-agent@{self.local_ip}>;tag={session_id[:8]}
+Via: SIP/2.0/UDP {self.local_ip}:{self.sip_port};branch=z9hG4bK{session_id[:8]};rport
+Max-Forwards: 70
+From: <sip:{username}@{self.gate_ip}>;tag={session_id[:8]}
 To: <sip:{phone_number}@{self.gate_ip}>
 Call-ID: {session_id}
 CSeq: 1 INVITE
-Contact: <sip:voice-agent@{self.local_ip}:{self.sip_port}>
+Contact: <sip:{username}@{self.local_ip}:{self.sip_port}>
 User-Agent: WindowsVoiceAgent/1.0
+Allow: INVITE, ACK, CANCEL, OPTIONS, BYE, REFER, SUBSCRIBE, NOTIFY, INFO
+Supported: replaces, timer
 Content-Type: application/sdp
 Content-Length: {len(sdp_content)}
 
 {sdp_content}"""
             
+            # Store INVITE information for potential authentication challenge
+            self.pending_invites[session_id] = {
+                'phone_number': phone_number,
+                'session_id': session_id,
+                'username': username,
+                'sdp_content': sdp_content,
+                'cseq': 1
+            }
+            
             # Send INVITE
             self.socket.sendto(invite_message.encode(), (self.gate_ip, self.sip_port))
+            logger.info(f"📤 Sent INVITE for outbound call to {phone_number}")
+            logger.debug(f"INVITE message:\n{invite_message}")
             
-            logger.info(f"Initiated outbound call to {phone_number}")
             return session_id
             
         except Exception as e:
-            logger.error(f"Error making outbound call: {e}")
+            logger.error(f"❌ Error making outbound call: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
+    
+    def _register_as_extension(self):
+        """Register as Extension 200 for outbound calling capability"""
+        try:
+            logger.info("🔗 Registering as Extension 200 for outbound calls...")
+            logger.info(f"   Username: {self.config.get('username', '200')}")
+            logger.info(f"   Gate IP: {self.gate_ip}")
+            logger.info(f"   Local IP: {self.local_ip}")
+            
+            # Create REGISTER request for extension registration
+            call_id = str(uuid.uuid4())
+            self.registration_call_id = call_id
+            username = self.config.get('username', '200')
+            
+            register_message = f"""REGISTER sip:{self.gate_ip} SIP/2.0
+Via: SIP/2.0/UDP {self.local_ip}:{self.sip_port};branch=z9hG4bK{call_id[:8]};rport
+Max-Forwards: 70
+From: <sip:{username}@{self.gate_ip}>;tag={call_id[:8]}
+To: <sip:{username}@{self.gate_ip}>
+Call-ID: {call_id}
+CSeq: 1 REGISTER
+Contact: <sip:{username}@{self.local_ip}:{self.sip_port};expires=3600>
+User-Agent: WindowsVoiceAgent/1.0
+Allow: INVITE, ACK, CANCEL, OPTIONS, BYE, REFER, SUBSCRIBE, NOTIFY, INFO
+Supported: replaces, timer
+Expires: 3600
+Content-Length: 0
+
+"""
+            
+            # Send REGISTER
+            self.socket.sendto(register_message.encode(), (self.gate_ip, self.sip_port))
+            logger.info(f"📡 Sent extension registration request to {self.gate_ip}:{self.sip_port}")
+            logger.debug(f"REGISTER message:\n{register_message}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to register as extension: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
     
     def _register_with_gate(self):
         """Register voice agent with Gate VoIP system"""
@@ -1561,6 +1636,335 @@ Content-Length: 0
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
     
+    def _create_authenticated_extension_register(self, challenge_response: str):
+        """Create authenticated REGISTER for extension registration"""
+        try:
+            # Parse authentication challenge
+            import re
+            realm_match = re.search(r'realm="([^"]*)"', challenge_response)
+            nonce_match = re.search(r'nonce="([^"]*)"', challenge_response)
+            algorithm_match = re.search(r'algorithm=([^,\s]+)', challenge_response)
+            qop_match = re.search(r'qop="([^"]*)"', challenge_response)
+            opaque_match = re.search(r'opaque="([^"]*)"', challenge_response)
+            
+            realm = realm_match.group(1) if realm_match else self.gate_ip
+            nonce = nonce_match.group(1) if nonce_match else ""
+            algorithm = algorithm_match.group(1) if algorithm_match else "MD5"
+            qop = qop_match.group(1) if qop_match else None
+            opaque = opaque_match.group(1) if opaque_match else None
+            
+            username = self.config.get('username', '200')
+            password = self.config.get('password', '')
+            
+            logger.info(f"🔐 Creating authenticated extension REGISTER")
+            logger.info(f"   Username: {username}")
+            logger.info(f"   Realm: {realm}")
+            
+            # Create digest response
+            import hashlib
+            uri = f"sip:{self.gate_ip}"
+            method = "REGISTER"
+            
+            # Calculate HA1
+            ha1_input = f"{username}:{realm}:{password}"
+            ha1 = hashlib.md5(ha1_input.encode()).hexdigest()
+            
+            # Calculate HA2  
+            ha2_input = f"{method}:{uri}"
+            ha2 = hashlib.md5(ha2_input.encode()).hexdigest()
+            
+            # Calculate response
+            if qop:
+                nc = "00000001"
+                cnonce = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
+                response_input = f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}"
+                response_hash = hashlib.md5(response_input.encode()).hexdigest()
+            else:
+                response_input = f"{ha1}:{nonce}:{ha2}"
+                response_hash = hashlib.md5(response_input.encode()).hexdigest()
+            
+            # Build authorization header
+            auth_header = f'Digest username="{username}", realm="{realm}", nonce="{nonce}", uri="{uri}", response="{response_hash}"'
+            if algorithm:
+                auth_header += f', algorithm={algorithm}'
+            if opaque:
+                auth_header += f', opaque="{opaque}"'
+            if qop:
+                nc = "00000001"
+                cnonce = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
+                auth_header += f', qop={qop}, nc={nc}, cnonce="{cnonce}"'
+            
+            # Create authenticated REGISTER for extension
+            cseq_number = 2
+            register_message = f"""REGISTER sip:{self.gate_ip} SIP/2.0
+Via: SIP/2.0/UDP {self.local_ip}:{self.sip_port};branch=z9hG4bK{self.registration_call_id[:8]};rport
+Max-Forwards: 70
+From: <sip:{username}@{self.gate_ip}>;tag={self.registration_call_id[:8]}
+To: <sip:{username}@{self.gate_ip}>
+Call-ID: {self.registration_call_id}
+CSeq: {cseq_number} REGISTER
+Contact: <sip:{username}@{self.local_ip}:{self.sip_port};expires=3600>
+User-Agent: WindowsVoiceAgent/1.0
+Allow: INVITE, ACK, CANCEL, OPTIONS, BYE, REFER, SUBSCRIBE, NOTIFY, INFO
+Supported: replaces, timer
+Authorization: {auth_header}
+Expires: 3600
+Content-Length: 0
+
+"""
+            
+            # Send authenticated REGISTER
+            self.socket.sendto(register_message.encode(), (self.gate_ip, self.sip_port))
+            logger.info(f"🔑 Sent authenticated extension registration")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to create authenticated extension REGISTER: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+    
+    def _create_authenticated_invite(self, challenge_response: str):
+        """Create authenticated INVITE for outbound call"""
+        try:
+            # Extract Call-ID to find the pending invite
+            call_id = None
+            for line in challenge_response.split('\n'):
+                line = line.strip()
+                if line.startswith('Call-ID:'):
+                    call_id = line.split(':', 1)[1].strip()
+                    break
+            
+            if not call_id or call_id not in self.pending_invites:
+                logger.error("❌ Cannot find pending INVITE for authentication")
+                return
+            
+            invite_info = self.pending_invites[call_id]
+            
+            # Parse authentication challenge
+            import re
+            realm_match = re.search(r'realm="([^"]*)"', challenge_response)
+            nonce_match = re.search(r'nonce="([^"]*)"', challenge_response)
+            algorithm_match = re.search(r'algorithm=([^,\s]+)', challenge_response)
+            qop_match = re.search(r'qop="([^"]*)"', challenge_response)
+            opaque_match = re.search(r'opaque="([^"]*)"', challenge_response)
+            
+            realm = realm_match.group(1) if realm_match else self.gate_ip
+            nonce = nonce_match.group(1) if nonce_match else ""
+            algorithm = algorithm_match.group(1) if algorithm_match else "MD5"
+            qop = qop_match.group(1) if qop_match else None
+            opaque = opaque_match.group(1) if opaque_match else None
+            
+            username = invite_info['username']
+            password = self.config.get('password', '')
+            phone_number = invite_info['phone_number']
+            session_id = invite_info['session_id']
+            sdp_content = invite_info['sdp_content']
+            
+            logger.info(f"🔐 Creating authenticated INVITE for outbound call to {phone_number}")
+            
+            # Create digest response
+            import hashlib
+            uri = f"sip:{phone_number}@{self.gate_ip}"
+            method = "INVITE"
+            
+            # Calculate HA1
+            ha1_input = f"{username}:{realm}:{password}"
+            ha1 = hashlib.md5(ha1_input.encode()).hexdigest()
+            
+            # Calculate HA2
+            ha2_input = f"{method}:{uri}"
+            ha2 = hashlib.md5(ha2_input.encode()).hexdigest()
+            
+            # Calculate response
+            if qop:
+                nc = "00000001"
+                cnonce = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
+                response_input = f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}"
+                response_hash = hashlib.md5(response_input.encode()).hexdigest()
+            else:
+                response_input = f"{ha1}:{nonce}:{ha2}"
+                response_hash = hashlib.md5(response_input.encode()).hexdigest()
+            
+            # Build authorization header
+            auth_header = f'Digest username="{username}", realm="{realm}", nonce="{nonce}", uri="{uri}", response="{response_hash}"'
+            if algorithm:
+                auth_header += f', algorithm={algorithm}'
+            if opaque:
+                auth_header += f', opaque="{opaque}"'
+            if qop:
+                nc = "00000001"
+                cnonce = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
+                auth_header += f', qop={qop}, nc={nc}, cnonce="{cnonce}"'
+            
+            # Increment CSeq for retried INVITE
+            new_cseq = invite_info['cseq'] + 1
+            self.pending_invites[call_id]['cseq'] = new_cseq
+            
+            # Create authenticated INVITE
+            authenticated_invite = f"""INVITE sip:{phone_number}@{self.gate_ip} SIP/2.0
+Via: SIP/2.0/UDP {self.local_ip}:{self.sip_port};branch=z9hG4bK{session_id[:8]};rport
+Max-Forwards: 70
+From: <sip:{username}@{self.gate_ip}>;tag={session_id[:8]}
+To: <sip:{phone_number}@{self.gate_ip}>
+Call-ID: {session_id}
+CSeq: {new_cseq} INVITE
+Contact: <sip:{username}@{self.local_ip}:{self.sip_port}>
+User-Agent: WindowsVoiceAgent/1.0
+Allow: INVITE, ACK, CANCEL, OPTIONS, BYE, REFER, SUBSCRIBE, NOTIFY, INFO
+Supported: replaces, timer
+Authorization: {auth_header}
+Content-Type: application/sdp
+Content-Length: {len(sdp_content)}
+
+{sdp_content}"""
+            
+            # Send authenticated INVITE
+            self.socket.sendto(authenticated_invite.encode(), (self.gate_ip, self.sip_port))
+            logger.info(f"🔑 Sent authenticated INVITE for outbound call to {phone_number}")
+            logger.debug(f"Authorization header: {auth_header}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to create authenticated INVITE: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+    
+    def _handle_outbound_call_success(self, message: str):
+        """Handle successful outbound call establishment (200 OK for INVITE)"""
+        try:
+            # Extract Call-ID to find the pending invite
+            call_id = None
+            to_tag = None
+            from_tag = None
+            
+            for line in message.split('\n'):
+                line = line.strip()
+                if line.startswith('Call-ID:'):
+                    call_id = line.split(':', 1)[1].strip()
+                elif line.startswith('To:') and 'tag=' in line:
+                    tag_start = line.find('tag=') + 4
+                    tag_end = line.find(';', tag_start)
+                    if tag_end == -1:
+                        tag_end = line.find('>', tag_start)
+                    if tag_end == -1:
+                        tag_end = len(line)
+                    to_tag = line[tag_start:tag_end].strip()
+                elif line.startswith('From:') and 'tag=' in line:
+                    tag_start = line.find('tag=') + 4
+                    tag_end = line.find(';', tag_start)
+                    if tag_end == -1:
+                        tag_end = line.find('>', tag_start)
+                    if tag_end == -1:
+                        tag_end = len(line)
+                    from_tag = line[tag_start:tag_end].strip()
+            
+            if not call_id or call_id not in self.pending_invites:
+                logger.warning("❌ Cannot find pending INVITE for successful response")
+                return
+            
+            invite_info = self.pending_invites[call_id]
+            phone_number = invite_info['phone_number']
+            session_id = invite_info['session_id']
+            
+            logger.info(f"✅ Outbound call to {phone_number} answered successfully!")
+            logger.info(f"📞 Call established - Session ID: {session_id}")
+            
+            # Detect caller's country and language (for outbound calls, we use our own number)
+            caller_country = detect_caller_country(self.phone_number)  # Use our own number
+            language_info = get_language_config(caller_country)
+            voice_config = create_voice_config(language_info)
+            
+            logger.info(f"🗣️ Using {language_info['lang']} for outbound call")
+            
+            # Create voice session for outbound call (we are the caller)
+            voice_session = WindowsVoiceSession(
+                session_id, 
+                self.phone_number,  # We are calling
+                phone_number,       # They are receiving
+                voice_config
+            )
+            
+            # Create RTP session - for outbound calls, we need to get the remote address from SDP
+            # For now, we'll use the Gate VoIP address as the RTP destination
+            remote_addr = (self.gate_ip, 5004)  # Default RTP port
+            rtp_session = self.rtp_server.create_session(session_id, remote_addr, voice_session)
+            
+            # Store the active session
+            active_sessions[session_id] = {
+                "voice_session": voice_session,
+                "rtp_session": rtp_session,
+                "caller_addr": (self.gate_ip, self.sip_port),
+                "status": "connecting",
+                "call_start": datetime.now(timezone.utc),
+                "call_id": call_id,
+                "call_type": "outbound"
+            }
+            
+            # Send ACK to complete the call setup
+            self._send_ack(call_id, to_tag, from_tag, invite_info)
+            
+            # Clean up pending invite
+            del self.pending_invites[call_id]
+            
+            # Start voice session in separate thread
+            def start_voice_session():
+                try:
+                    asyncio.run(voice_session.initialize_voice_session())
+                    # Mark as active once voice session is ready
+                    if session_id in active_sessions:
+                        active_sessions[session_id]["status"] = "active"
+                        logger.info(f"🎯 Outbound voice session {session_id} is now active and ready")
+                        
+                        # For outbound calls, we should start talking first
+                        def start_conversation():
+                            time.sleep(0.5)  # Small delay
+                            logger.info("🎤 Starting conversation with called party...")
+                            # The AI will start talking based on its system prompt
+                        
+                        threading.Thread(target=start_conversation, daemon=True).start()
+                        
+                except Exception as e:
+                    logger.error(f"❌ Failed to start outbound voice session: {e}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
+                    # Remove failed session
+                    if session_id in active_sessions:
+                        del active_sessions[session_id]
+            
+            threading.Thread(target=start_voice_session, daemon=True).start()
+            
+        except Exception as e:
+            logger.error(f"❌ Error handling outbound call success: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+    
+    def _send_ack(self, call_id: str, to_tag: str, from_tag: str, invite_info: dict):
+        """Send ACK to complete call establishment"""
+        try:
+            username = invite_info['username']
+            phone_number = invite_info['phone_number']
+            session_id = invite_info['session_id']
+            cseq = invite_info['cseq']
+            
+            ack_message = f"""ACK sip:{phone_number}@{self.gate_ip} SIP/2.0
+Via: SIP/2.0/UDP {self.local_ip}:{self.sip_port};branch=z9hG4bK{session_id[:8]};rport
+Max-Forwards: 70
+From: <sip:{username}@{self.gate_ip}>;tag={from_tag}
+To: <sip:{phone_number}@{self.gate_ip}>;tag={to_tag}
+Call-ID: {call_id}
+CSeq: {cseq} ACK
+User-Agent: WindowsVoiceAgent/1.0
+Content-Length: 0
+
+"""
+            
+            self.socket.sendto(ack_message.encode(), (self.gate_ip, self.sip_port))
+            logger.info(f"📤 Sent ACK to complete call setup")
+            logger.debug(f"ACK message:\n{ack_message}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error sending ACK: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+    
     def _handle_sip_response(self, message: str, addr):
         """Handle SIP responses (200 OK, 401 Unauthorized, etc.)"""
         try:
@@ -1568,38 +1972,64 @@ Content-Length: 0
             
             if '200 OK' in first_line:
                 if 'REGISTER' in message:
-                    logger.info("✅ Successfully registered with Gate VoIP!")
-                    logger.info("🎯 Voice agent is now ready to receive calls")
+                    # Check if this is extension registration based on Call-ID
+                    call_id_line = [line for line in message.split('\n') if line.strip().startswith('Call-ID:')]
+                    if call_id_line and self.registration_call_id and self.registration_call_id in call_id_line[0]:
+                        logger.info("✅ Successfully registered as Extension 200!")
+                        logger.info("📞 Voice agent can now make outbound calls")
+                        self.extension_registered = True
+                    else:
+                        logger.info("✅ Successfully registered with Gate VoIP!")
+                        logger.info("🎯 Voice agent is now ready to receive calls")
+                elif 'INVITE' in message:
+                    # Handle successful outbound call establishment
+                    self._handle_outbound_call_success(message)
                 else:
                     logger.debug(f"Received 200 OK response: {first_line}")
             
-            elif '401 Unauthorized' in first_line and 'REGISTER' in message:
-                # Check if we've already tried too many times
-                if self.registration_attempts >= self.max_registration_attempts:
-                    logger.error("❌ Too many authentication attempts, stopping registration")
-                    logger.error("💡 Check username/password in asterisk_config.json")
-                    logger.error("💡 Run: python check_gate_password.py to verify/update password")
-                    logger.error("💡 Check Gate VoIP web interface: http://192.168.50.50 > PBX Settings > Internal Phones > Extension 200")
-                    return
-                
-                # Parse nonce to avoid duplicate authentication attempts
-                import re
-                nonce_match = re.search(r'nonce="([^"]*)"', message)
-                current_nonce = nonce_match.group(1) if nonce_match else None
-                
-                if current_nonce == self.last_nonce:
-                    logger.error("❌ Same authentication challenge received - password is incorrect")
-                    logger.error("💡 Run: python check_gate_password.py to verify/update password")
-                    logger.error("💡 Check Gate VoIP web interface: http://192.168.50.50 > PBX Settings > Internal Phones > Extension 200")
-                    return
-                
-                self.last_nonce = current_nonce
-                self.registration_attempts += 1
-                logger.info(f"🔐 Received authentication challenge (attempt {self.registration_attempts}/{self.max_registration_attempts})")
-                logger.info(f"🔐 Nonce: {current_nonce[:20]}..." if current_nonce else "🔐 No nonce found")
-                
-                # Send authenticated REGISTER
-                self._create_authenticated_register(message)
+            elif '401 Unauthorized' in first_line:
+                if 'REGISTER' in message:
+                    # Check if this is for extension registration
+                    call_id_line = [line for line in message.split('\n') if line.strip().startswith('Call-ID:')]
+                    is_extension_registration = call_id_line and self.registration_call_id and self.registration_call_id in call_id_line[0]
+                    
+                    if is_extension_registration:
+                        logger.info("🔐 Received authentication challenge for Extension 200 registration")
+                        # Send authenticated REGISTER for extension
+                        self._create_authenticated_extension_register(message)
+                    else:
+                        # Check if we've already tried too many times
+                        if self.registration_attempts >= self.max_registration_attempts:
+                            logger.error("❌ Too many authentication attempts, stopping registration")
+                            logger.error("💡 Check username/password in asterisk_config.json")
+                            logger.error("💡 Run: python check_gate_password.py to verify/update password")
+                            logger.error("💡 Check Gate VoIP web interface: http://192.168.50.50 > PBX Settings > Internal Phones > Extension 200")
+                            return
+                        
+                        # Parse nonce to avoid duplicate authentication attempts
+                        import re
+                        nonce_match = re.search(r'nonce="([^"]*)"', message)
+                        current_nonce = nonce_match.group(1) if nonce_match else None
+                        
+                        if current_nonce == self.last_nonce:
+                            logger.error("❌ Same authentication challenge received - password is incorrect")
+                            logger.error("💡 Run: python check_gate_password.py to verify/update password")
+                            logger.error("💡 Check Gate VoIP web interface: http://192.168.50.50 > PBX Settings > Internal Phones > Extension 200")
+                            return
+                        
+                        self.last_nonce = current_nonce
+                        self.registration_attempts += 1
+                        logger.info(f"🔐 Received authentication challenge (attempt {self.registration_attempts}/{self.max_registration_attempts})")
+                        logger.info(f"🔐 Nonce: {current_nonce[:20]}..." if current_nonce else "🔐 No nonce found")
+                        
+                        # Send authenticated REGISTER
+                        self._create_authenticated_register(message)
+                elif 'INVITE' in message:
+                    # Handle authentication challenge for outbound INVITE
+                    logger.info("🔐 Received authentication challenge for outbound INVITE")
+                    self._create_authenticated_invite(message)
+                else:
+                    logger.warning("🔐 Received 401 for unknown message type")
                 
             elif '403 Forbidden' in first_line:
                 logger.error(f"❌ Authentication failed: {first_line}")
@@ -1607,8 +2037,30 @@ Content-Length: 0
                 logger.error("💡 Verify extension 200 is properly configured in Gate VoIP")
                 
             elif '404 Not Found' in first_line:
-                logger.error(f"❌ User not found: {first_line}")
-                logger.error("💡 Check if extension 200 exists in Gate VoIP configuration")
+                if 'INVITE' in message:
+                    # Extract Call-ID to find the call that failed
+                    call_id = None
+                    for line in message.split('\n'):
+                        line = line.strip()
+                        if line.startswith('Call-ID:'):
+                            call_id = line.split(':', 1)[1].strip()
+                            break
+                    
+                    if call_id and call_id in self.pending_invites:
+                        phone_number = self.pending_invites[call_id]['phone_number']
+                        logger.error(f"❌ Outbound call to {phone_number} failed: {first_line}")
+                        logger.error("💡 This usually means the outgoing route is misconfigured")
+                        logger.error("💡 CRITICAL: Check Gate VoIP outgoing route uses GSM2 trunk (not voice-agent trunk)")
+                        logger.error("💡 Go to: http://192.168.50.50 > PBX Settings > Outgoing Routes")
+                        logger.error("💡 Change trunk from 'voice-agent' to 'gsm2' and save")
+                        
+                        # Clean up the failed call
+                        del self.pending_invites[call_id]
+                    else:
+                        logger.error(f"❌ Call not found: {first_line}")
+                else:
+                    logger.error(f"❌ User not found: {first_line}")
+                    logger.error("💡 Check if extension 200 exists in Gate VoIP configuration")
                 
             else:
                 logger.info(f"📨 SIP Response: {first_line}")

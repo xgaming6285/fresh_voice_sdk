@@ -1,7 +1,7 @@
 {
   "host": "192.168.50.50",
   "username": "200",
-  "password": "voice-agent123",
+  "password": "123123",
   "voice_agent_ip": "192.168.50.128",
   "public_ip": "78.130.238.50",
   "sip_port": 5060,
@@ -12,6 +12,8 @@
   "phone_number": "+359898995151",
   "local_ip": "192.168.50.128",
   "gateway_ip": "192.168.50.1",
+  "outbound_trunk": "gsm2",
+  "inbound_trunk": "voice-agent",
   "sip_settings": {
     "user_agent": "VoiceAgent/1.0",
     "register_timeout": 300,
