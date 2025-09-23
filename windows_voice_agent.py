@@ -64,7 +64,7 @@ voice_client = genai.Client(http_options={"api_version": "v1beta"})
 
 # Country code to language mapping
 COUNTRY_LANGUAGE_MAP = {
-    # European countries
+    # European countries - Western Europe
     'BG': {'lang': 'Bulgarian', 'code': 'bg', 'formal_address': 'Вие'},
     'RO': {'lang': 'Romanian', 'code': 'ro', 'formal_address': 'Dumneavoastră'},
     'GR': {'lang': 'Greek', 'code': 'el', 'formal_address': 'Εσείς'},
@@ -89,69 +89,247 @@ COUNTRY_LANGUAGE_MAP = {
     'HR': {'lang': 'Croatian', 'code': 'hr', 'formal_address': 'Vi'},
     'SI': {'lang': 'Slovenian', 'code': 'sl', 'formal_address': 'Vi'},
     'PT': {'lang': 'Portuguese', 'code': 'pt', 'formal_address': 'Você'},
-    # Other regions
-    'US': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
-    'CA': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
-    'AU': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    'LU': {'lang': 'French', 'code': 'fr', 'formal_address': 'Vous'},
+    'MC': {'lang': 'French', 'code': 'fr', 'formal_address': 'Vous'},
+    
+    # Nordic countries
+    'SE': {'lang': 'Swedish', 'code': 'sv', 'formal_address': 'Ni'},
+    'NO': {'lang': 'Norwegian', 'code': 'no', 'formal_address': 'Dere'},
+    'DK': {'lang': 'Danish', 'code': 'da', 'formal_address': 'De'},
+    'FI': {'lang': 'Finnish', 'code': 'fi', 'formal_address': 'Te'},
+    'IS': {'lang': 'Icelandic', 'code': 'is', 'formal_address': 'Þið'},
+    
+    # Baltic countries
+    'EE': {'lang': 'Estonian', 'code': 'et', 'formal_address': 'Teie'},
+    'LV': {'lang': 'Latvian', 'code': 'lv', 'formal_address': 'Jūs'},
+    'LT': {'lang': 'Lithuanian', 'code': 'lt', 'formal_address': 'Jūs'},
+    
+    # Eastern Europe
     'RU': {'lang': 'Russian', 'code': 'ru', 'formal_address': 'Вы'},
     'UA': {'lang': 'Ukrainian', 'code': 'uk', 'formal_address': 'Ви'},
     'BY': {'lang': 'Russian', 'code': 'ru', 'formal_address': 'Вы'},
+    'MD': {'lang': 'Romanian', 'code': 'ro', 'formal_address': 'Dumneavoastră'},
+    'MT': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    'CY': {'lang': 'Greek', 'code': 'el', 'formal_address': 'Εσείς'},
+    'BA': {'lang': 'Serbian', 'code': 'sr', 'formal_address': 'Vi'},
+    'ME': {'lang': 'Serbian', 'code': 'sr', 'formal_address': 'Vi'},
+    'XK': {'lang': 'Albanian', 'code': 'sq', 'formal_address': 'Ju'},
+    
+    # North America
+    'US': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    'CA': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    'MX': {'lang': 'Spanish', 'code': 'es', 'formal_address': 'Usted'},
+    
+    # Oceania
+    'AU': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    'NZ': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    
+    # Asia - East Asia
+    'CN': {'lang': 'Chinese', 'code': 'zh', 'formal_address': '您'},
+    'JP': {'lang': 'Japanese', 'code': 'ja', 'formal_address': 'あなた'},
+    'KR': {'lang': 'Korean', 'code': 'ko', 'formal_address': '당신'},
+    'TW': {'lang': 'Chinese', 'code': 'zh-TW', 'formal_address': '您'},
+    'HK': {'lang': 'Chinese', 'code': 'zh-HK', 'formal_address': '您'},
+    'SG': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    'MY': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    
+    # Asia - South/Southeast Asia
+    'IN': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    'PK': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    'BD': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    'TH': {'lang': 'Thai', 'code': 'th', 'formal_address': 'คุณ'},
+    'VN': {'lang': 'Vietnamese', 'code': 'vi', 'formal_address': 'Anh/Chị'},
+    'PH': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    'ID': {'lang': 'Indonesian', 'code': 'id', 'formal_address': 'Anda'},
+    
+    # Latin America - South America
+    'BR': {'lang': 'Portuguese', 'code': 'pt-BR', 'formal_address': 'Você'},
+    'AR': {'lang': 'Spanish', 'code': 'es-AR', 'formal_address': 'Usted'},
+    'CL': {'lang': 'Spanish', 'code': 'es-CL', 'formal_address': 'Usted'},
+    'CO': {'lang': 'Spanish', 'code': 'es-CO', 'formal_address': 'Usted'},
+    'PE': {'lang': 'Spanish', 'code': 'es-PE', 'formal_address': 'Usted'},
+    'VE': {'lang': 'Spanish', 'code': 'es-VE', 'formal_address': 'Usted'},
+    'UY': {'lang': 'Spanish', 'code': 'es-UY', 'formal_address': 'Usted'},
+    'PY': {'lang': 'Spanish', 'code': 'es-PY', 'formal_address': 'Usted'},
+    'EC': {'lang': 'Spanish', 'code': 'es-EC', 'formal_address': 'Usted'},
+    'BO': {'lang': 'Spanish', 'code': 'es-BO', 'formal_address': 'Usted'},
+    
+    # Latin America - Central America & Caribbean
+    'GT': {'lang': 'Spanish', 'code': 'es-GT', 'formal_address': 'Usted'},
+    'CR': {'lang': 'Spanish', 'code': 'es-CR', 'formal_address': 'Usted'},
+    'PA': {'lang': 'Spanish', 'code': 'es-PA', 'formal_address': 'Usted'},
+    'NI': {'lang': 'Spanish', 'code': 'es-NI', 'formal_address': 'Usted'},
+    'HN': {'lang': 'Spanish', 'code': 'es-HN', 'formal_address': 'Usted'},
+    'SV': {'lang': 'Spanish', 'code': 'es-SV', 'formal_address': 'Usted'},
+    'BZ': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    'CU': {'lang': 'Spanish', 'code': 'es-CU', 'formal_address': 'Usted'},
+    'DO': {'lang': 'Spanish', 'code': 'es-DO', 'formal_address': 'Usted'},
+    'PR': {'lang': 'Spanish', 'code': 'es-PR', 'formal_address': 'Usted'},
+    'JM': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    
+    # Middle East
+    'AE': {'lang': 'Arabic', 'code': 'ar', 'formal_address': 'أنت'},
+    'SA': {'lang': 'Arabic', 'code': 'ar-SA', 'formal_address': 'أنت'},
+    'QA': {'lang': 'Arabic', 'code': 'ar-QA', 'formal_address': 'أنت'},
+    'KW': {'lang': 'Arabic', 'code': 'ar-KW', 'formal_address': 'أنت'},
+    'BH': {'lang': 'Arabic', 'code': 'ar-BH', 'formal_address': 'أنت'},
+    'OM': {'lang': 'Arabic', 'code': 'ar-OM', 'formal_address': 'أنت'},
+    'JO': {'lang': 'Arabic', 'code': 'ar-JO', 'formal_address': 'أنت'},
+    'LB': {'lang': 'Arabic', 'code': 'ar-LB', 'formal_address': 'أنت'},
+    'SY': {'lang': 'Arabic', 'code': 'ar-SY', 'formal_address': 'أنت'},
+    'IQ': {'lang': 'Arabic', 'code': 'ar-IQ', 'formal_address': 'أنت'},
+    'IL': {'lang': 'Hebrew', 'code': 'he', 'formal_address': 'אתה/את'},
+    'IR': {'lang': 'Persian', 'code': 'fa', 'formal_address': 'شما'},
+    'AF': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    
+    # Africa
+    'ZA': {'lang': 'English', 'code': 'en-ZA', 'formal_address': 'You'},
+    'NG': {'lang': 'English', 'code': 'en-NG', 'formal_address': 'You'},
+    'EG': {'lang': 'Arabic', 'code': 'ar-EG', 'formal_address': 'أنت'},
+    'KE': {'lang': 'English', 'code': 'en-KE', 'formal_address': 'You'},
+    'GH': {'lang': 'English', 'code': 'en-GH', 'formal_address': 'You'},
+    'TN': {'lang': 'Arabic', 'code': 'ar-TN', 'formal_address': 'أنت'},
+    'MA': {'lang': 'Arabic', 'code': 'ar-MA', 'formal_address': 'أنت'},
+    'DZ': {'lang': 'Arabic', 'code': 'ar-DZ', 'formal_address': 'أنت'},
+    'ET': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    'UG': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
+    'TZ': {'lang': 'English', 'code': 'en', 'formal_address': 'You'},
 }
 
 # Phone number prefixes to country mapping (simplified)
 PHONE_COUNTRY_MAP = {
-    # Bulgaria
-    '+359': 'BG', '359': 'BG',
-    # Romania  
-    '+40': 'RO', '40': 'RO',
-    # Greece
-    '+30': 'GR', '30': 'GR',
-    # Serbia
-    '+381': 'RS', '381': 'RS',
-    # North Macedonia
-    '+389': 'MK', '389': 'MK',
-    # Albania
-    '+355': 'AL', '355': 'AL',
-    # Turkey
-    '+90': 'TR', '90': 'TR',
-    # Germany
-    '+49': 'DE', '49': 'DE',
-    # Italy
-    '+39': 'IT', '39': 'IT',
-    # Spain
-    '+34': 'ES', '34': 'ES',
-    # France
-    '+33': 'FR', '33': 'FR',
-    # UK
-    '+44': 'GB', '44': 'GB',
-    # Netherlands
-    '+31': 'NL', '31': 'NL',
-    # Austria
-    '+43': 'AT', '43': 'AT',
-    # Switzerland
-    '+41': 'CH', '41': 'CH',
-    # Poland
-    '+48': 'PL', '48': 'PL',
-    # Czech Republic
-    '+420': 'CZ', '420': 'CZ',
-    # Slovakia
-    '+421': 'SK', '421': 'SK',
-    # Hungary
-    '+36': 'HU', '36': 'HU',
-    # Croatia
-    '+385': 'HR', '385': 'HR',
-    # Slovenia
-    '+386': 'SI', '386': 'SI',
-    # Portugal
-    '+351': 'PT', '351': 'PT',
-    # USA
-    '+1': 'US', '1': 'US',
-    # Russia
-    '+7': 'RU', '7': 'RU',
-    # Ukraine
-    '+380': 'UA', '380': 'UA',
-    # Belarus
-    '+375': 'BY', '375': 'BY',
+    # Europe - Western Europe
+    '+359': 'BG', '359': 'BG',  # Bulgaria
+    '+40': 'RO', '40': 'RO',    # Romania  
+    '+30': 'GR', '30': 'GR',    # Greece
+    '+381': 'RS', '381': 'RS',  # Serbia
+    '+389': 'MK', '389': 'MK',  # North Macedonia
+    '+355': 'AL', '355': 'AL',  # Albania
+    '+90': 'TR', '90': 'TR',    # Turkey
+    '+49': 'DE', '49': 'DE',    # Germany
+    '+39': 'IT', '39': 'IT',    # Italy
+    '+34': 'ES', '34': 'ES',    # Spain
+    '+33': 'FR', '33': 'FR',    # France
+    '+44': 'GB', '44': 'GB',    # UK
+    '+353': 'IE', '353': 'IE',  # Ireland
+    '+31': 'NL', '31': 'NL',    # Netherlands
+    '+32': 'BE', '32': 'BE',    # Belgium
+    '+43': 'AT', '43': 'AT',    # Austria
+    '+41': 'CH', '41': 'CH',    # Switzerland
+    '+48': 'PL', '48': 'PL',    # Poland
+    '+420': 'CZ', '420': 'CZ',  # Czech Republic
+    '+421': 'SK', '421': 'SK',  # Slovakia
+    '+36': 'HU', '36': 'HU',    # Hungary
+    '+385': 'HR', '385': 'HR',  # Croatia
+    '+386': 'SI', '386': 'SI',  # Slovenia
+    '+351': 'PT', '351': 'PT',  # Portugal
+    '+352': 'LU', '352': 'LU',  # Luxembourg
+    '+377': 'MC', '377': 'MC',  # Monaco
+    
+    # Nordic countries
+    '+46': 'SE', '46': 'SE',    # Sweden
+    '+47': 'NO', '47': 'NO',    # Norway
+    '+45': 'DK', '45': 'DK',    # Denmark
+    '+358': 'FI', '358': 'FI',  # Finland
+    '+354': 'IS', '354': 'IS',  # Iceland
+    
+    # Baltic countries
+    '+372': 'EE', '372': 'EE',  # Estonia
+    '+371': 'LV', '371': 'LV',  # Latvia
+    '+370': 'LT', '370': 'LT',  # Lithuania
+    
+    # Eastern Europe
+    '+7': 'RU', '7': 'RU',      # Russia (also Kazakhstan)
+    '+380': 'UA', '380': 'UA',  # Ukraine
+    '+375': 'BY', '375': 'BY',  # Belarus
+    '+373': 'MD', '373': 'MD',  # Moldova
+    '+356': 'MT', '356': 'MT',  # Malta
+    '+357': 'CY', '357': 'CY',  # Cyprus
+    '+387': 'BA', '387': 'BA',  # Bosnia and Herzegovina
+    '+382': 'ME', '382': 'ME',  # Montenegro
+    '+383': 'XK', '383': 'XK',  # Kosovo
+    
+    # North America
+    '+1': 'US', '1': 'US',      # USA/Canada (will differentiate by area code later)
+    '+52': 'MX', '52': 'MX',    # Mexico
+    
+    # Oceania
+    '+61': 'AU', '61': 'AU',    # Australia
+    '+64': 'NZ', '64': 'NZ',    # New Zealand
+    
+    # Asia - East Asia
+    '+86': 'CN', '86': 'CN',    # China
+    '+81': 'JP', '81': 'JP',    # Japan
+    '+82': 'KR', '82': 'KR',    # South Korea
+    '+886': 'TW', '886': 'TW',  # Taiwan
+    '+852': 'HK', '852': 'HK',  # Hong Kong
+    '+65': 'SG', '65': 'SG',    # Singapore
+    '+60': 'MY', '60': 'MY',    # Malaysia
+    
+    # Asia - South/Southeast Asia
+    '+91': 'IN', '91': 'IN',    # India
+    '+92': 'PK', '92': 'PK',    # Pakistan
+    '+880': 'BD', '880': 'BD',  # Bangladesh
+    '+66': 'TH', '66': 'TH',    # Thailand
+    '+84': 'VN', '84': 'VN',    # Vietnam
+    '+63': 'PH', '63': 'PH',    # Philippines
+    '+62': 'ID', '62': 'ID',    # Indonesia
+    
+    # Latin America - South America
+    '+55': 'BR', '55': 'BR',    # Brazil
+    '+54': 'AR', '54': 'AR',    # Argentina
+    '+56': 'CL', '56': 'CL',    # Chile
+    '+57': 'CO', '57': 'CO',    # Colombia
+    '+51': 'PE', '51': 'PE',    # Peru
+    '+58': 'VE', '58': 'VE',    # Venezuela
+    '+598': 'UY', '598': 'UY',  # Uruguay
+    '+595': 'PY', '595': 'PY',  # Paraguay
+    '+593': 'EC', '593': 'EC',  # Ecuador
+    '+591': 'BO', '591': 'BO',  # Bolivia
+    
+    # Latin America - Central America & Caribbean
+    '+502': 'GT', '502': 'GT',  # Guatemala
+    '+506': 'CR', '506': 'CR',  # Costa Rica
+    '+507': 'PA', '507': 'PA',  # Panama
+    '+505': 'NI', '505': 'NI',  # Nicaragua
+    '+504': 'HN', '504': 'HN',  # Honduras
+    '+503': 'SV', '503': 'SV',  # El Salvador
+    '+501': 'BZ', '501': 'BZ',  # Belize
+    '+53': 'CU', '53': 'CU',    # Cuba
+    '+1809': 'DO', '1809': 'DO', # Dominican Republic
+    '+1829': 'DO', '1829': 'DO', # Dominican Republic (alt)
+    '+1849': 'DO', '1849': 'DO', # Dominican Republic (alt)
+    '+1787': 'PR', '1787': 'PR', # Puerto Rico
+    '+1939': 'PR', '1939': 'PR', # Puerto Rico (alt)
+    '+1876': 'JM', '1876': 'JM', # Jamaica
+    
+    # Middle East
+    '+971': 'AE', '971': 'AE',  # UAE
+    '+966': 'SA', '966': 'SA',  # Saudi Arabia
+    '+974': 'QA', '974': 'QA',  # Qatar
+    '+965': 'KW', '965': 'KW',  # Kuwait
+    '+973': 'BH', '973': 'BH',  # Bahrain
+    '+968': 'OM', '968': 'OM',  # Oman
+    '+962': 'JO', '962': 'JO',  # Jordan
+    '+961': 'LB', '961': 'LB',  # Lebanon
+    '+963': 'SY', '963': 'SY',  # Syria
+    '+964': 'IQ', '964': 'IQ',  # Iraq
+    '+972': 'IL', '972': 'IL',  # Israel
+    '+98': 'IR', '98': 'IR',    # Iran
+    '+93': 'AF', '93': 'AF',    # Afghanistan
+    
+    # Africa
+    '+27': 'ZA', '27': 'ZA',    # South Africa
+    '+234': 'NG', '234': 'NG',  # Nigeria
+    '+20': 'EG', '20': 'EG',    # Egypt
+    '+254': 'KE', '254': 'KE',  # Kenya
+    '+233': 'GH', '233': 'GH',  # Ghana
+    '+216': 'TN', '216': 'TN',  # Tunisia
+    '+212': 'MA', '212': 'MA',  # Morocco
+    '+213': 'DZ', '213': 'DZ',  # Algeria
+    '+251': 'ET', '251': 'ET',  # Ethiopia
+    '+256': 'UG', '256': 'UG',  # Uganda
+    '+255': 'TZ', '255': 'TZ',  # Tanzania
 }
 
 def detect_caller_country(phone_number: str) -> str:
