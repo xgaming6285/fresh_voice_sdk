@@ -414,6 +414,232 @@ def create_voice_config(language_info: Dict[str, Any]) -> Dict[str, Any]:
 DEFAULT_VOICE_CONFIG = create_voice_config(get_language_config('BG'))
 MODEL = "models/gemini-2.0-flash-live-001"
 
+class CallRecorder:
+    """Records call audio to WAV files - separate files for incoming and outgoing audio"""
+    
+    def __init__(self, session_id: str, caller_id: str, called_number: str):
+        self.session_id = session_id
+        self.caller_id = caller_id
+        self.called_number = called_number
+        self.start_time = datetime.now(timezone.utc)
+        
+        # Create session directory
+        self.session_dir = Path(f"sessions/{session_id}")
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        
+        # WAV file paths
+        timestamp = self.start_time.strftime("%Y%m%d_%H%M%S")
+        self.incoming_wav_path = self.session_dir / f"incoming_{timestamp}.wav"
+        self.outgoing_wav_path = self.session_dir / f"outgoing_{timestamp}.wav"
+        self.mixed_wav_path = self.session_dir / f"mixed_{timestamp}.wav"
+        
+        # WAV file handles
+        self.incoming_wav = None
+        self.outgoing_wav = None
+        
+        # Audio buffers for mixing
+        self.incoming_buffer = []
+        self.outgoing_buffer = []
+        
+        # Recording state
+        self.recording = True
+        
+        # Initialize WAV files
+        self._initialize_wav_files()
+        
+        logger.info(f"🎙️ Recording initialized for session {session_id}")
+        logger.info(f"   Incoming: {self.incoming_wav_path}")
+        logger.info(f"   Outgoing: {self.outgoing_wav_path}")
+    
+    def _initialize_wav_files(self):
+        """Initialize WAV files for recording"""
+        try:
+            # Incoming audio (from caller) - 8kHz, 16-bit, mono
+            self.incoming_wav = wave.open(str(self.incoming_wav_path), 'wb')
+            self.incoming_wav.setnchannels(1)  # Mono
+            self.incoming_wav.setsampwidth(2)  # 16-bit
+            self.incoming_wav.setframerate(8000)  # 8kHz
+            
+            # Outgoing audio (to caller) - 8kHz, 16-bit, mono  
+            self.outgoing_wav = wave.open(str(self.outgoing_wav_path), 'wb')
+            self.outgoing_wav.setnchannels(1)  # Mono
+            self.outgoing_wav.setsampwidth(2)  # 16-bit
+            self.outgoing_wav.setframerate(8000)  # 8kHz
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize WAV files: {e}")
+            self.recording = False
+    
+    def record_incoming_audio(self, pcm_data: bytes):
+        """Record incoming audio (from caller)"""
+        if not self.recording or not self.incoming_wav:
+            return
+            
+        try:
+            self.incoming_wav.writeframes(pcm_data)
+            # Store in buffer for mixing
+            self.incoming_buffer.append(pcm_data)
+            
+            # Keep buffer manageable (last 10 seconds at 8kHz)
+            max_buffer_size = 10 * 8000 * 2  # 10 seconds of 16-bit audio
+            current_size = sum(len(data) for data in self.incoming_buffer)
+            while current_size > max_buffer_size and self.incoming_buffer:
+                removed = self.incoming_buffer.pop(0)
+                current_size -= len(removed)
+                
+        except Exception as e:
+            logger.error(f"Error recording incoming audio: {e}")
+    
+    def record_outgoing_audio(self, pcm_data: bytes):
+        """Record outgoing audio (to caller)"""
+        if not self.recording or not self.outgoing_wav:
+            return
+            
+        try:
+            self.outgoing_wav.writeframes(pcm_data)
+            # Store in buffer for mixing
+            self.outgoing_buffer.append(pcm_data)
+            
+            # Keep buffer manageable (last 10 seconds at 8kHz)
+            max_buffer_size = 10 * 8000 * 2  # 10 seconds of 16-bit audio
+            current_size = sum(len(data) for data in self.outgoing_buffer)
+            while current_size > max_buffer_size and self.outgoing_buffer:
+                removed = self.outgoing_buffer.pop(0)
+                current_size -= len(removed)
+                
+        except Exception as e:
+            logger.error(f"Error recording outgoing audio: {e}")
+    
+    def create_mixed_recording(self):
+        """Create a mixed recording with both incoming and outgoing audio"""
+        if not self.recording:
+            return
+            
+        try:
+            logger.info("🎵 Creating mixed audio recording...")
+            
+            # Read both WAV files
+            incoming_audio = b""
+            outgoing_audio = b""
+            
+            # Read incoming audio
+            if self.incoming_wav_path.exists():
+                with wave.open(str(self.incoming_wav_path), 'rb') as wav:
+                    incoming_audio = wav.readframes(wav.getnframes())
+            
+            # Read outgoing audio  
+            if self.outgoing_wav_path.exists():
+                with wave.open(str(self.outgoing_wav_path), 'rb') as wav:
+                    outgoing_audio = wav.readframes(wav.getnframes())
+            
+            # Convert to numpy arrays for mixing
+            incoming_array = np.frombuffer(incoming_audio, dtype=np.int16) if incoming_audio else np.array([], dtype=np.int16)
+            outgoing_array = np.frombuffer(outgoing_audio, dtype=np.int16) if outgoing_audio else np.array([], dtype=np.int16)
+            
+            # Pad shorter array with zeros to match lengths
+            max_length = max(len(incoming_array), len(outgoing_array))
+            if len(incoming_array) < max_length:
+                incoming_array = np.pad(incoming_array, (0, max_length - len(incoming_array)))
+            if len(outgoing_array) < max_length:
+                outgoing_array = np.pad(outgoing_array, (0, max_length - len(outgoing_array)))
+            
+            # Mix audio (average to avoid clipping)
+            if max_length > 0:
+                mixed_array = (incoming_array.astype(np.int32) + outgoing_array.astype(np.int32)) // 2
+                mixed_array = np.clip(mixed_array, -32768, 32767).astype(np.int16)
+                
+                # Save mixed audio
+                with wave.open(str(self.mixed_wav_path), 'wb') as mixed_wav:
+                    mixed_wav.setnchannels(1)  # Mono
+                    mixed_wav.setsampwidth(2)  # 16-bit
+                    mixed_wav.setframerate(8000)  # 8kHz
+                    mixed_wav.writeframes(mixed_array.tobytes())
+                
+                logger.info(f"✅ Mixed recording saved: {self.mixed_wav_path}")
+            else:
+                logger.warning("No audio data to mix")
+                
+        except Exception as e:
+            logger.error(f"Error creating mixed recording: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+    
+    def stop_recording(self):
+        """Stop recording and close WAV files"""
+        if not self.recording:
+            return
+            
+        try:
+            logger.info(f"🛑 Stopping recording for session {self.session_id}")
+            
+            # Close WAV files
+            if self.incoming_wav:
+                self.incoming_wav.close()
+                self.incoming_wav = None
+                
+            if self.outgoing_wav:
+                self.outgoing_wav.close()
+                self.outgoing_wav = None
+            
+            # Create mixed recording
+            self.create_mixed_recording()
+            
+            # Create session info file
+            self._save_session_info()
+            
+            self.recording = False
+            
+            # Log file sizes and locations
+            if self.incoming_wav_path.exists():
+                size_mb = self.incoming_wav_path.stat().st_size / (1024 * 1024)
+                logger.info(f"📁 Incoming audio: {self.incoming_wav_path} ({size_mb:.2f} MB)")
+                
+            if self.outgoing_wav_path.exists():
+                size_mb = self.outgoing_wav_path.stat().st_size / (1024 * 1024)
+                logger.info(f"📁 Outgoing audio: {self.outgoing_wav_path} ({size_mb:.2f} MB)")
+                
+            if self.mixed_wav_path.exists():
+                size_mb = self.mixed_wav_path.stat().st_size / (1024 * 1024)
+                logger.info(f"📁 Mixed audio: {self.mixed_wav_path} ({size_mb:.2f} MB)")
+            
+        except Exception as e:
+            logger.error(f"Error stopping recording: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+    
+    def _save_session_info(self):
+        """Save session information to a JSON file"""
+        try:
+            call_duration = (datetime.now(timezone.utc) - self.start_time).total_seconds()
+            
+            session_info = {
+                "session_id": self.session_id,
+                "caller_id": self.caller_id,
+                "called_number": self.called_number,
+                "start_time": self.start_time.isoformat(),
+                "end_time": datetime.now(timezone.utc).isoformat(),
+                "duration_seconds": call_duration,
+                "files": {
+                    "incoming_audio": str(self.incoming_wav_path.name),
+                    "outgoing_audio": str(self.outgoing_wav_path.name),
+                    "mixed_audio": str(self.mixed_wav_path.name)
+                }
+            }
+            
+            info_path = self.session_dir / "session_info.json"
+            with open(info_path, 'w') as f:
+                json.dump(session_info, f, indent=2)
+                
+            logger.info(f"📄 Session info saved: {info_path}")
+            
+        except Exception as e:
+            logger.error(f"Error saving session info: {e}")
+    
+    def __del__(self):
+        """Cleanup when object is destroyed"""
+        if self.recording:
+            self.stop_recording()
+
 class RTPServer:
     """RTP server to handle audio streams for voice calls"""
     
@@ -494,9 +720,9 @@ class RTPServer:
             except Exception as e:
                 logger.error(f"Error in RTP listener: {e}")
     
-    def create_session(self, session_id: str, remote_addr, voice_session):
+    def create_session(self, session_id: str, remote_addr, voice_session, call_recorder=None):
         """Create RTP session for a call"""
-        rtp_session = RTPSession(session_id, remote_addr, self.socket, voice_session)
+        rtp_session = RTPSession(session_id, remote_addr, self.socket, voice_session, call_recorder)
         self.sessions[session_id] = rtp_session
         logger.info(f"🎵 Created RTP session {session_id} for {remote_addr}")
         return rtp_session
@@ -516,11 +742,12 @@ class RTPServer:
 class RTPSession:
     """Individual RTP session for a call"""
     
-    def __init__(self, session_id: str, remote_addr, rtp_socket, voice_session):
+    def __init__(self, session_id: str, remote_addr, rtp_socket, voice_session, call_recorder=None):
         self.session_id = session_id
         self.remote_addr = remote_addr
         self.rtp_socket = rtp_socket
         self.voice_session = voice_session
+        self.call_recorder = call_recorder  # Add call recorder
         self.sequence_number = 0
         self.timestamp = 0
         self.ssrc = hash(session_id) & 0xFFFFFFFF
@@ -560,6 +787,10 @@ class RTPSession:
             else:
                 # Assume it's already PCM
                 pcm_data = audio_data
+            
+            # Record incoming audio
+            if self.call_recorder:
+                self.call_recorder.record_incoming_audio(pcm_data)
             
             # Queue audio for processing
             self.audio_queue.put(pcm_data)
@@ -762,6 +993,10 @@ class RTPSession:
         """
         Takes 16-bit mono PCM at 8000 Hz, μ-law encodes, then enqueues in 20 ms packets.
         """
+        # Record outgoing audio before encoding
+        if self.call_recorder:
+            self.call_recorder.record_outgoing_audio(pcm16)
+        
         ulaw = self.pcm_to_ulaw(pcm16)  # your existing encoder
         packet_size = 160  # 20 ms @ 8000 Hz, 1 byte/sample for G.711
         for i in range(0, len(ulaw), packet_size):
@@ -1095,7 +1330,7 @@ class WindowsSIPHandler:
             voice_session = WindowsVoiceSession(session_id, caller_id, self.phone_number, voice_config)
             
             # Create RTP session for audio
-            rtp_session = self.rtp_server.create_session(session_id, addr, voice_session)
+            rtp_session = self.rtp_server.create_session(session_id, addr, voice_session, voice_session.call_recorder)
             
             active_sessions[session_id] = {
                 "voice_session": voice_session,
@@ -1885,7 +2120,7 @@ Content-Length: {len(sdp_content)}
             # Create RTP session - for outbound calls, we need to get the remote address from SDP
             # For now, we'll use the Gate VoIP address as the RTP destination
             remote_addr = (self.gate_ip, 5004)  # Default RTP port
-            rtp_session = self.rtp_server.create_session(session_id, remote_addr, voice_session)
+            rtp_session = self.rtp_server.create_session(session_id, remote_addr, voice_session, voice_session.call_recorder)
             
             # Store the active session
             active_sessions[session_id] = {
@@ -2092,6 +2327,10 @@ class WindowsVoiceSession:
         self.session_logger = SessionLogger()
         self.voice_session = None
         self.gemini_session = None  # The actual session object from the context manager
+        
+        # Initialize call recorder
+        self.call_recorder = CallRecorder(session_id, caller_id, called_number)
+        logger.info(f"🎙️ Call recorder initialized for session {session_id}")
         
         # Use provided voice config or default
         self.voice_config = voice_config if voice_config else DEFAULT_VOICE_CONFIG
@@ -2420,6 +2659,11 @@ class WindowsVoiceSession:
     def cleanup(self):
         """Clean up the session synchronously"""
         try:
+            # Stop call recording
+            if hasattr(self, 'call_recorder') and self.call_recorder:
+                self.call_recorder.stop_recording()
+                logger.info(f"📼 Recording stopped for session {self.session_id}")
+            
             # Simply clear the sessions without trying to close them async
             # The WebSocket will be closed when the object is garbage collected
             self.voice_session = None
@@ -2448,6 +2692,11 @@ class WindowsVoiceSession:
     async def async_cleanup(self):
         """Clean up the session asynchronously"""
         try:
+            # Stop call recording
+            if hasattr(self, 'call_recorder') and self.call_recorder:
+                self.call_recorder.stop_recording()
+                logger.info(f"📼 Recording stopped for session {self.session_id}")
+            
             await self._async_close_session()
             
             self.session_logger.log_transcript("system", "Call ended")
@@ -2552,6 +2801,60 @@ async def get_config():
         }
     }
 
+@app.get("/api/recordings")
+async def get_recordings():
+    """Get list of available call recordings"""
+    try:
+        sessions_dir = Path("sessions")
+        recordings = []
+        
+        if sessions_dir.exists():
+            for session_dir in sessions_dir.iterdir():
+                if session_dir.is_dir():
+                    session_info_path = session_dir / "session_info.json"
+                    if session_info_path.exists():
+                        try:
+                            with open(session_info_path, 'r') as f:
+                                session_info = json.load(f)
+                            
+                            # Check if audio files exist
+                            audio_files = {}
+                            for audio_type, filename in session_info.get('files', {}).items():
+                                audio_path = session_dir / filename
+                                if audio_path.exists():
+                                    audio_files[audio_type] = {
+                                        "filename": filename,
+                                        "size_mb": round(audio_path.stat().st_size / (1024 * 1024), 2),
+                                        "path": str(audio_path)
+                                    }
+                            
+                            if audio_files:  # Only include if audio files exist
+                                recordings.append({
+                                    "session_id": session_info.get('session_id'),
+                                    "caller_id": session_info.get('caller_id'),
+                                    "called_number": session_info.get('called_number'),
+                                    "start_time": session_info.get('start_time'),
+                                    "end_time": session_info.get('end_time'),
+                                    "duration_seconds": session_info.get('duration_seconds'),
+                                    "audio_files": audio_files
+                                })
+                        except Exception as e:
+                            logger.warning(f"Error reading session info for {session_dir.name}: {e}")
+                            continue
+        
+        # Sort by start_time, newest first
+        recordings.sort(key=lambda x: x.get('start_time', ''), reverse=True)
+        
+        return {
+            "status": "success",
+            "total_recordings": len(recordings),
+            "recordings": recordings
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting recordings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import argparse
     
@@ -2575,6 +2878,7 @@ if __name__ == "__main__":
     logger.info("  GET /health - System health check")
     logger.info("  GET /api/config - Current configuration")
     logger.info("  GET /api/sessions - Active call sessions")
+    logger.info("  GET /api/recordings - List call recordings")
     logger.info("  POST /api/make_call - Initiate outbound call")
     logger.info("=" * 60)
     

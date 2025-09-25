@@ -1,0 +1,13 @@
+{
+  "session_id": "c13337d3-fab6-4126-81c0-7b3808d1e4f8",
+  "caller_id": "+359898995151",
+  "called_number": "+359988925337",
+  "start_time": "2025-09-25T12:36:42.143083+00:00",
+  "end_time": "2025-09-25T12:37:20.601185+00:00",
+  "duration_seconds": 38.458074,
+  "files": {
+    "incoming_audio": "incoming_20250925_123642.wav",
+    "outgoing_audio": "outgoing_20250925_123642.wav",
+    "mixed_audio": "mixed_20250925_123642.wav"
+  }
+}
