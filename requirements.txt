@@ -22,3 +22,6 @@ audioop-lts
 librosa
 scipy
 soundfile
+
+# Speech-to-text transcription
+openai-whisper

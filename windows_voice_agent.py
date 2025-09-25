@@ -28,18 +28,76 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import uvicorn
 
+# Configure logging first
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 import pyaudio
 import requests
 from scipy.signal import resample
 import numpy as np
 
+# Multi-tier transcription system with Windows-compatible fallbacks
+TRANSCRIPTION_METHOD = None
+WHISPER_AVAILABLE = False
+FASTER_WHISPER_AVAILABLE = False
+OPENAI_API_AVAILABLE = False
+
+# First try faster-whisper (Windows-friendly, no numba dependency)
+try:
+    from faster_whisper import WhisperModel
+    FASTER_WHISPER_AVAILABLE = True
+    TRANSCRIPTION_METHOD = "faster_whisper"
+    logger.info("✅ faster-whisper library loaded successfully (recommended for Windows)")
+except ImportError:
+    logger.info("💡 faster-whisper not available, trying openai-whisper...")
+except Exception as e:
+    logger.warning(f"⚠️ faster-whisper failed to load: {e}")
+
+# Fallback to OpenAI API (cloud-based, always compatible)
+if not FASTER_WHISPER_AVAILABLE:
+    try:
+        import openai
+        # Check if API key is available in environment or can be configured
+        import os
+        if os.getenv('OPENAI_API_KEY'):
+            OPENAI_API_AVAILABLE = True
+            TRANSCRIPTION_METHOD = "openai_api"
+            logger.info("✅ OpenAI API available for transcription (cloud-based)")
+        else:
+            logger.info("💡 OpenAI API client available but no API key configured")
+    except ImportError:
+        logger.info("💡 OpenAI API client not available, trying local whisper...")
+    except Exception as e:
+        logger.warning(f"⚠️ OpenAI API setup failed: {e}")
+
+# Last resort: try original openai-whisper (may have numba issues on Windows)
+if not FASTER_WHISPER_AVAILABLE and not OPENAI_API_AVAILABLE:
+    try:
+        import whisper
+        WHISPER_AVAILABLE = True
+        TRANSCRIPTION_METHOD = "openai_whisper"
+        logger.info("✅ openai-whisper library loaded (may have Windows compatibility issues)")
+    except ImportError as e:
+        logger.warning(f"⚠️ openai-whisper library not available: {e}")
+    except OSError as e:
+        logger.warning(f"⚠️ openai-whisper failed to load (Windows compatibility issue): {e}")
+        logger.warning("📝 This is often due to numba/llvmlite compatibility on Windows")
+    except Exception as e:
+        logger.warning(f"⚠️ Unexpected error loading openai-whisper: {e}")
+
+# Final status check
+TRANSCRIPTION_AVAILABLE = FASTER_WHISPER_AVAILABLE or OPENAI_API_AVAILABLE or WHISPER_AVAILABLE
+if TRANSCRIPTION_AVAILABLE:
+    logger.info(f"🎤 Transcription enabled using: {TRANSCRIPTION_METHOD}")
+else:
+    logger.warning("⚠️ No transcription method available - transcription features will be disabled")
+    logger.warning("💡 To enable transcription on Windows, try: pip install faster-whisper")
+    logger.warning("💡 Or configure OpenAI API: set OPENAI_API_KEY environment variable")
+
 # Import our existing voice agent components
 from main import SessionLogger, SEND_SAMPLE_RATE, RECEIVE_SAMPLE_RATE, FORMAT, CHANNELS
 from google import genai
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # Load configuration
 def load_config():
@@ -386,11 +444,11 @@ def create_voice_config(language_info: Dict[str, Any]) -> Dict[str, Any]:
     
     # Create system instruction in the detected language
     if lang_name == 'English':
-        system_text = f"You are an expert affiliate marketing consultant answering phone calls in {lang_name}. The caller has already been greeted, so respond directly to their questions or requests. You specialize in affiliate marketing strategies, lead generation, FTDs (First Time Deposits), CPA networks, affiliate networks, commission structures, traffic generation, conversion optimization, and building successful affiliate campaigns. You have deep knowledge of performance marketing, lead qualification, deposit optimization for trading/forex/fintech offers, working with affiliate networks like MaxBounty, ClickBank, ShareASale, and CPA networks. Share actionable insights about choosing profitable verticals, generating high-quality leads, optimizing FTD rates, building audiences, media buying, and scaling affiliate income. Always respond in {lang_name} and maintain a professional but enthusiastic tone about affiliate marketing opportunities. Keep responses conversational and concise since this is a voice-only interaction. Speak clearly with good enunciation, at a moderate pace, and avoid mumbling or speaking too softly. Project your voice as if speaking over a phone line. Use formal address ({formal_address}) when speaking to callers."
+        system_text = f"You are a highly persuasive sales representative for ArtroFlex joint pain relief cream, answering phone calls in {lang_name}. The caller has been greeted, so respond directly to their questions BUT ALWAYS steer the conversation back to ArtroFlex and closing the sale. You are PERSISTENT and URGENT - every conversation is a sales opportunity. Answer their questions briefly, then immediately connect it to ArtroFlex benefits. You specialize in joint health, arthritis treatment, and natural pain relief. Emphasize these key points REPEATEDLY: ArtroFlex's natural ingredients (glucosamine, chondroitin, MSM, turmeric, menthol) provide FAST pain relief in 15 minutes, restore joint flexibility, reduce inflammation with NO side effects. Create URGENCY - mention limited-time offers, special pricing ending soon, or limited stock. Handle every objection as a buying signal: 'I understand your concern about price - that's exactly why we're offering 50% off TODAY ONLY, but I can only hold this price for the next few minutes.' Use assumptive close techniques: 'When would you like to start feeling pain-free - this week or next week?' Don't accept 'no' easily - ask probing questions about their pain, then show how ArtroFlex solves it. Offer special deals: 'Buy 2 get 1 free TODAY', '30-day guarantee', 'Free shipping if you order now'. Always try to close: 'Can I put you down for the 3-bottle package?' Keep responses conversational but ALWAYS with sales intent. Use formal address ({formal_address}). Speak clearly, enthusiastically, and with confidence."
     elif lang_name == 'Bulgarian':
-        system_text = f"You are an expert affiliate marketing consultant answering phone calls in {lang_name}. The caller has already been greeted, so respond directly to their questions or requests. You specialize in affiliate marketing strategies, lead generation, FTDs (First Time Deposits), CPA networks, affiliate networks, commission structures, traffic generation, conversion optimization, and building successful affiliate campaigns. You have deep knowledge of performance marketing, lead qualification, deposit optimization for trading/forex/fintech offers, working with affiliate networks like MaxBounty, ClickBank, ShareASale, and CPA networks. Share actionable insights about choosing profitable verticals, generating high-quality leads, optimizing FTD rates, building audiences, media buying, and scaling affiliate income. Always respond in {lang_name} language and maintain a professional but enthusiastic tone about affiliate marketing opportunities. Keep responses conversational and concise since this is a voice-only interaction. Speak clearly with good enunciation, at a moderate pace, and avoid mumbling or speaking too softly. Project your voice as if speaking over a phone line. Use formal {lang_name} address ({formal_address}) when speaking to callers."
+        system_text = f"Вие сте изключително убедителен търговски представител на АртроФлекс - крем за болки в ставите, който отговаря на телефонни обаждания на {lang_name}. Обаждащият е поздравен, отговорете на въпросите му, НО ВИНАГИ насочвайте разговора към АртроФлекс и затварянето на продажбата. Вие сте НАСТОЯТЕЛЕН и НЕОТЛОЖЕН - всеки разговор е продажбена възможност. Отговаряйте кратко на въпросите им, но ВЕДНАГА ги свързвайте с ползите на АртроФлекс. Специализирате се в здравето на ставите, лечението на артрит и естественото облекчаване на болката. Подчертавайте МНОГОКРАТНО тези ключови точки: естествените съставки на АртроФлекс (глюкозамин, хондроитин, MSM, куркума, ментол) осигуряват БЪРЗО облекчаване на болката за 15 минути, възстановяват гъвкавостта на ставите, намаляват възпалението БЕЗ странични ефекти. Създавайте НЕОТЛОЖНОСТ - споменавайте ограничени по време оферти, специални цени, които свършват скоро, или ограничен запас. Справяйте се с всяко възражение като сигнал за купуване: 'Разбирам загриженостите {formal_address} за цената - точно затова предлагаме 50% отстъпка САМО ДНЕС, но мога да задържа тази цена само за следващите няколко минути.' Използвайте техники за предполагащо затваряне: 'Кога би искал да започне да живее без болка - тази седмица или следващата?' Не приемайте 'не' лесно - задавайте проникновени въпроси за болката им, след което покажете как АртроФлекс я решава. Предлагайте специални сделки: 'Купи 2, вземи 1 безплатно ДНЕС', 'Гаранция 30 дни', 'Безплатна доставка при поръчка сега'. Винаги се опитвайте да затворите: 'Мога ли да {formal_address} запиша за пакета от 3 бутилки?' Поддържайте отговорите разговорни, но ВИНАГИ с продажбена цел. Използвайте формално обръщение ({formal_address}). Говорете ясно, ентусиазирано и с увереност."
     else:
-        system_text = f"You are an expert affiliate marketing consultant answering phone calls in {lang_name}. The caller has already been greeted, so respond directly to their questions or requests. You specialize in affiliate marketing strategies, lead generation, FTDs (First Time Deposits), CPA networks, affiliate networks, commission structures, traffic generation, conversion optimization, and building successful affiliate campaigns. You have deep knowledge of performance marketing, lead qualification, deposit optimization for trading/forex/fintech offers, working with affiliate networks like MaxBounty, ClickBank, ShareASale, and CPA networks. Share actionable insights about choosing profitable verticals, generating high-quality leads, optimizing FTD rates, building audiences, media buying, and scaling affiliate income. Always respond in {lang_name} language and maintain a professional but enthusiastic tone about affiliate marketing opportunities. Keep responses conversational and concise since this is a voice-only interaction. Speak clearly with good enunciation, at a moderate pace, and avoid mumbling or speaking too softly. Project your voice as if speaking over a phone line. Use formal address ({formal_address}) when speaking to callers."
+        system_text = f"You are a highly persuasive sales representative for ArtroFlex joint pain relief cream, answering phone calls in {lang_name}. The caller has been greeted, so respond directly to their questions BUT ALWAYS steer the conversation back to ArtroFlex and closing the sale. You are PERSISTENT and URGENT - every conversation is a sales opportunity. Answer their questions briefly, then immediately connect it to ArtroFlex benefits. You specialize in joint health, arthritis treatment, and natural pain relief. Emphasize these key points REPEATEDLY: ArtroFlex's natural ingredients (glucosamine, chondroitin, MSM, turmeric, menthol) provide FAST pain relief in 15 minutes, restore joint flexibility, reduce inflammation with NO side effects. Create URGENCY - mention limited-time offers, special pricing ending soon, or limited stock. Handle every objection as a buying signal: 'I understand your concern about price - that's exactly why we're offering 50% off TODAY ONLY, but I can only hold this price for the next few minutes.' Use assumptive close techniques: 'When would you like to start feeling pain-free - this week or next week?' Don't accept 'no' easily - ask probing questions about their pain, then show how ArtroFlex solves it. Offer special deals: 'Buy 2 get 1 free TODAY', '30-day guarantee', 'Free shipping if you order now'. Always try to close: 'Can I put you down for the 3-bottle package?' Keep responses conversational but ALWAYS with sales intent. Use formal address ({formal_address}). Speak clearly, enthusiastically, and with confidence."
     
     return {
         "response_modalities": ["AUDIO"],
@@ -413,6 +471,313 @@ def create_voice_config(language_info: Dict[str, Any]) -> Dict[str, Any]:
 # Default voice config (Bulgarian) - will be overridden dynamically
 DEFAULT_VOICE_CONFIG = create_voice_config(get_language_config('BG'))
 MODEL = "models/gemini-2.0-flash-live-001"
+
+class AudioTranscriber:
+    """Handles audio transcription using multiple methods with Windows-compatible fallbacks"""
+    
+    def __init__(self, model_size: str = "base"):
+        """
+        Initialize the transcriber with specified model size.
+        
+        Args:
+            model_size: Model size ('tiny', 'base', 'small', 'medium', 'large')
+                       'base' is good balance of speed vs accuracy
+        """
+        self.model_size = model_size
+        self.model = None
+        self.model_loaded = False
+        self.transcription_method = TRANSCRIPTION_METHOD
+        self.available = TRANSCRIPTION_AVAILABLE
+        
+        # Initialize OpenAI client if using API method
+        if self.transcription_method == "openai_api":
+            try:
+                import openai
+                import os
+                self.openai_client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize OpenAI client: {e}")
+                self.available = False
+        
+        if self.available:
+            logger.info(f"🎤 AudioTranscriber initialized using {self.transcription_method} with model size: {model_size}")
+        else:
+            logger.warning(f"⚠️ AudioTranscriber initialized but no transcription method available - transcription disabled")
+    
+    def _load_model(self):
+        """Lazy load the model when first needed (based on transcription method)"""
+        if not self.available:
+            raise RuntimeError("No transcription method is available - cannot load model")
+            
+        if not self.model_loaded:
+            try:
+                if self.transcription_method == "faster_whisper":
+                    logger.info(f"📥 Loading faster-whisper model '{self.model_size}'... (this may take a moment)")
+                    from faster_whisper import WhisperModel
+                    self.model = WhisperModel(self.model_size, device="cpu")
+                    logger.info(f"✅ faster-whisper model '{self.model_size}' loaded successfully")
+                    
+                elif self.transcription_method == "openai_whisper":
+                    logger.info(f"📥 Loading openai-whisper model '{self.model_size}'... (this may take a moment)")
+                    import whisper
+                    self.model = whisper.load_model(self.model_size)
+                    logger.info(f"✅ openai-whisper model '{self.model_size}' loaded successfully")
+                    
+                elif self.transcription_method == "openai_api":
+                    # No model loading needed for API - client is already initialized
+                    logger.info(f"✅ OpenAI API client ready for transcription")
+                    
+                self.model_loaded = True
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to load {self.transcription_method} model: {e}")
+                raise
+    
+    def transcribe_audio_file(self, audio_path: str, language: str = None) -> dict:
+        """
+        Transcribe audio file to text using available transcription method.
+        
+        Args:
+            audio_path: Path to the audio file (WAV, MP3, etc.)
+            language: Optional language code to hint the model (e.g., 'en', 'bg', 'ro')
+        
+        Returns:
+            dict: Transcription result with 'text', 'language', 'segments' etc.
+        """
+        if not self.available:
+            logger.warning(f"⚠️ Transcription requested but no method available for {audio_path}")
+            return {
+                "text": "",
+                "error": "No transcription method available - transcription disabled",
+                "success": False
+            }
+        
+        try:
+            # Check if audio file exists
+            if not Path(audio_path).exists():
+                logger.error(f"Audio file not found: {audio_path}")
+                return {"text": "", "error": "File not found", "success": False}
+            
+            # Get file size for logging
+            file_size = Path(audio_path).stat().st_size / (1024 * 1024)  # MB
+            logger.info(f"🎙️ Transcribing audio file using {self.transcription_method}: {audio_path} ({file_size:.2f} MB)")
+            
+            # Transcribe using the available method
+            if self.transcription_method == "openai_api":
+                result = self._transcribe_with_openai_api(audio_path, language)
+            else:
+                # Load local model if not already loaded
+                if not self.model_loaded:
+                    self._load_model()
+                
+                if self.transcription_method == "faster_whisper":
+                    result = self._transcribe_with_faster_whisper(audio_path, language)
+                elif self.transcription_method == "openai_whisper":
+                    result = self._transcribe_with_openai_whisper(audio_path, language)
+                else:
+                    raise ValueError(f"Unknown transcription method: {self.transcription_method}")
+            
+            # Log transcription results
+            detected_language = result.get('language', 'unknown')
+            text = result.get('text', '').strip()
+            text_length = len(text)
+            confidence = result.get('confidence')
+            
+            logger.info(f"✅ Transcription completed")
+            logger.info(f"   Method: {self.transcription_method}")
+            logger.info(f"   Detected language: {detected_language}")
+            logger.info(f"   Text length: {text_length} characters")
+            if confidence:
+                logger.info(f"   Confidence: {confidence:.3f}")
+            logger.info(f"   Text preview: {text[:100]}..." if text_length > 100 else f"   Full text: {text}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Error transcribing audio file {audio_path}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return {
+                "text": "",
+                "error": str(e),
+                "success": False
+            }
+    
+    def _transcribe_with_openai_api(self, audio_path: str, language: str = None) -> dict:
+        """Transcribe using OpenAI's cloud API"""
+        try:
+            with open(audio_path, 'rb') as audio_file:
+                transcript = self.openai_client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    language=language,
+                    response_format="verbose_json"
+                )
+            
+            return {
+                "text": transcript.text.strip(),
+                "language": getattr(transcript, 'language', language or 'unknown'),
+                "segments": getattr(transcript, 'segments', []),
+                "confidence": None,  # OpenAI API doesn't provide confidence scores
+                "success": True
+            }
+        except Exception as e:
+            logger.error(f"❌ OpenAI API transcription failed: {e}")
+            raise
+    
+    def _transcribe_with_faster_whisper(self, audio_path: str, language: str = None) -> dict:
+        """Transcribe using faster-whisper (local)"""
+        try:
+            # Prepare transcription options
+            options = {}
+            if language:
+                options['language'] = language
+            
+            segments, info = self.model.transcribe(audio_path, **options)
+            
+            # Collect all segments into text
+            text_segments = []
+            all_segments = []
+            total_confidence = 0
+            segment_count = 0
+            
+            for segment in segments:
+                text_segments.append(segment.text)
+                all_segments.append({
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text,
+                    "confidence": getattr(segment, 'avg_logprob', 0)
+                })
+                if hasattr(segment, 'avg_logprob'):
+                    total_confidence += segment.avg_logprob
+                    segment_count += 1
+            
+            full_text = ' '.join(text_segments).strip()
+            avg_confidence = total_confidence / segment_count if segment_count > 0 else None
+            
+            return {
+                "text": full_text,
+                "language": info.language,
+                "segments": all_segments,
+                "confidence": avg_confidence,
+                "success": True
+            }
+        except Exception as e:
+            logger.error(f"❌ faster-whisper transcription failed: {e}")
+            raise
+    
+    def _transcribe_with_openai_whisper(self, audio_path: str, language: str = None) -> dict:
+        """Transcribe using original openai-whisper (local)"""
+        try:
+            # Prepare transcription options
+            options = {}
+            if language:
+                options['language'] = language
+            
+            result = self.model.transcribe(audio_path, **options)
+            
+            return {
+                "text": result.get('text', '').strip(),
+                "language": result.get('language', 'unknown'),
+                "segments": result.get('segments', []),
+                "confidence": getattr(result, 'avg_logprob', None),
+                "success": True
+            }
+        except Exception as e:
+            logger.error(f"❌ openai-whisper transcription failed: {e}")
+            raise
+    
+    def transcribe_call_recordings(self, session_dir: Path, language_hint: str = None) -> dict:
+        """
+        Transcribe all audio files for a call session.
+        
+        Args:
+            session_dir: Path to session directory containing WAV files
+            language_hint: Optional language code to hint the model
+        
+        Returns:
+            dict: Transcription results for incoming, outgoing, and mixed audio
+        """
+        transcripts = {}
+        
+        if not self.available:
+            logger.warning(f"⚠️ Transcription requested for session {session_dir.name} but Whisper not available")
+            # Return empty results for all audio types so the system doesn't break
+            for audio_type in ['incoming', 'outgoing', 'mixed']:
+                transcripts[audio_type] = {
+                    "text": "",
+                    "error": "Whisper library not available - transcription disabled",
+                    "success": False
+                }
+            return transcripts
+        
+        # Find audio files in session directory
+        audio_files = {
+            'incoming': None,
+            'outgoing': None,
+            'mixed': None
+        }
+        
+        # Look for audio files
+        for file_path in session_dir.glob("*.wav"):
+            filename = file_path.name.lower()
+            if 'incoming' in filename:
+                audio_files['incoming'] = file_path
+            elif 'outgoing' in filename:
+                audio_files['outgoing'] = file_path
+            elif 'mixed' in filename:
+                audio_files['mixed'] = file_path
+        
+        # Transcribe each audio file
+        for audio_type, audio_path in audio_files.items():
+            if audio_path and audio_path.exists():
+                logger.info(f"🎙️ Transcribing {audio_type} audio...")
+                result = self.transcribe_audio_file(str(audio_path), language_hint)
+                transcripts[audio_type] = result
+                
+                # Save transcript to text file (even if transcription failed)
+                transcript_path = session_dir / f"{audio_type}_transcript.txt"
+                try:
+                    with open(transcript_path, 'w', encoding='utf-8') as f:
+                        f.write(f"# {audio_type.title()} Audio Transcript\n")
+                        f.write(f"# File: {audio_path.name}\n")
+                        f.write(f"# Language: {result.get('language', 'unknown')}\n")
+                        f.write(f"# Transcribed: {datetime.now(timezone.utc).isoformat()}\n")
+                        
+                        if result.get('success', False):
+                            f.write(f"\n{result.get('text', '')}")
+                            
+                            # Add detailed segments if available
+                            segments = result.get('segments', [])
+                            if segments:
+                                f.write("\n\n# Detailed Segments (with timestamps)\n")
+                                for segment in segments:
+                                    start = segment.get('start', 0)
+                                    end = segment.get('end', 0)
+                                    text = segment.get('text', '').strip()
+                                    f.write(f"[{start:.2f}s - {end:.2f}s] {text}\n")
+                        else:
+                            f.write(f"\n# Transcription failed: {result.get('error', 'Unknown error')}\n")
+                    
+                    logger.info(f"💾 Saved transcript: {transcript_path}")
+                    transcripts[audio_type]['transcript_file'] = str(transcript_path.name)
+                    
+                except Exception as e:
+                    logger.error(f"❌ Error saving transcript file: {e}")
+            else:
+                logger.warning(f"⚠️ No {audio_type} audio file found in {session_dir}")
+                # Create empty result for missing files
+                transcripts[audio_type] = {
+                    "text": "",
+                    "error": f"No {audio_type} audio file found",
+                    "success": False
+                }
+        
+        return transcripts
+
+# Global transcriber instance (lazy-loaded)
+audio_transcriber = AudioTranscriber(model_size="base")
 
 class CallRecorder:
     """Records call audio to WAV files - separate files for incoming and outgoing audio"""
@@ -602,10 +967,119 @@ class CallRecorder:
                 size_mb = self.mixed_wav_path.stat().st_size / (1024 * 1024)
                 logger.info(f"📁 Mixed audio: {self.mixed_wav_path} ({size_mb:.2f} MB)")
             
+            # Start transcription in background thread to avoid blocking (only if available)
+            if TRANSCRIPTION_AVAILABLE:
+                logger.info(f"🎙️ Starting audio transcription for session {self.session_id}...")
+                threading.Thread(target=self._transcribe_recordings, daemon=True).start()
+            else:
+                logger.info(f"⚠️ Skipping transcription for session {self.session_id} - transcription not available")
+            
         except Exception as e:
             logger.error(f"Error stopping recording: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
+    
+    def _transcribe_recordings(self):
+        """Transcribe call recordings using Whisper (runs in background thread)"""
+        try:
+            logger.info(f"🎤 Transcribing recordings for session {self.session_id}")
+            
+            # Detect language from caller ID for better transcription
+            caller_country = detect_caller_country(self.caller_id)
+            language_info = get_language_config(caller_country)
+            language_hint = None
+            
+            # Map language codes to Whisper-compatible codes
+            lang_code = language_info.get('code', 'en')
+            if lang_code.startswith('en'):
+                language_hint = 'en'
+            elif lang_code.startswith('bg'):
+                language_hint = 'bg'
+            elif lang_code.startswith('ro'):
+                language_hint = 'ro'
+            elif lang_code.startswith('el'):
+                language_hint = 'el'
+            elif lang_code.startswith('de'):
+                language_hint = 'de'
+            elif lang_code.startswith('fr'):
+                language_hint = 'fr'
+            elif lang_code.startswith('es'):
+                language_hint = 'es'
+            elif lang_code.startswith('it'):
+                language_hint = 'it'
+            elif lang_code.startswith('ru'):
+                language_hint = 'ru'
+            # Add more language mappings as needed
+            
+            logger.info(f"Using language hint for transcription: {language_hint} (from {language_info.get('lang', 'Unknown')})")
+            
+            # Transcribe all recordings
+            transcripts = audio_transcriber.transcribe_call_recordings(
+                self.session_dir, 
+                language_hint=language_hint
+            )
+            
+            # Update session info with transcript information
+            self._update_session_info_with_transcripts(transcripts)
+            
+            # Log completion
+            logger.info(f"✅ Transcription completed for session {self.session_id}")
+            for audio_type, result in transcripts.items():
+                if result.get('success'):
+                    text_length = len(result.get('text', ''))
+                    detected_lang = result.get('language', 'unknown')
+                    logger.info(f"   {audio_type}: {text_length} characters, language: {detected_lang}")
+                else:
+                    error = result.get('error', 'Unknown error')
+                    logger.error(f"   {audio_type}: Failed - {error}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error transcribing recordings for session {self.session_id}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+    
+    def _update_session_info_with_transcripts(self, transcripts: dict):
+        """Update session_info.json with transcript information"""
+        try:
+            info_path = self.session_dir / "session_info.json"
+            
+            # Load existing session info
+            if info_path.exists():
+                with open(info_path, 'r', encoding='utf-8') as f:
+                    session_info = json.load(f)
+            else:
+                # Create basic session info if it doesn't exist
+                session_info = {
+                    "session_id": self.session_id,
+                    "caller_id": self.caller_id,
+                    "called_number": self.called_number,
+                    "start_time": self.start_time.isoformat(),
+                    "end_time": datetime.now(timezone.utc).isoformat(),
+                }
+            
+            # Add transcript information
+            session_info["transcripts"] = {}
+            for audio_type, result in transcripts.items():
+                session_info["transcripts"][audio_type] = {
+                    "success": result.get('success', False),
+                    "language": result.get('language', 'unknown'),
+                    "text_length": len(result.get('text', '')),
+                    "confidence": result.get('confidence'),
+                    "transcript_file": result.get('transcript_file'),
+                    "transcribed_at": datetime.now(timezone.utc).isoformat()
+                }
+                
+                if not result.get('success'):
+                    session_info["transcripts"][audio_type]["error"] = result.get('error')
+            
+            # Save updated session info
+            with open(info_path, 'w', encoding='utf-8') as f:
+                json.dump(session_info, f, indent=2, ensure_ascii=False)
+                
+            logger.info(f"💾 Updated session info with transcript data: {info_path}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error updating session info with transcripts: {e}")
     
     def _save_session_info(self):
         """Save session information to a JSON file"""
@@ -2347,9 +2821,9 @@ class WindowsVoiceSession:
         
         # Log call start with language info
         system_text = self.voice_config.get('system_instruction', {}).get('parts', [{}])[0].get('text', '')
-        if 'Bulgarian' in system_text:
+        if 'АртроФлекс' in system_text or 'болки в ставите' in system_text:
             detected_lang = 'Bulgarian'
-        elif 'English' in system_text:
+        elif 'ArtroFlex' in system_text and 'joint pain' in system_text:
             detected_lang = 'English'
         elif 'Romanian' in system_text:
             detected_lang = 'Romanian'
@@ -2385,9 +2859,9 @@ class WindowsVoiceSession:
             logger.info(f"Using model: {MODEL}")
             # Extract language from voice config for logging
             system_text = self.voice_config.get('system_instruction', {}).get('parts', [{}])[0].get('text', '')
-            if 'Bulgarian' in system_text:
+            if 'АртроФлекс' in system_text or 'болки в ставите' in system_text:
                 detected_lang = 'Bulgarian'
-            elif 'English' in system_text:
+            elif 'ArtroFlex' in system_text and 'joint pain' in system_text:
                 detected_lang = 'English'
             elif 'Romanian' in system_text:
                 detected_lang = 'Romanian'
@@ -2784,6 +3258,9 @@ async def health_check():
         "phone_number": config['phone_number'],
         "local_ip": config['local_ip'],
         "gate_voip": config['host'],
+        "transcription_available": TRANSCRIPTION_AVAILABLE,
+        "transcription_method": TRANSCRIPTION_METHOD if TRANSCRIPTION_AVAILABLE else None,
+        "transcription_model": audio_transcriber.model_size if TRANSCRIPTION_AVAILABLE else None,
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
@@ -2828,16 +3305,40 @@ async def get_recordings():
                                         "path": str(audio_path)
                                     }
                             
+                            # Check if transcript files exist
+                            transcript_files = {}
+                            transcripts_info = session_info.get('transcripts', {})
+                            for audio_type, transcript_info in transcripts_info.items():
+                                transcript_filename = transcript_info.get('transcript_file')
+                                if transcript_filename:
+                                    transcript_path = session_dir / transcript_filename
+                                    if transcript_path.exists():
+                                        transcript_files[audio_type] = {
+                                            "filename": transcript_filename,
+                                            "language": transcript_info.get('language', 'unknown'),
+                                            "text_length": transcript_info.get('text_length', 0),
+                                            "confidence": transcript_info.get('confidence'),
+                                            "transcribed_at": transcript_info.get('transcribed_at'),
+                                            "success": transcript_info.get('success', False),
+                                            "path": str(transcript_path)
+                                        }
+                                        
+                                        if not transcript_info.get('success'):
+                                            transcript_files[audio_type]["error"] = transcript_info.get('error')
+                            
                             if audio_files:  # Only include if audio files exist
-                                recordings.append({
+                                recording_entry = {
                                     "session_id": session_info.get('session_id'),
                                     "caller_id": session_info.get('caller_id'),
                                     "called_number": session_info.get('called_number'),
                                     "start_time": session_info.get('start_time'),
                                     "end_time": session_info.get('end_time'),
                                     "duration_seconds": session_info.get('duration_seconds'),
-                                    "audio_files": audio_files
-                                })
+                                    "audio_files": audio_files,
+                                    "transcript_files": transcript_files,
+                                    "has_transcripts": len(transcript_files) > 0
+                                }
+                                recordings.append(recording_entry)
                         except Exception as e:
                             logger.warning(f"Error reading session info for {session_dir.name}: {e}")
                             continue
@@ -2854,6 +3355,264 @@ async def get_recordings():
     except Exception as e:
         logger.error(f"Error getting recordings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/transcripts/{session_id}")
+async def get_session_transcripts(session_id: str):
+    """Get transcripts for a specific session"""
+    try:
+        session_dir = Path(f"sessions/{session_id}")
+        
+        if not session_dir.exists():
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        # Load session info
+        session_info_path = session_dir / "session_info.json"
+        if not session_info_path.exists():
+            raise HTTPException(status_code=404, detail="Session info not found")
+        
+        with open(session_info_path, 'r', encoding='utf-8') as f:
+            session_info = json.load(f)
+        
+        # Get transcript information
+        transcripts_info = session_info.get('transcripts', {})
+        transcripts = {}
+        
+        for audio_type, transcript_info in transcripts_info.items():
+            transcript_filename = transcript_info.get('transcript_file')
+            if transcript_filename:
+                transcript_path = session_dir / transcript_filename
+                if transcript_path.exists():
+                    # Read transcript content
+                    with open(transcript_path, 'r', encoding='utf-8') as f:
+                        transcript_content = f.read()
+                    
+                    transcripts[audio_type] = {
+                        "filename": transcript_filename,
+                        "language": transcript_info.get('language', 'unknown'),
+                        "text_length": transcript_info.get('text_length', 0),
+                        "confidence": transcript_info.get('confidence'),
+                        "transcribed_at": transcript_info.get('transcribed_at'),
+                        "success": transcript_info.get('success', False),
+                        "content": transcript_content
+                    }
+                    
+                    if not transcript_info.get('success'):
+                        transcripts[audio_type]["error"] = transcript_info.get('error')
+        
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "session_info": {
+                "caller_id": session_info.get('caller_id'),
+                "called_number": session_info.get('called_number'),
+                "start_time": session_info.get('start_time'),
+                "end_time": session_info.get('end_time'),
+                "duration_seconds": session_info.get('duration_seconds')
+            },
+            "transcripts": transcripts
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting transcripts for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/transcripts/{session_id}/retranscribe")
+async def retranscribe_session(session_id: str, background_tasks: BackgroundTasks):
+    """Trigger re-transcription for a specific session"""
+    try:
+        if not TRANSCRIPTION_AVAILABLE:
+            raise HTTPException(
+                status_code=503, 
+                detail="Transcription service unavailable - no transcription method available"
+            )
+        
+        session_dir = Path(f"sessions/{session_id}")
+        
+        if not session_dir.exists():
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        # Check if audio files exist
+        audio_files_found = []
+        for pattern in ["*incoming*.wav", "*outgoing*.wav", "*mixed*.wav"]:
+            audio_files_found.extend(list(session_dir.glob(pattern)))
+        
+        if not audio_files_found:
+            raise HTTPException(status_code=404, detail="No audio files found for transcription")
+        
+        # Load session info to get caller ID for language detection
+        session_info_path = session_dir / "session_info.json"
+        caller_id = "Unknown"
+        if session_info_path.exists():
+            with open(session_info_path, 'r', encoding='utf-8') as f:
+                session_info = json.load(f)
+                caller_id = session_info.get('caller_id', 'Unknown')
+        
+        # Add background task for transcription
+        background_tasks.add_task(
+            _background_transcribe_session,
+            session_dir,
+            caller_id
+        )
+        
+        return {
+            "status": "success",
+            "message": f"Transcription started for session {session_id}",
+            "session_id": session_id,
+            "audio_files_found": len(audio_files_found)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting retranscription for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/transcripts/{session_id}/{audio_type}")
+async def get_specific_transcript(session_id: str, audio_type: str):
+    """Get transcript content for specific audio type (incoming, outgoing, mixed)"""
+    try:
+        if audio_type not in ['incoming', 'outgoing', 'mixed']:
+            raise HTTPException(status_code=400, detail="Invalid audio type. Must be 'incoming', 'outgoing', or 'mixed'")
+        
+        session_dir = Path(f"sessions/{session_id}")
+        
+        if not session_dir.exists():
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        # Look for transcript file
+        transcript_path = session_dir / f"{audio_type}_transcript.txt"
+        
+        if not transcript_path.exists():
+            raise HTTPException(status_code=404, detail=f"Transcript not found for {audio_type} audio")
+        
+        # Read transcript content
+        with open(transcript_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Get transcript metadata from session info
+        session_info_path = session_dir / "session_info.json"
+        transcript_info = {}
+        if session_info_path.exists():
+            with open(session_info_path, 'r', encoding='utf-8') as f:
+                session_info = json.load(f)
+                transcripts_info = session_info.get('transcripts', {})
+                transcript_info = transcripts_info.get(audio_type, {})
+        
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "audio_type": audio_type,
+            "transcript": {
+                "content": content,
+                "filename": f"{audio_type}_transcript.txt",
+                "language": transcript_info.get('language', 'unknown'),
+                "text_length": transcript_info.get('text_length', len(content)),
+                "confidence": transcript_info.get('confidence'),
+                "transcribed_at": transcript_info.get('transcribed_at'),
+                "success": transcript_info.get('success', True)
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting transcript for session {session_id}, audio type {audio_type}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def _background_transcribe_session(session_dir: Path, caller_id: str):
+    """Background task function for transcribing a session"""
+    try:
+        logger.info(f"🎤 Background transcription started for {session_dir.name}")
+        
+        # Detect language from caller ID
+        caller_country = detect_caller_country(caller_id)
+        language_info = get_language_config(caller_country)
+        language_hint = None
+        
+        # Map language codes to Whisper-compatible codes
+        lang_code = language_info.get('code', 'en')
+        if lang_code.startswith('en'):
+            language_hint = 'en'
+        elif lang_code.startswith('bg'):
+            language_hint = 'bg'
+        elif lang_code.startswith('ro'):
+            language_hint = 'ro'
+        elif lang_code.startswith('el'):
+            language_hint = 'el'
+        elif lang_code.startswith('de'):
+            language_hint = 'de'
+        elif lang_code.startswith('fr'):
+            language_hint = 'fr'
+        elif lang_code.startswith('es'):
+            language_hint = 'es'
+        elif lang_code.startswith('it'):
+            language_hint = 'it'
+        elif lang_code.startswith('ru'):
+            language_hint = 'ru'
+        
+        logger.info(f"Using language hint: {language_hint} (from {language_info.get('lang', 'Unknown')})")
+        
+        # Transcribe all recordings
+        transcripts = audio_transcriber.transcribe_call_recordings(
+            session_dir, 
+            language_hint=language_hint
+        )
+        
+        # Update session info with transcript information
+        info_path = session_dir / "session_info.json"
+        
+        # Load existing session info
+        if info_path.exists():
+            with open(info_path, 'r', encoding='utf-8') as f:
+                session_info = json.load(f)
+        else:
+            session_info = {}
+        
+        # Add transcript information
+        session_info["transcripts"] = {}
+        for audio_type, result in transcripts.items():
+            session_info["transcripts"][audio_type] = {
+                "success": result.get('success', False),
+                "language": result.get('language', 'unknown'),
+                "text_length": len(result.get('text', '')),
+                "confidence": result.get('confidence'),
+                "transcript_file": result.get('transcript_file'),
+                "transcribed_at": datetime.now(timezone.utc).isoformat()
+            }
+            
+            if not result.get('success'):
+                session_info["transcripts"][audio_type]["error"] = result.get('error')
+        
+        # Save updated session info
+        with open(info_path, 'w', encoding='utf-8') as f:
+            json.dump(session_info, f, indent=2, ensure_ascii=False)
+        
+        logger.info(f"✅ Background transcription completed for {session_dir.name}")
+        
+    except Exception as e:
+        logger.error(f"❌ Error in background transcription for {session_dir.name}: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+
+@app.get("/api/transcription/status")
+async def get_transcription_status():
+    """Get transcription service status and capabilities"""
+    return {
+        "status": "success",
+        "transcription_available": TRANSCRIPTION_AVAILABLE,
+        "transcription_method": TRANSCRIPTION_METHOD if TRANSCRIPTION_AVAILABLE else None,
+        "service_status": "enabled" if TRANSCRIPTION_AVAILABLE else "disabled",
+        "model_info": {
+            "model_size": audio_transcriber.model_size if TRANSCRIPTION_AVAILABLE else None,
+            "model_loaded": audio_transcriber.model_loaded if TRANSCRIPTION_AVAILABLE else False
+        } if TRANSCRIPTION_AVAILABLE else None,
+        "supported_languages": [
+            "en", "bg", "ro", "el", "de", "fr", "es", "it", "ru", "zh", "ja", "ko", "ar", "hi", "pt"
+        ] if TRANSCRIPTION_AVAILABLE else [],
+        "reason": f"Transcription enabled using {TRANSCRIPTION_METHOD}" if TRANSCRIPTION_AVAILABLE else "No transcription method available - install faster-whisper or configure OpenAI API key"
+    }
 
 if __name__ == "__main__":
     import argparse
@@ -2875,11 +3634,15 @@ if __name__ == "__main__":
     logger.info(f"API Server: {args.host}:{args.port}")
     logger.info("=" * 60)
     logger.info("Endpoints:")
-    logger.info("  GET /health - System health check")
+    logger.info("  GET /health - System health check (includes transcription status)")
     logger.info("  GET /api/config - Current configuration")
     logger.info("  GET /api/sessions - Active call sessions")
-    logger.info("  GET /api/recordings - List call recordings")
+    logger.info("  GET /api/recordings - List call recordings (with transcripts)")
     logger.info("  POST /api/make_call - Initiate outbound call")
+    logger.info("  GET /api/transcription/status - Check transcription service status")
+    logger.info("  GET /api/transcripts/{session_id} - Get all transcripts for session")
+    logger.info("  GET /api/transcripts/{session_id}/{audio_type} - Get specific transcript")
+    logger.info("  POST /api/transcripts/{session_id}/retranscribe - Re-transcribe session")
     logger.info("=" * 60)
     
     uvicorn.run(

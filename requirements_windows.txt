@@ -32,6 +32,20 @@ mss>=9.0.1
 # Windows-specific audio libraries (may be needed)
 # pywin32>=306  # Uncomment if needed for Windows audio APIs
 
+# Transcription libraries (Windows-compatible alternatives)
+# Choose ONE of these for transcription support:
+
+# Option 1: faster-whisper (Recommended for Windows - no numba/llvmlite issues)
+# faster-whisper>=0.10.0
+
+# Option 2: OpenAI API (Cloud-based, requires API key)
+# openai>=1.0.0
+
+# Option 3: Original openai-whisper (may have Windows compatibility issues)
+# openai-whisper>=20231117
+
+# Note: If none are installed, transcription will be disabled but voice agent will work
+
 # Development tools (optional)
 # pytest>=7.4.3
 # black>=23.11.0
