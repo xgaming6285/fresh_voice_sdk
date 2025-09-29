@@ -102,7 +102,7 @@ from google import genai
 
 # Import CRM API
 from crm_api import crm_router
-from crm_database import init_database, SessionLocal, Lead, CallSession
+from crm_database import init_database, get_session, Lead, CallSession
 
 # Load configuration
 def load_config():
@@ -1494,9 +1494,9 @@ class RTPSession:
             logger.error(f"Error processing incoming audio: {e}")
     
     def _process_audio_queue(self):
-        """Process queued audio through voice session with improved async handling"""
+        """Process queued audio through voice session optimized for maximum performance"""
         audio_buffer = b""
-        chunk_size = 320  # 20ms at 8kHz for immediate processing
+        chunk_size = 480  # 30ms at 8kHz for maximum processing stability
         
         # Create dedicated event loop for this thread
         loop = asyncio.new_event_loop()
@@ -1514,7 +1514,7 @@ class RTPSession:
             self.input_processing = False
     
     async def _async_process_audio_queue(self, audio_buffer: bytes, chunk_size: int):
-        """Async version of audio queue processing with proper streaming"""
+        """Async version of audio queue processing optimized for maximum performance and stability"""
         try:
             # Initialize voice session first
             if not await self.voice_session.initialize_voice_session():
@@ -1524,45 +1524,38 @@ class RTPSession:
             # Start receive task for continuous response handling
             receive_task = asyncio.create_task(self._continuous_receive_responses())
             
-            # Use smaller chunk size for lower latency
-            # 20ms chunks for immediate response
-            chunk_size = 320  # 20ms at 8kHz, 16-bit = 320 bytes
-            min_chunk_size = 160  # 10ms minimum - send as soon as possible
-            
-            # No artificial timing delays - send immediately
-            last_send_time = time.time()
-            target_interval = 0  # No delay between chunks
+            # Large chunk sizes for maximum performance and stability
+            min_chunk_size = 480  # 30ms minimum - high performance
+            max_chunk_size = 640  # 40ms maximum - very stable processing
             
             while self.input_processing:
                 try:
-                    # Get audio chunk with timeout - use asyncio-compatible approach
+                    # Get audio chunk immediately without any timeout
                     try:
-                        # Use a small timeout to check if processing should continue
                         audio_chunk = self.audio_queue.get_nowait()
                         audio_buffer += audio_chunk
                     except queue.Empty:
-                        # Process immediately if we have any audio
+                        # Send any buffered audio immediately, no matter how small
                         if len(audio_buffer) >= min_chunk_size and self.voice_session.gemini_session:
-                            # Send whatever we have immediately - no padding needed
                             await self._send_audio_to_gemini(audio_buffer)
                             audio_buffer = b""
-                        else:
-                            # Only sleep if we have no audio at all
-                            await asyncio.sleep(0.001)  # Minimal sleep just to yield
+                        # Yield control less frequently with larger chunks
+                        await asyncio.sleep(0.01)
                         continue
                     
-                    # Process audio immediately without timing delays
-                    while len(audio_buffer) >= chunk_size:
-                        chunk_to_process = audio_buffer[:chunk_size]
-                        audio_buffer = audio_buffer[chunk_size:]
+                    # Send audio immediately as soon as we have minimum data
+                    while len(audio_buffer) >= min_chunk_size:
+                        chunk_to_process = audio_buffer[:max_chunk_size]
+                        audio_buffer = audio_buffer[max_chunk_size:]
                         
-                        # Send audio to Gemini immediately
+                        # Send audio to Gemini immediately without any delays
                         if self.voice_session.gemini_session:
                             await self._send_audio_to_gemini(chunk_to_process)
                         
                 except Exception as e:
                     logger.error(f"Error in async audio processing: {e}")
-                    await asyncio.sleep(0.01)  # Minimal retry delay
+                    # No retry delay - continue immediately
+                    continue
                     
         except Exception as e:
             logger.error(f"Error in async audio queue processing: {e}")
@@ -1621,8 +1614,8 @@ class RTPSession:
                                                     # Convert and send in smaller chunks
                                                     telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_bytes)
                                                     
-                                                    # Send immediately for lowest latency
-                                                    self.send_audio(telephony_audio)
+                                                    # Send immediately in small chunks for lowest latency
+                                                    self._send_audio_immediate(telephony_audio)
                                                 except Exception as e:
                                                     logger.error(f"Error decoding base64 audio: {e}")
                                             elif isinstance(audio_data, bytes):
@@ -1630,8 +1623,8 @@ class RTPSession:
                                                 # Convert and send in smaller chunks to avoid overwhelming the receiver
                                                 telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_data)
                                                 
-                                                # Send immediately for lowest latency
-                                                self.send_audio(telephony_audio)
+                                                # Send immediately in small chunks for lowest latency
+                                                self._send_audio_immediate(telephony_audio)
                                     
                                     # Also handle text parts for logging
                                     if hasattr(part, 'text') and part.text:
@@ -1645,15 +1638,15 @@ class RTPSession:
                             if isinstance(response.data, bytes):
                                 logger.info(f"📥 Received {len(response.data)} bytes of audio from Gemini (direct)")
                                 telephony_audio = self.voice_session.convert_gemini_to_telephony(response.data)
-                                # Send immediately for lowest latency
-                                self.send_audio(telephony_audio)
+                                # Send immediately in small chunks for lowest latency
+                                self._send_audio_immediate(telephony_audio)
                             elif isinstance(response.data, str):
                                 try:
                                     audio_bytes = base64.b64decode(response.data)
                                     logger.info(f"📥 Received {len(audio_bytes)} bytes of audio from Gemini (direct base64)")
                                     telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_bytes)
-                                    # Send immediately for lowest latency
-                                    self.send_audio(telephony_audio)
+                                    # Send immediately in small chunks for lowest latency
+                                    self._send_audio_immediate(telephony_audio)
                                 except:
                                     pass
                         
@@ -1672,22 +1665,35 @@ class RTPSession:
             except Exception as e:
                 if self.input_processing:  # Only log if we're still processing
                     logger.error(f"Error receiving from Gemini: {e}")
-                    await asyncio.sleep(0.01)  # Minimal retry delay
+                    # No sleep delay - continue immediately for fastest recovery
                     
         logger.info("🎧 Stopped continuous response receiver")
+    
+    def _send_audio_immediate(self, audio_data: bytes):
+        """Send audio data immediately in ultra-small chunks for lowest latency"""
+        if not audio_data:
+            return
+            
+        # Send in large chunks (30ms each) for maximum performance
+        chunk_size = 480  # 30ms at 8kHz = 240 samples * 2 bytes = 480 bytes
+        
+        for i in range(0, len(audio_data), chunk_size):
+            chunk = audio_data[i:i + chunk_size]
+            # Send each chunk immediately to the output queue
+            self.send_audio(chunk)
     
     # Removed _process_chunk - we use continuous streaming instead
     
     def send_audio(self, pcm16: bytes):
         """
-        Takes 16-bit mono PCM at 8000 Hz, μ-law encodes, then enqueues in 20 ms packets.
+        Takes 16-bit mono PCM at 8000 Hz, μ-law encodes, then enqueues in ultra-small packets for low latency.
         """
         # Record outgoing audio before encoding
         if self.call_recorder:
             self.call_recorder.record_outgoing_audio(pcm16)
         
         ulaw = self.pcm_to_ulaw(pcm16)  # your existing encoder
-        packet_size = 160  # 20 ms @ 8000 Hz, 1 byte/sample for G.711
+        packet_size = 240  # 30ms @ 8000 Hz, 1 byte/sample for G.711 - maximum stability
         for i in range(0, len(ulaw), packet_size):
             self.output_queue.put(ulaw[i:i + packet_size])
     
@@ -1760,21 +1766,20 @@ class RTPSession:
     
     def _process_output_queue(self):
         """
-        Dequeue G.711 payloads and transmit with RTP pacing.
-        Emits silence only for packet loss concealment; no artificial noise.
+        Dequeue G.711 payloads and transmit with ultra-low latency RTP pacing.
+        Optimized for immediate audio delivery.
         """
-        ptime_ms = 20
-        frame_bytes = 160  # 20 ms of G.711
-        silence = b"\xff" * frame_bytes  # μ-law silence
-
+        ptime_ms = 30  # Large 30ms chunks for maximum stability
+        frame_bytes = 240  # 30ms of G.711 for high performance
+        
         while self.output_processing:
             try:
-                payload = self.output_queue.get(timeout=0.1)
+                payload = self.output_queue.get(timeout=0.1)  # Larger timeout for stability
             except Exception:
-                # Idle: do not inject comfort noise; stay silent to avoid "radio" hiss
+                # No artificial delays or comfort noise - stay completely silent
                 continue
 
-            # Transmit exactly one frame per ptime
+            # Transmit immediately with minimal pacing
             self._send_rtp(payload)
             self._sleep_ms(ptime_ms)
     
@@ -2002,7 +2007,7 @@ class WindowsSIPHandler:
             logger.info("✅ 200 OK response sent")
             
             # Create or update CRM database - call answered
-            db = SessionLocal()
+            db = get_session()
             try:
                 crm_session = db.query(CallSession).filter(CallSession.session_id == session_id).first()
                 if crm_session:
@@ -2062,13 +2067,42 @@ class WindowsSIPHandler:
                         active_sessions[session_id]["status"] = "active"
                         logger.info(f"🎯 Voice session {session_id} is now active and ready")
                         
-                        # Play greeting after a short delay to ensure RTP is ready
-                        def play_greeting_delayed():
-                            time.sleep(0.5)  # Small delay to ensure RTP connection is established
-                            logger.info("🎵 Playing greeting to caller...")
+                        # Start AI conversation immediately without waiting for user input
+                        def start_ai_conversation():
+                            time.sleep(0.5)  # Allow RTP connection to stabilize
+                            logger.info("🎵 Playing greeting and triggering AI response...")
                             rtp_session.play_greeting_file("greeting.wav")
+                            
+                            # Wait briefly for greeting to start, then trigger AI response
+                            time.sleep(0.8)  # Allow greeting to begin playing
+                            
+                            # Send a brief silence to trigger AI response immediately
+                            silence_chunk = b'\x00' * 640  # 40ms of silence to trigger response
+                            if session_id in active_sessions and active_sessions[session_id]["voice_session"]:
+                                voice_session = active_sessions[session_id]["voice_session"]
+                                if hasattr(voice_session, 'gemini_session') and voice_session.gemini_session:
+                                    try:
+                                        # Convert silence to Gemini format and send to trigger immediate response
+                                        processed_silence = voice_session.convert_telephony_to_gemini(silence_chunk)
+                                        
+                                        # Create a simple async trigger function
+                                        async def trigger_ai():
+                                            await voice_session.gemini_session.send(
+                                                input={"data": processed_silence, "mime_type": "audio/pcm;rate=16000"}
+                                            )
+                                        
+                                        # Run the trigger in a new event loop
+                                        loop = asyncio.new_event_loop()
+                                        asyncio.set_event_loop(loop)
+                                        try:
+                                            loop.run_until_complete(trigger_ai())
+                                        finally:
+                                            loop.close()
+                                        logger.info("🎤 Triggered AI to start conversation immediately")
+                                    except Exception as e:
+                                        logger.error(f"Error triggering AI conversation: {e}")
                         
-                        threading.Thread(target=play_greeting_delayed, daemon=True).start()
+                        threading.Thread(target=start_ai_conversation, daemon=True).start()
                         
                 except Exception as e:
                     logger.error(f"❌ Failed to start voice session: {e}")
@@ -2149,7 +2183,7 @@ Content-Length: 0
                     logger.info(f"Call ended: {session_id}")
                     
                     # Update CRM database
-                    db = SessionLocal()
+                    db = get_session()
                     try:
                         crm_session = db.query(CallSession).filter(CallSession.session_id == session_id).first()
                         if crm_session:
@@ -3303,12 +3337,11 @@ class WindowsVoiceSession:
                 logger.error("❌ Unable to send audio to Gemini after retries")
                 return b""
             
-            # Get response with timeout and better error handling
+            # Get response immediately without timeout - continuous streaming
             response_audio = b""
-            response_timeout = 2.0  # Reduced timeout for faster response
             
             try:
-                # Receive response without timeout for continuous streaming
+                # Receive response immediately without any timeout delays
                 response_audio = await self._receive_response()
                     
             except Exception as receive_error:
@@ -3468,7 +3501,7 @@ async def make_outbound_call(call_request: dict):
         
         if session_id:
             # Save to CRM database
-            db = SessionLocal()
+            db = get_session()
             try:
                 # Find lead by phone number
                 lead = db.query(Lead).filter(
