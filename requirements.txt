@@ -25,3 +25,6 @@ soundfile
 
 # Speech-to-text transcription
 openai-whisper
+
+# Database for CRM
+sqlalchemy

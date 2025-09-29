@@ -1,0 +1,11 @@
+lead_type,first_name,last_name,email,phone,country,prefix,gender,address
+cold,John,Smith,john.smith@example.com,888-555-1234,USA,+1,male,123 Main St New York NY
+ftd,Maria,Rodriguez,maria.r@example.com,555-987-6543,Spain,+34,female,456 Gran Via Madrid
+cold,Hans,Mueller,hans.mueller@example.de,30-12345678,Germany,+49,male,789 Hauptstraße Berlin
+live,Sofia,Petrova,sofia.p@example.bg,888-123-456,Bulgaria,+359,female,321 Vitosha Blvd Sofia
+cold,George,Johnson,george.j@example.co.uk,20-7946-0958,UK,+44,male,10 Downing St London
+ftd,Anna,Kowalski,anna.k@example.pl,22-123-4567,Poland,+48,female,ul. Marszałkowska 1 Warsaw
+filler,Luigi,Rossi,luigi.rossi@example.it,06-1234-5678,Italy,+39,male,Via Roma 1 Rome
+cold,Dimitris,Papadopoulos,dimitris.p@example.gr,21-0-123-4567,Greece,+30,male,Syntagma Square Athens
+live,Elena,Ionescu,elena.i@example.ro,21-123-4567,Romania,+40,female,Calea Victoriei 1 Bucharest
+cold,Pierre,Dubois,pierre.d@example.fr,1-42-86-82-82,France,+33,male,5 Avenue des Champs-Élysées Paris

@@ -100,6 +100,10 @@ else:
 from main import SessionLogger, SEND_SAMPLE_RATE, RECEIVE_SAMPLE_RATE, FORMAT, CHANNELS
 from google import genai
 
+# Import CRM API
+from crm_api import crm_router
+from crm_database import init_database
+
 # Load configuration
 def load_config():
     with open('asterisk_config.json', 'r') as f:
@@ -116,6 +120,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include CRM API routes
+app.include_router(crm_router)
 
 # Global state
 active_sessions: Dict[str, Dict] = {}
@@ -3390,6 +3397,10 @@ sip_handler = WindowsSIPHandler()
 @app.on_event("startup")
 async def startup_event():
     """Start SIP listener when FastAPI starts"""
+    # Initialize CRM database
+    init_database()
+    logger.info("CRM database initialized")
+    
     sip_handler.start_sip_listener()
     logger.info("Windows VoIP Voice Agent started")
     logger.info(f"Phone number: {config['phone_number']}")
