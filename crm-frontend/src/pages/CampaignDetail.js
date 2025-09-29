@@ -603,10 +603,10 @@ function CampaignDetail() {
               { field: "call_count", headerName: "Previous Calls", width: 120 },
             ]}
             checkboxSelection
-            onSelectionModelChange={(newSelection) => {
+            onRowSelectionModelChange={(newSelection) => {
               setSelectedLeadIds(newSelection);
             }}
-            selectionModel={selectedLeadIds}
+            rowSelectionModel={selectedLeadIds}
             autoHeight
             pageSize={10}
             rowsPerPageOptions={[10]}

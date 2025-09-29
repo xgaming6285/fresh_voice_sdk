@@ -102,7 +102,7 @@ from google import genai
 
 # Import CRM API
 from crm_api import crm_router
-from crm_database import init_database
+from crm_database import init_database, SessionLocal, Lead, CallSession
 
 # Load configuration
 def load_config():
@@ -123,6 +123,10 @@ app.add_middleware(
 
 # Include CRM API routes
 app.include_router(crm_router)
+
+# Mount static files for serving audio recordings
+from starlette.staticfiles import StaticFiles
+app.mount("/static", StaticFiles(directory="."), name="static")
 
 # Global state
 active_sessions: Dict[str, Dict] = {}
@@ -1997,6 +2001,29 @@ class WindowsSIPHandler:
             self.socket.sendto(ok_response.encode(), addr)
             logger.info("✅ 200 OK response sent")
             
+            # Create or update CRM database - call answered
+            db = SessionLocal()
+            try:
+                crm_session = db.query(CallSession).filter(CallSession.session_id == session_id).first()
+                if crm_session:
+                    crm_session.status = "answered"
+                else:
+                    # Create new session for incoming calls
+                    crm_session = CallSession(
+                        session_id=session_id,
+                        caller_id=caller_id,
+                        called_number=config.get('phone_number', 'Unknown'),
+                        status="answered",
+                        started_at=datetime.utcnow(),
+                        answered_at=datetime.utcnow()
+                    )
+                    db.add(crm_session)
+                db.commit()
+            except Exception as e:
+                logger.error(f"Error updating CRM session status: {e}")
+            finally:
+                db.close()
+            
             # Detect caller's country and language
             logger.info(f"🌍 ======== LANGUAGE DETECTION ========")
             logger.info(f"📞 Caller ID: {caller_id}")
@@ -2120,6 +2147,21 @@ Content-Length: 0
             for session_id, session_data in list(active_sessions.items()):
                 if session_data.get("caller_addr") == addr:
                     logger.info(f"Call ended: {session_id}")
+                    
+                    # Update CRM database
+                    db = SessionLocal()
+                    try:
+                        crm_session = db.query(CallSession).filter(CallSession.session_id == session_id).first()
+                        if crm_session:
+                            crm_session.status = "completed"
+                            crm_session.ended_at = datetime.utcnow()
+                            if crm_session.started_at and crm_session.ended_at:
+                                crm_session.duration = int((crm_session.ended_at - crm_session.started_at).total_seconds())
+                            db.commit()
+                    except Exception as e:
+                        logger.error(f"Error updating CRM session: {e}")
+                    finally:
+                        db.close()
                     
                     # Cleanup voice session
                     voice_session = session_data["voice_session"]
@@ -3425,6 +3467,35 @@ async def make_outbound_call(call_request: dict):
         session_id = sip_handler.make_outbound_call(phone_number)
         
         if session_id:
+            # Save to CRM database
+            db = SessionLocal()
+            try:
+                # Find lead by phone number
+                lead = db.query(Lead).filter(
+                    (Lead.phone == phone_number) |
+                    (Lead.phone == phone_number.replace('+', '')) |
+                    (Lead.phone.contains(phone_number[-10:]))  # Last 10 digits
+                ).first()
+                
+                # Update lead if found
+                if lead:
+                    lead.call_count += 1
+                    lead.last_called_at = datetime.utcnow()
+                
+                # Create session record
+                new_session = CallSession(
+                    session_id=session_id,
+                    called_number=phone_number,
+                    lead_id=lead.id if lead else None,
+                    campaign_id=None,  # Manual call
+                    status="dialing",
+                    started_at=datetime.utcnow()
+                )
+                db.add(new_session)
+                db.commit()
+            finally:
+                db.close()
+            
             return {
                 "status": "success",
                 "session_id": session_id,
