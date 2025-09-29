@@ -54,30 +54,14 @@ except ImportError:
 except Exception as e:
     logger.warning(f"⚠️ faster-whisper failed to load: {e}")
 
-# Fallback to OpenAI API (cloud-based, always compatible)
+# Try original openai-whisper first (local, better for Bulgarian)
 if not FASTER_WHISPER_AVAILABLE:
-    try:
-        import openai
-        # Check if API key is available in environment or can be configured
-        import os
-        if os.getenv('OPENAI_API_KEY'):
-            OPENAI_API_AVAILABLE = True
-            TRANSCRIPTION_METHOD = "openai_api"
-            logger.info("✅ OpenAI API available for transcription (cloud-based)")
-        else:
-            logger.info("💡 OpenAI API client available but no API key configured")
-    except ImportError:
-        logger.info("💡 OpenAI API client not available, trying local whisper...")
-    except Exception as e:
-        logger.warning(f"⚠️ OpenAI API setup failed: {e}")
-
-# Last resort: try original openai-whisper (may have numba issues on Windows)
-if not FASTER_WHISPER_AVAILABLE and not OPENAI_API_AVAILABLE:
     try:
         import whisper
         WHISPER_AVAILABLE = True
         TRANSCRIPTION_METHOD = "openai_whisper"
-        logger.info("✅ openai-whisper library loaded (may have Windows compatibility issues)")
+        logger.info("✅ openai-whisper library loaded for local transcription")
+        logger.info("🎯 Using LOCAL Whisper model (no API quotas or internet required)")
     except ImportError as e:
         logger.warning(f"⚠️ openai-whisper library not available: {e}")
     except OSError as e:
@@ -85,6 +69,23 @@ if not FASTER_WHISPER_AVAILABLE and not OPENAI_API_AVAILABLE:
         logger.warning("📝 This is often due to numba/llvmlite compatibility on Windows")
     except Exception as e:
         logger.warning(f"⚠️ Unexpected error loading openai-whisper: {e}")
+
+# Fallback to OpenAI API only if local whisper is not available
+if not FASTER_WHISPER_AVAILABLE and not WHISPER_AVAILABLE:
+    try:
+        import openai
+        # Check if API key is available in environment or can be configured
+        import os
+        if os.getenv('OPENAI_API_KEY'):
+            OPENAI_API_AVAILABLE = True
+            TRANSCRIPTION_METHOD = "openai_api"
+            logger.info("✅ OpenAI API available for transcription (cloud-based fallback)")
+        else:
+            logger.info("💡 OpenAI API client available but no API key configured")
+    except ImportError:
+        logger.info("💡 OpenAI API client not available")
+    except Exception as e:
+        logger.warning(f"⚠️ OpenAI API setup failed: {e}")
 
 # Final status check
 TRANSCRIPTION_AVAILABLE = FASTER_WHISPER_AVAILABLE or OPENAI_API_AVAILABLE or WHISPER_AVAILABLE
@@ -475,19 +476,22 @@ MODEL = "models/gemini-2.0-flash-live-001"
 class AudioTranscriber:
     """Handles audio transcription using multiple methods with Windows-compatible fallbacks"""
     
-    def __init__(self, model_size: str = "base"):
+    def __init__(self, model_size: str = "large"):
         """
         Initialize the transcriber with specified model size.
         
         Args:
             model_size: Model size ('tiny', 'base', 'small', 'medium', 'large')
-                       'base' is good balance of speed vs accuracy
+                       'large' provides the best accuracy for all languages including Bulgarian
         """
-        self.model_size = model_size
-        self.model = None
-        self.model_loaded = False
+        # Set transcription method and availability first
         self.transcription_method = TRANSCRIPTION_METHOD
         self.available = TRANSCRIPTION_AVAILABLE
+        
+        # Auto-select the best model size based on available method and system
+        self.model_size = self._select_best_model_size(model_size)
+        self.model = None
+        self.model_loaded = False
         
         # Initialize OpenAI client if using API method
         if self.transcription_method == "openai_api":
@@ -500,9 +504,43 @@ class AudioTranscriber:
                 self.available = False
         
         if self.available:
-            logger.info(f"🎤 AudioTranscriber initialized using {self.transcription_method} with model size: {model_size}")
+            logger.info(f"🎤 AudioTranscriber initialized using {self.transcription_method} with model size: {self.model_size}")
+            if self.model_size != model_size:
+                logger.info(f"📈 Auto-selected model size '{self.model_size}' (requested: '{model_size}') for optimal Bulgarian transcription")
         else:
             logger.warning(f"⚠️ AudioTranscriber initialized but no transcription method available - transcription disabled")
+    
+    def _select_best_model_size(self, requested_size: str) -> str:
+        """
+        Automatically select the best model size based on transcription method and system capabilities.
+        
+        For Bulgarian and other non-English languages, larger models provide significantly better accuracy.
+        """
+        # If using OpenAI API, always use their best model (whisper-1 which is equivalent to large)
+        if self.transcription_method == "openai_api":
+            logger.info("🌐 Using OpenAI API - will use their best model (whisper-1)")
+            return "large"  # This doesn't matter for API but keep consistent
+        
+        # For local transcription methods, prioritize accuracy over speed
+        # Bulgarian and other Slavic languages benefit greatly from larger models
+        model_priority = ["large", "medium", "small", "base", "tiny"]
+        
+        # Try to use the largest model available for best Bulgarian transcription
+        if self.transcription_method in ["openai_whisper", "faster_whisper"]:
+            # For Bulgarian transcription, we want the highest accuracy possible
+            if requested_size == "large" or not requested_size:
+                logger.info("🎯 Using 'large' model for optimal Bulgarian and multilingual transcription accuracy")
+                return "large"
+            else:
+                # Still try to use a good model even if smaller was requested
+                if requested_size in ["tiny", "base"]:
+                    logger.info(f"📈 Upgrading from '{requested_size}' to 'medium' for better Bulgarian transcription")
+                    return "medium"
+                else:
+                    return requested_size
+        
+        # Fallback to requested size if no specific optimization
+        return requested_size
     
     def _load_model(self):
         """Lazy load the model when first needed (based on transcription method)"""
@@ -604,20 +642,45 @@ class AudioTranscriber:
             }
     
     def _transcribe_with_openai_api(self, audio_path: str, language: str = None) -> dict:
-        """Transcribe using OpenAI's cloud API"""
+        """Transcribe using OpenAI's cloud API with optimal settings"""
         try:
+            logger.info("🌐 Using OpenAI API (whisper-1 model) for transcription")
+            if language:
+                logger.info(f"🎯 Language hint: {language}")
+                if language in ['bg', 'Bulgarian']:
+                    logger.info("🇧🇬 Bulgarian language detected - using optimal API settings")
+            
             with open(audio_path, 'rb') as audio_file:
+                # Use verbose_json for detailed results including timestamps
                 transcript = self.openai_client.audio.transcriptions.create(
-                    model="whisper-1",
+                    model="whisper-1",  # OpenAI's best Whisper model
                     file=audio_file,
-                    language=language,
-                    response_format="verbose_json"
+                    language=language if language and len(language) == 2 else None,  # Only 2-letter codes for API
+                    response_format="verbose_json",  # Get detailed results with segments
+                    temperature=0.0,  # Most deterministic results
+                    # Note: OpenAI API doesn't support all the local model parameters
                 )
             
+            # Extract segments if available
+            segments = []
+            if hasattr(transcript, 'segments') and transcript.segments:
+                for segment in transcript.segments:
+                    segments.append({
+                        "start": getattr(segment, 'start', 0),
+                        "end": getattr(segment, 'end', 0),
+                        "text": getattr(segment, 'text', ''),
+                        "confidence": None  # API doesn't provide per-segment confidence
+                    })
+            
+            result_text = transcript.text.strip()
+            detected_language = getattr(transcript, 'language', language or 'unknown')
+            
+            logger.info(f"✅ OpenAI API transcription completed: {len(result_text)} chars, language: {detected_language}")
+            
             return {
-                "text": transcript.text.strip(),
-                "language": getattr(transcript, 'language', language or 'unknown'),
-                "segments": getattr(transcript, 'segments', []),
+                "text": result_text,
+                "language": detected_language,
+                "segments": segments,
                 "confidence": None,  # OpenAI API doesn't provide confidence scores
                 "success": True
             }
@@ -626,13 +689,38 @@ class AudioTranscriber:
             raise
     
     def _transcribe_with_faster_whisper(self, audio_path: str, language: str = None) -> dict:
-        """Transcribe using faster-whisper (local)"""
+        """Transcribe using faster-whisper (local) with optimal settings"""
         try:
-            # Prepare transcription options
-            options = {}
+            # Prepare transcription options with optimal settings for accuracy
+            options = {
+                # Use beam search for better accuracy
+                'beam_size': 5,
+                # More conservative thresholds for better accuracy
+                'compression_ratio_threshold': 2.4,
+                'logprob_threshold': -1.0,
+                'no_speech_threshold': 0.6,
+                # Enable word-level timestamps
+                'word_timestamps': True,
+                # Lower temperature for more consistent results
+                'temperature': 0.0,
+                # Better handling of longer audio
+                'condition_on_previous_text': True,
+            }
+            
             if language:
                 options['language'] = language
+                logger.info(f"🎯 Transcribing with language hint: {language}")
+                
+                # For Bulgarian and other Slavic languages, use specific optimizations
+                if language in ['bg', 'Bulgarian']:
+                    logger.info("🇧🇬 Applying Bulgarian transcription optimizations")
+                    # Even more conservative settings for Bulgarian accuracy
+                    options['beam_size'] = 10  # More thorough search for Bulgarian
+                    options['temperature'] = 0.0
+                    options['compression_ratio_threshold'] = 2.2  # Stricter threshold
+                    options['logprob_threshold'] = -0.8  # Higher confidence requirement
             
+            logger.info(f"🎤 Transcribing with faster-whisper options: {options}")
             segments, info = self.model.transcribe(audio_path, **options)
             
             # Collect all segments into text
@@ -656,6 +744,8 @@ class AudioTranscriber:
             full_text = ' '.join(text_segments).strip()
             avg_confidence = total_confidence / segment_count if segment_count > 0 else None
             
+            logger.info(f"✅ Transcribed {len(text_segments)} segments with avg confidence: {avg_confidence:.3f}" if avg_confidence else "✅ Transcription completed")
+            
             return {
                 "text": full_text,
                 "language": info.language,
@@ -668,13 +758,33 @@ class AudioTranscriber:
             raise
     
     def _transcribe_with_openai_whisper(self, audio_path: str, language: str = None) -> dict:
-        """Transcribe using original openai-whisper (local)"""
+        """Transcribe using original openai-whisper (local) with optimal settings"""
         try:
-            # Prepare transcription options
-            options = {}
+            # Prepare transcription options with optimal settings for accuracy
+            options = {
+                # Use beam search for better accuracy (especially important for Bulgarian)
+                'beam_size': 5,
+                # Lower temperature for more consistent results
+                'temperature': 0.0,
+                # Enable word-level timestamps for detailed analysis
+                'word_timestamps': True,
+                # Use more aggressive decoding for non-English languages
+                'condition_on_previous_text': True,
+            }
+            
             if language:
                 options['language'] = language
+                logger.info(f"🎯 Transcribing with language hint: {language}")
+                
+                # For Bulgarian and other Slavic languages, use specific optimizations
+                if language in ['bg', 'Bulgarian']:
+                    logger.info("🇧🇬 Applying Bulgarian transcription optimizations")
+                    options['temperature'] = 0.0  # More deterministic for Bulgarian
+                    options['compression_ratio_threshold'] = 2.4
+                    options['logprob_threshold'] = -1.0
+                    options['no_speech_threshold'] = 0.6
             
+            logger.info(f"🎤 Transcribing with options: {options}")
             result = self.model.transcribe(audio_path, **options)
             
             return {
@@ -690,7 +800,7 @@ class AudioTranscriber:
     
     def transcribe_call_recordings(self, session_dir: Path, language_hint: str = None) -> dict:
         """
-        Transcribe all audio files for a call session.
+        Transcribe all audio files for a call session concurrently.
         
         Args:
             session_dir: Path to session directory containing WAV files
@@ -698,6 +808,25 @@ class AudioTranscriber:
         
         Returns:
             dict: Transcription results for incoming, outgoing, and mixed audio
+        """
+        # Use asyncio to run concurrent transcription
+        import asyncio
+        
+        # Check if we're already in an event loop
+        try:
+            loop = asyncio.get_running_loop()
+            # We're in an event loop, create a new task
+            return asyncio.run_coroutine_threadsafe(
+                self._transcribe_call_recordings_concurrent(session_dir, language_hint),
+                loop
+            ).result()
+        except RuntimeError:
+            # No event loop running, we can use asyncio.run
+            return asyncio.run(self._transcribe_call_recordings_concurrent(session_dir, language_hint))
+    
+    async def _transcribe_call_recordings_concurrent(self, session_dir: Path, language_hint: str = None) -> dict:
+        """
+        Internal async method to handle concurrent transcription.
         """
         transcripts = {}
         
@@ -729,42 +858,16 @@ class AudioTranscriber:
             elif 'mixed' in filename:
                 audio_files['mixed'] = file_path
         
-        # Transcribe each audio file
+        # Prepare tasks for concurrent execution
+        transcription_tasks = []
+        audio_types_to_process = []
+        
         for audio_type, audio_path in audio_files.items():
             if audio_path and audio_path.exists():
-                logger.info(f"🎙️ Transcribing {audio_type} audio...")
-                result = self.transcribe_audio_file(str(audio_path), language_hint)
-                transcripts[audio_type] = result
-                
-                # Save transcript to text file (even if transcription failed)
-                transcript_path = session_dir / f"{audio_type}_transcript.txt"
-                try:
-                    with open(transcript_path, 'w', encoding='utf-8') as f:
-                        f.write(f"# {audio_type.title()} Audio Transcript\n")
-                        f.write(f"# File: {audio_path.name}\n")
-                        f.write(f"# Language: {result.get('language', 'unknown')}\n")
-                        f.write(f"# Transcribed: {datetime.now(timezone.utc).isoformat()}\n")
-                        
-                        if result.get('success', False):
-                            f.write(f"\n{result.get('text', '')}")
-                            
-                            # Add detailed segments if available
-                            segments = result.get('segments', [])
-                            if segments:
-                                f.write("\n\n# Detailed Segments (with timestamps)\n")
-                                for segment in segments:
-                                    start = segment.get('start', 0)
-                                    end = segment.get('end', 0)
-                                    text = segment.get('text', '').strip()
-                                    f.write(f"[{start:.2f}s - {end:.2f}s] {text}\n")
-                        else:
-                            f.write(f"\n# Transcription failed: {result.get('error', 'Unknown error')}\n")
-                    
-                    logger.info(f"💾 Saved transcript: {transcript_path}")
-                    transcripts[audio_type]['transcript_file'] = str(transcript_path.name)
-                    
-                except Exception as e:
-                    logger.error(f"❌ Error saving transcript file: {e}")
+                audio_types_to_process.append(audio_type)
+                transcription_tasks.append(
+                    self._transcribe_single_audio_async(audio_type, audio_path, session_dir, language_hint)
+                )
             else:
                 logger.warning(f"⚠️ No {audio_type} audio file found in {session_dir}")
                 # Create empty result for missing files
@@ -774,10 +877,111 @@ class AudioTranscriber:
                     "success": False
                 }
         
+        if transcription_tasks:
+            logger.info(f"🚀 Starting concurrent transcription of {len(transcription_tasks)} audio files...")
+            start_time = time.time()
+            
+            # Run all transcription tasks concurrently
+            results = await asyncio.gather(*transcription_tasks, return_exceptions=True)
+            
+            elapsed_time = time.time() - start_time
+            logger.info(f"⏱️ Concurrent transcription completed in {elapsed_time:.2f} seconds")
+            
+            # Process results
+            for i, (audio_type, result) in enumerate(zip(audio_types_to_process, results)):
+                if isinstance(result, Exception):
+                    logger.error(f"❌ Transcription failed for {audio_type}: {result}")
+                    transcripts[audio_type] = {
+                        "text": "",
+                        "error": f"Transcription failed: {str(result)}",
+                        "success": False
+                    }
+                else:
+                    transcripts[audio_type] = result
+        
         return transcripts
+    
+    async def _transcribe_single_audio_async(self, audio_type: str, audio_path: Path, session_dir: Path, language_hint: str = None) -> dict:
+        """
+        Transcribe a single audio file asynchronously.
+        """
+        import asyncio
+        import concurrent.futures
+        
+        logger.info(f"🎙️ Starting transcription of {audio_type} audio...")
+        
+        # Use ThreadPoolExecutor to run the sync transcription in a separate thread
+        loop = asyncio.get_event_loop()
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            try:
+                # Run the synchronous transcription in a thread
+                result = await loop.run_in_executor(
+                    executor,
+                    self.transcribe_audio_file,
+                    str(audio_path),
+                    language_hint
+                )
+                
+                # Save transcript to text file (even if transcription failed)
+                transcript_path = session_dir / f"{audio_type}_transcript.txt"
+                await self._save_transcript_file_async(transcript_path, audio_path, result, audio_type)
+                
+                logger.info(f"✅ Completed transcription of {audio_type} audio ({len(result.get('text', ''))} characters)")
+                result['transcript_file'] = str(transcript_path.name)
+                
+                return result
+                
+            except Exception as e:
+                logger.error(f"❌ Error transcribing {audio_type} audio: {e}")
+                return {
+                    "text": "",
+                    "error": f"Transcription failed: {str(e)}",
+                    "success": False
+                }
+    
+    async def _save_transcript_file_async(self, transcript_path: Path, audio_path: Path, result: dict, audio_type: str):
+        """
+        Save transcript file asynchronously.
+        """
+        import asyncio
+        
+        def _write_transcript():
+            try:
+                with open(transcript_path, 'w', encoding='utf-8') as f:
+                    f.write(f"# {audio_type.title()} Audio Transcript\n")
+                    f.write(f"# File: {audio_path.name}\n")
+                    f.write(f"# Language: {result.get('language', 'unknown')}\n")
+                    f.write(f"# Transcribed: {datetime.now(timezone.utc).isoformat()}\n")
+                    
+                    if result.get('success', False):
+                        f.write(f"\n{result.get('text', '')}")
+                        
+                        # Add detailed segments if available
+                        segments = result.get('segments', [])
+                        if segments:
+                            f.write("\n\n# Detailed Segments (with timestamps)\n")
+                            for segment in segments:
+                                start = segment.get('start', 0)
+                                end = segment.get('end', 0)
+                                text = segment.get('text', '').strip()
+                                f.write(f"[{start:.2f}s - {end:.2f}s] {text}\n")
+                    else:
+                        f.write(f"\n# Transcription failed: {result.get('error', 'Unknown error')}\n")
+                
+                logger.info(f"💾 Saved transcript: {transcript_path}")
+                return True
+                
+            except Exception as e:
+                logger.error(f"❌ Error saving transcript file: {e}")
+                return False
+        
+        # Run the file writing in a thread to avoid blocking
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _write_transcript)
 
-# Global transcriber instance (lazy-loaded)
-audio_transcriber = AudioTranscriber(model_size="base")
+# Global transcriber instance (lazy-loaded) - using large model for best accuracy
+audio_transcriber = AudioTranscriber(model_size="large")
 
 class CallRecorder:
     """Records call audio to WAV files - separate files for incoming and outgoing audio"""
@@ -3632,6 +3836,11 @@ if __name__ == "__main__":
     logger.info(f"Gate VoIP IP: {config['host']}")
     logger.info(f"SIP Port: {config['sip_port']}")
     logger.info(f"API Server: {args.host}:{args.port}")
+    if TRANSCRIPTION_AVAILABLE:
+        logger.info(f"🎤 Transcription: {TRANSCRIPTION_METHOD} with '{audio_transcriber.model_size}' model")
+        logger.info("🇧🇬 Optimized for Bulgarian and multilingual transcription")
+    else:
+        logger.info("⚠️ Transcription: DISABLED (no method available)")
     logger.info("=" * 60)
     logger.info("Endpoints:")
     logger.info("  GET /health - System health check (includes transcription status)")
