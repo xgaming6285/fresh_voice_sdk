@@ -251,7 +251,7 @@ class SessionLogger:
                                 }
                                 for entry in self.transcript_log
                             ]
-                        }, indent=2, ensure_ascii=False)
+                        }, f, indent=2, ensure_ascii=False)
                     print(f"💾 Transcript saved as JSON: {transcript_file}")
                 except Exception as e:
                     print(f"❌ Error saving transcript JSON: {e}")

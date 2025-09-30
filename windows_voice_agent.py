@@ -22,6 +22,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 import queue
+from scipy import signal
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -95,6 +96,298 @@ else:
     logger.warning("⚠️ No transcription method available - transcription features will be disabled")
     logger.warning("💡 To enable transcription on Windows, try: pip install faster-whisper")
     logger.warning("💡 Or configure OpenAI API: set OPENAI_API_KEY environment variable")
+
+class AudioPreprocessor:
+    """Advanced audio preprocessing for noise reduction and speech enhancement"""
+    
+    def __init__(self, sample_rate: int = 8000):
+        self.sample_rate = sample_rate
+        self.frame_size = int(sample_rate * 0.025)  # 25ms frames
+        self.hop_size = int(sample_rate * 0.010)   # 10ms hop
+        
+        # Noise estimation parameters
+        self.noise_estimate = None
+        self.alpha = 0.95  # Smoothing factor for noise estimation
+        self.noise_floor = 0.01  # Minimum noise floor
+        
+        # Speech enhancement parameters
+        self.pre_emphasis = 0.97
+        self.previous_sample = 0
+        
+        # Voice activity detection
+        self.energy_threshold = None
+        self.energy_history = []
+        self.max_history = 30  # 300ms of history at 10ms frames
+        
+        # Dynamic range compression
+        self.compressor_threshold = 0.7
+        self.compressor_ratio = 4.0
+        self.compressor_attack = 0.003  # 3ms
+        self.compressor_release = 0.1   # 100ms
+        self.compressor_envelope = 0.0
+        
+        logger.info("🎵 AudioPreprocessor initialized for speech enhancement")
+    
+    def process_audio(self, audio_data: bytes) -> bytes:
+        """
+        Apply comprehensive audio preprocessing to improve transcription accuracy.
+        
+        Args:
+            audio_data: Raw PCM audio data (16-bit, mono, 8kHz)
+            
+        Returns:
+            Processed audio data with noise reduction and enhancement
+        """
+        try:
+            if len(audio_data) < 2:
+                return audio_data
+                
+            # Convert to numpy array
+            audio_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+            
+            if len(audio_array) == 0:
+                return audio_data
+                
+            # Step 1: Pre-emphasis filter (enhance high frequencies)
+            audio_array = self._apply_pre_emphasis(audio_array)
+            
+            # Step 2: Bandpass filter (focus on speech frequencies)
+            audio_array = self._apply_bandpass_filter(audio_array)
+            
+            # Step 3: Voice activity detection and noise gate
+            audio_array = self._apply_noise_gate(audio_array)
+            
+            # Step 4: Spectral noise reduction
+            audio_array = self._spectral_noise_reduction(audio_array)
+            
+            # Step 5: Dynamic range compression
+            audio_array = self._apply_compression(audio_array)
+            
+            # Step 6: Normalize audio levels
+            audio_array = self._normalize_audio(audio_array)
+            
+            # Convert back to int16
+            audio_array = np.clip(audio_array * 32767, -32768, 32767).astype(np.int16)
+            
+            return audio_array.tobytes()
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Audio preprocessing failed, using original: {e}")
+            return audio_data
+    
+    def _apply_pre_emphasis(self, audio: np.ndarray) -> np.ndarray:
+        """Apply pre-emphasis filter to enhance high frequencies"""
+        try:
+            if len(audio) == 0:
+                return audio
+                
+            # Simple high-pass filter: y[n] = x[n] - α * x[n-1]
+            emphasized = np.zeros_like(audio)
+            emphasized[0] = audio[0]
+            
+            for i in range(1, len(audio)):
+                emphasized[i] = audio[i] - self.pre_emphasis * audio[i-1]
+            
+            return emphasized
+            
+        except Exception as e:
+            logger.debug(f"Pre-emphasis failed: {e}")
+            return audio
+    
+    def _apply_bandpass_filter(self, audio: np.ndarray) -> np.ndarray:
+        """Apply bandpass filter for telephony speech frequencies (300-3400 Hz)"""
+        try:
+            if len(audio) < 10:  # Need minimum samples for filtering
+                return audio
+                
+            # Design bandpass filter for speech frequencies
+            nyquist = self.sample_rate / 2
+            low_freq = 300 / nyquist   # Normalize frequencies
+            high_freq = 3400 / nyquist
+            
+            # Ensure frequencies are valid
+            low_freq = max(0.01, min(low_freq, 0.99))
+            high_freq = max(low_freq + 0.01, min(high_freq, 0.99))
+            
+            # Create bandpass filter
+            b, a = signal.butter(4, [low_freq, high_freq], btype='band')
+            
+            # Apply zero-phase filtering to avoid delay
+            filtered = signal.filtfilt(b, a, audio)
+            
+            return filtered.astype(np.float32)
+            
+        except Exception as e:
+            logger.debug(f"Bandpass filtering failed: {e}")
+            return audio
+    
+    def _apply_noise_gate(self, audio: np.ndarray) -> np.ndarray:
+        """Apply voice activity detection and noise gating"""
+        try:
+            if len(audio) == 0:
+                return audio
+                
+            # Calculate energy
+            energy = np.mean(audio ** 2)
+            
+            # Update energy history
+            self.energy_history.append(energy)
+            if len(self.energy_history) > self.max_history:
+                self.energy_history.pop(0)
+            
+            # Set threshold based on recent history
+            if self.energy_threshold is None and len(self.energy_history) >= 10:
+                # Initial threshold: median energy * 2
+                self.energy_threshold = np.median(self.energy_history) * 2.0
+            elif len(self.energy_history) >= self.max_history:
+                # Adaptive threshold
+                recent_min = np.percentile(self.energy_history, 20)  # 20th percentile
+                self.energy_threshold = max(recent_min * 3.0, self.noise_floor)
+            
+            # Apply noise gate
+            if self.energy_threshold is not None and energy < self.energy_threshold:
+                # Reduce noise segments by 80%
+                audio = audio * 0.2
+            
+            return audio
+            
+        except Exception as e:
+            logger.debug(f"Noise gate failed: {e}")
+            return audio
+    
+    def _spectral_noise_reduction(self, audio: np.ndarray) -> np.ndarray:
+        """Apply spectral subtraction for noise reduction"""
+        try:
+            if len(audio) < self.frame_size:
+                return audio
+                
+            # Frame the signal
+            frames = []
+            for i in range(0, len(audio) - self.frame_size + 1, self.hop_size):
+                frame = audio[i:i + self.frame_size]
+                if len(frame) == self.frame_size:
+                    frames.append(frame)
+            
+            if not frames:
+                return audio
+                
+            enhanced_frames = []
+            
+            for frame in frames:
+                # Apply window
+                windowed = frame * np.hanning(len(frame))
+                
+                # FFT
+                fft = np.fft.rfft(windowed)
+                magnitude = np.abs(fft)
+                phase = np.angle(fft)
+                
+                # Update noise estimate (use first few frames for noise estimation)
+                if self.noise_estimate is None:
+                    self.noise_estimate = magnitude
+                else:
+                    # Adaptive noise estimation
+                    is_speech = np.mean(magnitude) > np.mean(self.noise_estimate) * 2
+                    if not is_speech:
+                        # Update noise estimate during quiet periods
+                        self.noise_estimate = self.alpha * self.noise_estimate + (1 - self.alpha) * magnitude
+                
+                # Spectral subtraction
+                enhanced_magnitude = magnitude - 0.5 * self.noise_estimate
+                enhanced_magnitude = np.maximum(enhanced_magnitude, 0.1 * magnitude)
+                
+                # Reconstruct signal
+                enhanced_fft = enhanced_magnitude * np.exp(1j * phase)
+                enhanced_frame = np.fft.irfft(enhanced_fft)
+                
+                # Remove windowing effect
+                if len(enhanced_frame) == self.frame_size:
+                    enhanced_frames.append(enhanced_frame)
+            
+            if not enhanced_frames:
+                return audio
+                
+            # Overlap-add reconstruction
+            output_length = len(frames) * self.hop_size + self.frame_size - self.hop_size
+            enhanced_audio = np.zeros(output_length)
+            
+            for i, frame in enumerate(enhanced_frames):
+                start = i * self.hop_size
+                end = start + len(frame)
+                if end <= len(enhanced_audio):
+                    enhanced_audio[start:end] += frame
+            
+            # Trim to original length
+            enhanced_audio = enhanced_audio[:len(audio)]
+            
+            return enhanced_audio.astype(np.float32)
+            
+        except Exception as e:
+            logger.debug(f"Spectral noise reduction failed: {e}")
+            return audio
+    
+    def _apply_compression(self, audio: np.ndarray) -> np.ndarray:
+        """Apply dynamic range compression to even out volume levels"""
+        try:
+            if len(audio) == 0:
+                return audio
+                
+            compressed = np.zeros_like(audio)
+            
+            for i, sample in enumerate(audio):
+                # Calculate envelope
+                input_level = abs(sample)
+                
+                if input_level > self.compressor_envelope:
+                    # Attack
+                    self.compressor_envelope += (input_level - self.compressor_envelope) * self.compressor_attack
+                else:
+                    # Release
+                    self.compressor_envelope += (input_level - self.compressor_envelope) * self.compressor_release
+                
+                # Calculate gain reduction
+                if self.compressor_envelope > self.compressor_threshold:
+                    excess = self.compressor_envelope - self.compressor_threshold
+                    gain_reduction = 1.0 - (excess * (1.0 - 1.0/self.compressor_ratio))
+                    compressed[i] = sample * gain_reduction
+                else:
+                    compressed[i] = sample
+            
+            return compressed
+            
+        except Exception as e:
+            logger.debug(f"Compression failed: {e}")
+            return audio
+    
+    def _normalize_audio(self, audio: np.ndarray) -> np.ndarray:
+        """Normalize audio levels while preserving dynamics"""
+        try:
+            if len(audio) == 0:
+                return audio
+                
+            # Calculate RMS
+            rms = np.sqrt(np.mean(audio ** 2))
+            
+            if rms > 1e-6:  # Avoid division by zero
+                # Target RMS level (around -20 dBFS)
+                target_rms = 0.1
+                gain = target_rms / rms
+                
+                # Limit gain to prevent excessive amplification
+                gain = min(gain, 10.0)  # Max 20dB gain
+                
+                normalized = audio * gain
+                
+                # Soft limiting to prevent clipping
+                normalized = np.tanh(normalized * 0.9) / 0.9
+                
+                return normalized
+            
+            return audio
+            
+        except Exception as e:
+            logger.debug(f"Normalization failed: {e}")
+            return audio
 
 # Import our existing voice agent components
 from main import SessionLogger, SEND_SAMPLE_RATE, RECEIVE_SAMPLE_RATE, FORMAT, CHANNELS
@@ -796,15 +1089,37 @@ class AudioTranscriber:
                     options['no_speech_threshold'] = 0.6
             
             logger.info(f"🎤 Transcribing with options: {options}")
-            result = self.model.transcribe(audio_path, **options)
             
-            return {
-                "text": result.get('text', '').strip(),
-                "language": result.get('language', 'unknown'),
-                "segments": result.get('segments', []),
-                "confidence": getattr(result, 'avg_logprob', None),
-                "success": True
-            }
+            # Try transcription with word timestamps first
+            try:
+                result = self.model.transcribe(audio_path, **options)
+                return {
+                    "text": result.get('text', '').strip(),
+                    "language": result.get('language', 'unknown'),
+                    "segments": result.get('segments', []),
+                    "confidence": getattr(result, 'avg_logprob', None),
+                    "success": True
+                }
+            except Exception as timestamp_error:
+                # If word timestamps fail (common with mixed audio), retry without them
+                logger.warning(f"⚠️ Word timestamps failed, retrying without: {timestamp_error}")
+                
+                # Fallback options without word timestamps
+                fallback_options = options.copy()
+                fallback_options['word_timestamps'] = False
+                
+                logger.info(f"🔄 Retrying transcription without word timestamps...")
+                result = self.model.transcribe(audio_path, **fallback_options)
+                
+                return {
+                    "text": result.get('text', '').strip(),
+                    "language": result.get('language', 'unknown'),
+                    "segments": result.get('segments', []),
+                    "confidence": getattr(result, 'avg_logprob', None),
+                    "success": True,
+                    "fallback_used": "no_word_timestamps"
+                }
+            
         except Exception as e:
             logger.error(f"❌ openai-whisper transcription failed: {e}")
             raise
@@ -1457,6 +1772,10 @@ class RTPSession:
         # Crossfade buffer for smooth transitions
         self.last_audio_tail = b""  # Last 10ms of previous chunk
         
+        # Initialize audio preprocessor for incoming audio
+        self.audio_preprocessor = AudioPreprocessor(sample_rate=8000)
+        logger.info(f"🎵 Audio preprocessor initialized for session {session_id} - noise filtering enabled")
+        
         # Start output processing thread immediately for greeting playback
         self.output_thread = threading.Thread(target=self._process_output_queue, daemon=True)
         self.output_thread.start()
@@ -1466,7 +1785,7 @@ class RTPSession:
         self.processing = self.output_processing
         
     def process_incoming_audio(self, audio_data: bytes, payload_type: int, timestamp: int):
-        """Process incoming RTP audio packet"""
+        """Process incoming RTP audio packet with noise filtering"""
         try:
             # Convert payload based on type
             if payload_type == 0:  # PCMU/μ-law
@@ -1477,13 +1796,21 @@ class RTPSession:
                 # Assume it's already PCM
                 pcm_data = audio_data
             
-            # Record incoming audio
+            # Apply audio preprocessing for noise reduction and speech enhancement
+            try:
+                processed_pcm = self.audio_preprocessor.process_audio(pcm_data)
+                logger.debug(f"🎵 Audio preprocessed: {len(pcm_data)} → {len(processed_pcm)} bytes")
+            except Exception as preprocess_error:
+                logger.warning(f"⚠️ Audio preprocessing failed, using original: {preprocess_error}")
+                processed_pcm = pcm_data
+            
+            # Record the ORIGINAL audio (before preprocessing) for authentic recordings
             if self.call_recorder:
                 self.call_recorder.record_incoming_audio(pcm_data)
             
-            # Queue audio for processing
-            self.audio_queue.put(pcm_data)
-            logger.info(f"🎤 Queued {len(pcm_data)} bytes of PCM audio for processing")
+            # Queue the PROCESSED audio for AI transcription and processing
+            self.audio_queue.put(processed_pcm)
+            logger.info(f"🎤 Queued {len(processed_pcm)} bytes of enhanced PCM audio for AI processing")
             
             # Start input processing if not already running
             if not self.input_processing:
@@ -2187,7 +2514,7 @@ Content-Length: 0
                     try:
                         crm_session = db.query(CallSession).filter(CallSession.session_id == session_id).first()
                         if crm_session:
-                            crm_session.status = "completed"
+                            crm_session.status = "COMPLETED"  # Use proper enum value
                             crm_session.ended_at = datetime.utcnow()
                             if crm_session.started_at and crm_session.ended_at:
                                 crm_session.duration = int((crm_session.ended_at - crm_session.started_at).total_seconds())
@@ -2216,6 +2543,13 @@ Content-Length: 0
                     
                     # Cleanup RTP session
                     self.rtp_server.remove_session(session_id)
+                    
+                    # Small delay to allow pending tasks to complete
+                    try:
+                        import time
+                        time.sleep(0.1)  # Give pending tasks a moment to complete
+                    except:
+                        pass
                     
                     # Remove from active sessions
                     del active_sessions[session_id]
@@ -3424,10 +3758,32 @@ class WindowsVoiceSession:
                 self.call_recorder.stop_recording()
                 logger.info(f"📼 Recording stopped for session {self.session_id}")
             
-            # Simply clear the sessions without trying to close them async
-            # The WebSocket will be closed when the object is garbage collected
-            self.voice_session = None
-            self.gemini_session = None
+            # Try to close the voice session properly if it exists
+            if self.voice_session and self.gemini_session:
+                try:
+                    # Create a new event loop just for cleanup if needed
+                    import asyncio
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            # If loop is running, just clear the sessions
+                            logger.info("Event loop running, clearing sessions without async cleanup")
+                            self.voice_session = None
+                            self.gemini_session = None
+                        else:
+                            # Run the async cleanup
+                            loop.run_until_complete(self._async_close_session())
+                    except RuntimeError:
+                        # No event loop, create one for cleanup
+                        asyncio.run(self._async_close_session())
+                except Exception as cleanup_error:
+                    logger.warning(f"Error in async cleanup, falling back to simple cleanup: {cleanup_error}")
+                    self.voice_session = None
+                    self.gemini_session = None
+            else:
+                # Simply clear the sessions
+                self.voice_session = None
+                self.gemini_session = None
             
             self.session_logger.log_transcript("system", "Call ended")
             self.session_logger.save_session()
@@ -3580,6 +3936,18 @@ async def health_check():
         "transcription_available": TRANSCRIPTION_AVAILABLE,
         "transcription_method": TRANSCRIPTION_METHOD if TRANSCRIPTION_AVAILABLE else None,
         "transcription_model": audio_transcriber.model_size if TRANSCRIPTION_AVAILABLE else None,
+        "audio_preprocessing": {
+            "enabled": True,
+            "features": [
+                "Pre-emphasis filtering",
+                "Bandpass filtering (300-3400 Hz)",
+                "Voice activity detection",
+                "Spectral noise reduction",
+                "Dynamic range compression",
+                "Audio normalization"
+            ],
+            "purpose": "Enhanced speech recognition for incoming audio"
+        },
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
@@ -3933,6 +4301,62 @@ async def get_transcription_status():
         "reason": f"Transcription enabled using {TRANSCRIPTION_METHOD}" if TRANSCRIPTION_AVAILABLE else "No transcription method available - install faster-whisper or configure OpenAI API key"
     }
 
+@app.get("/api/audio/preprocessing")
+async def get_audio_preprocessing_status():
+    """Get audio preprocessing status and configuration"""
+    return {
+        "status": "success",
+        "preprocessing_enabled": True,
+        "sample_rate": 8000,
+        "processing_pipeline": [
+            {
+                "step": 1,
+                "name": "Pre-emphasis filtering",
+                "description": "Enhances high-frequency components important for speech",
+                "coefficient": 0.97
+            },
+            {
+                "step": 2,
+                "name": "Bandpass filtering",
+                "description": "Focuses on telephony speech frequencies",
+                "frequency_range": "300-3400 Hz"
+            },
+            {
+                "step": 3,
+                "name": "Voice activity detection",
+                "description": "Identifies and gates background noise during silence",
+                "adaptive_threshold": True
+            },
+            {
+                "step": 4,
+                "name": "Spectral noise reduction",
+                "description": "Removes background noise using spectral subtraction",
+                "method": "Adaptive spectral subtraction"
+            },
+            {
+                "step": 5,
+                "name": "Dynamic range compression",
+                "description": "Evens out volume levels for consistent speech",
+                "threshold": 0.7,
+                "ratio": "4:1"
+            },
+            {
+                "step": 6,
+                "name": "Audio normalization",
+                "description": "Normalizes audio levels while preserving dynamics",
+                "target_rms": -20  # dBFS
+            }
+        ],
+        "benefits": [
+            "Improved speech-to-text transcription accuracy",
+            "Reduced background noise interference", 
+            "Better voice activity detection",
+            "Consistent audio levels",
+            "Enhanced speech clarity"
+        ],
+        "note": "Preprocessing only applied to incoming audio (user speech), not outgoing AI responses"
+    }
+
 if __name__ == "__main__":
     import argparse
     
@@ -3956,6 +4380,9 @@ if __name__ == "__main__":
         logger.info("🇧🇬 Optimized for Bulgarian and multilingual transcription")
     else:
         logger.info("⚠️ Transcription: DISABLED (no method available)")
+    logger.info("🎵 Audio Preprocessing: ENABLED (6-stage noise filtering pipeline)")
+    logger.info("   ✅ Pre-emphasis, bandpass filtering, noise reduction, compression")
+    logger.info("   🎯 Optimized for improved user speech transcription accuracy")
     logger.info("=" * 60)
     logger.info("Endpoints:")
     logger.info("  GET /health - System health check (includes transcription status)")
@@ -3964,6 +4391,7 @@ if __name__ == "__main__":
     logger.info("  GET /api/recordings - List call recordings (with transcripts)")
     logger.info("  POST /api/make_call - Initiate outbound call")
     logger.info("  GET /api/transcription/status - Check transcription service status")
+    logger.info("  GET /api/audio/preprocessing - Check audio preprocessing pipeline status")
     logger.info("  GET /api/transcripts/{session_id} - Get all transcripts for session")
     logger.info("  GET /api/transcripts/{session_id}/{audio_type} - Get specific transcript")
     logger.info("  POST /api/transcripts/{session_id}/retranscribe - Re-transcribe session")
