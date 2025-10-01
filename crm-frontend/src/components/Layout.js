@@ -54,18 +54,21 @@ function Layout({ children }) {
           boxShadow: "0 4px 16px rgba(200, 92, 60, 0.2)",
         }}
       >
-        <Typography
-          variant="h6"
-          noWrap
-          component="div"
-          sx={{
-            fontWeight: 700,
-            letterSpacing: "-0.02em",
-            textShadow: "0 2px 4px rgba(0, 0, 0, 0.1)",
-          }}
-        >
-          🎙️ Voice Agent CRM
-        </Typography>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <Typography variant="h6">🎙️</Typography>
+          <Typography
+            variant="h6"
+            noWrap
+            component="div"
+            sx={{
+              fontWeight: 700,
+              letterSpacing: "-0.02em",
+              textShadow: "0 2px 4px rgba(0, 0, 0, 0.1)",
+            }}
+          >
+            Voice Agent CRM
+          </Typography>
+        </Box>
       </Toolbar>
       <Divider sx={{ borderColor: "rgba(200, 92, 60, 0.1)", opacity: 0.5 }} />
       <List sx={{ px: 1, py: 2 }}>
@@ -160,9 +163,12 @@ function Layout({ children }) {
               animation: "pulse 1.5s ease-in-out infinite",
             }}
           >
-            <Typography variant="body2" fontWeight={600}>
-              📞 Active Calls: {activeCalls}
-            </Typography>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+              <Typography variant="body2">📞</Typography>
+              <Typography variant="body2" fontWeight={600}>
+                Active Calls: {activeCalls}
+              </Typography>
+            </Box>
           </Box>
         )}
       </Box>

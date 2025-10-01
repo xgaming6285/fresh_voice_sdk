@@ -1784,6 +1784,7 @@ class RTPSession:
         self.output_thread = threading.Thread(target=self._process_output_queue, daemon=True)
         self.output_thread.start()
         logger.info(f"🎵 Started output queue processing for session {session_id}")
+        logger.info(f"🎵 RTP session initialized: output_processing={self.output_processing}, remote_addr={remote_addr}")
         
         # Keep processing flag for backward compatibility with other parts of the code
         self.processing = self.output_processing
@@ -2045,8 +2046,14 @@ class RTPSession:
             if not os.path.exists(greeting_file):
                 logger.warning(f"Greeting file {greeting_file} not found, skipping greeting")
                 return 0.0
+            
+            # Check if RTP session is ready
+            if not self.output_processing:
+                logger.warning("⚠️ RTP output processing not ready, cannot play greeting")
+                return 0.0
                 
             logger.info(f"🎵 Playing greeting file: {greeting_file}")
+            logger.info(f"📞 RTP session state: output_processing={self.output_processing}, remote_addr={self.remote_addr}")
             
             # Load WAV file
             with wave.open(greeting_file, 'rb') as wav_file:
@@ -2420,13 +2427,34 @@ class WindowsSIPHandler:
                         
                         # Play greeting and let natural conversation flow
                         def play_greeting():
-                            time.sleep(0.5)  # Allow RTP connection to stabilize
+                            # Wait for call to be fully established
+                            time.sleep(3.0)  # 3 second delay as requested
+                            
+                            # Ensure RTP session is ready and processing
+                            max_wait = 5.0  # Maximum 5 seconds wait
+                            waited = 0.0
+                            while waited < max_wait:
+                                if rtp_session.output_processing and session_id in active_sessions:
+                                    if active_sessions[session_id]["status"] == "active":
+                                        break
+                                time.sleep(0.1)
+                                waited += 0.1
+                            
+                            # Check if call is still active before playing greeting
+                            if session_id not in active_sessions:
+                                logger.warning("⚠️ Call ended before greeting could be played")
+                                return
+                            
                             logger.info("🎵 Playing greeting...")
+                            logger.info(f"📞 Call status: {active_sessions[session_id]['status']}")
                             
                             # Play greeting file first and get actual duration
                             greeting_duration = rtp_session.play_greeting_file("greeting.wav")
                             
-                            logger.info(f"✅ Greeting played ({greeting_duration:.1f}s). Voice session ready for natural conversation.")
+                            if greeting_duration > 0:
+                                logger.info(f"✅ Greeting played successfully ({greeting_duration:.1f}s). Voice session ready for natural conversation.")
+                            else:
+                                logger.warning("⚠️ Greeting file not found or failed to play")
                             logger.info("🎤 Waiting for user to speak - AI will respond naturally when it detects speech")
                         
                         threading.Thread(target=play_greeting, daemon=True).start()
@@ -3245,13 +3273,34 @@ Content-Length: {len(sdp_content)}
                         
                         # For outbound calls, play greeting and let natural conversation flow
                         def play_outbound_greeting():
-                            time.sleep(0.5)  # Small delay for RTP to stabilize
+                            # Wait for call to be fully established
+                            time.sleep(3.0)  # 3 second delay as requested
+                            
+                            # Ensure RTP session is ready and processing
+                            max_wait = 5.0  # Maximum 5 seconds wait
+                            waited = 0.0
+                            while waited < max_wait:
+                                if rtp_session.output_processing and session_id in active_sessions:
+                                    if active_sessions[session_id]["status"] == "active":
+                                        break
+                                time.sleep(0.1)
+                                waited += 0.1
+                            
+                            # Check if call is still active before playing greeting
+                            if session_id not in active_sessions:
+                                logger.warning("⚠️ Outbound call ended before greeting could be played")
+                                return
+                            
                             logger.info("🎵 Playing greeting to called party...")
+                            logger.info(f"📞 Outbound call status: {active_sessions[session_id]['status']}")
                             
                             # Play greeting file first and get actual duration
                             greeting_duration = rtp_session.play_greeting_file("greeting.wav")
                             
-                            logger.info(f"✅ Outbound greeting played ({greeting_duration:.1f}s). Voice session ready for natural conversation.")
+                            if greeting_duration > 0:
+                                logger.info(f"✅ Outbound greeting played successfully ({greeting_duration:.1f}s). Voice session ready for natural conversation.")
+                            else:
+                                logger.warning("⚠️ Greeting file not found or failed to play for outbound call")
                             logger.info("🎤 Waiting for called party to speak - AI will respond naturally when it detects speech")
                         
                         threading.Thread(target=play_outbound_greeting, daemon=True).start()
@@ -3321,6 +3370,26 @@ Content-Length: 0
                     self._handle_outbound_call_success(message)
                 else:
                     logger.debug(f"Received 200 OK response: {first_line}")
+            
+            elif '180 Ringing' in first_line:
+                # Handle 180 Ringing response for outbound calls
+                if 'INVITE' in message:
+                    # Extract Call-ID to find the pending invite
+                    call_id = None
+                    for line in message.split('\n'):
+                        line = line.strip()
+                        if line.startswith('Call-ID:'):
+                            call_id = line.split(':', 1)[1].strip()
+                            break
+                    
+                    if call_id and call_id in self.pending_invites:
+                        phone_number = self.pending_invites[call_id]['phone_number']
+                        logger.info(f"🔔 Outbound call to {phone_number} is ringing...")
+                        logger.info("📞 Waiting for answer - greeting will play 3 seconds after call is answered")
+                    else:
+                        logger.info("🔔 Received 180 Ringing response")
+                else:
+                    logger.debug(f"Received 180 Ringing response: {first_line}")
             
             elif '401 Unauthorized' in first_line:
                 if 'REGISTER' in message:

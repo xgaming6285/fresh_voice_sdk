@@ -174,18 +174,21 @@ function Campaigns() {
         alignItems="center"
         mb={4}
       >
-        <Typography
-          variant="h4"
-          sx={{
-            fontWeight: 700,
-            background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
-            WebkitBackgroundClip: "text",
-            WebkitTextFillColor: "transparent",
-            backgroundClip: "text",
-          }}
-        >
-          🎯 Campaigns
-        </Typography>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <Typography variant="h4">🎯</Typography>
+          <Typography
+            variant="h4"
+            sx={{
+              fontWeight: 700,
+              background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+              WebkitBackgroundClip: "text",
+              WebkitTextFillColor: "transparent",
+              backgroundClip: "text",
+            }}
+          >
+            Campaigns
+          </Typography>
+        </Box>
         <Button
           variant="contained"
           startIcon={<AddIcon />}

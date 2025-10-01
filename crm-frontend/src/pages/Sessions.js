@@ -272,18 +272,21 @@ function Sessions() {
         alignItems="center"
         mb={4}
       >
-        <Typography
-          variant="h4"
-          sx={{
-            fontWeight: 700,
-            background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
-            WebkitBackgroundClip: "text",
-            WebkitTextFillColor: "transparent",
-            backgroundClip: "text",
-          }}
-        >
-          📞 Call Sessions
-        </Typography>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <Typography variant="h4">📞</Typography>
+          <Typography
+            variant="h4"
+            sx={{
+              fontWeight: 700,
+              background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+              WebkitBackgroundClip: "text",
+              WebkitTextFillColor: "transparent",
+              backgroundClip: "text",
+            }}
+          >
+            Call Sessions
+          </Typography>
+        </Box>
         <Box display="flex" alignItems="center" gap={2}>
           <FormControl
             size="small"
@@ -349,9 +352,12 @@ function Sessions() {
               "pulse 2s ease-in-out infinite, slideUp 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)",
           }}
         >
-          <Typography variant="h6" gutterBottom fontWeight={700}>
-            🔴 Active Voice Sessions
-          </Typography>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
+            <Typography variant="h6">🔴</Typography>
+            <Typography variant="h6" fontWeight={700}>
+              Active Voice Sessions
+            </Typography>
+          </Box>
           <Box>
             {activeVoiceSessions.map((session) => (
               <Box
@@ -396,9 +402,12 @@ function Sessions() {
         }}
       >
         <Box p={3}>
-          <Typography variant="h6" gutterBottom fontWeight={700}>
-            📊 CRM Call Sessions
-          </Typography>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
+            <Typography variant="h6">📊</Typography>
+            <Typography variant="h6" fontWeight={700}>
+              CRM Call Sessions
+            </Typography>
+          </Box>
         </Box>
         <DataGrid
           rows={sessions}
@@ -445,9 +454,12 @@ function Sessions() {
         }}
       >
         <Box p={3}>
-          <Typography variant="h6" gutterBottom fontWeight={700}>
-            🎙️ Voice Agent Recordings
-          </Typography>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
+            <Typography variant="h6">🎙️</Typography>
+            <Typography variant="h6" fontWeight={700}>
+              Voice Agent Recordings
+            </Typography>
+          </Box>
         </Box>
         <DataGrid
           rows={recordings}

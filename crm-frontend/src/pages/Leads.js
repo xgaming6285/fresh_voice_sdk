@@ -17,6 +17,7 @@ import {
   Chip,
   Snackbar,
   Alert,
+  Skeleton,
 } from "@mui/material";
 import { DataGrid } from "@mui/x-data-grid";
 import {
@@ -26,6 +27,15 @@ import {
   Upload as UploadIcon,
   Download as DownloadIcon,
   Phone as PhoneIcon,
+  Person as PersonIcon,
+  Email as EmailIcon,
+  LocationOn as LocationIcon,
+  AccessTime as AccessTimeIcon,
+  TrendingUp as TrendingUpIcon,
+  Flag as FlagIcon,
+  Male as MaleIcon,
+  Female as FemaleIcon,
+  QuestionMark as QuestionMarkIcon,
 } from "@mui/icons-material";
 import { useDropzone } from "react-dropzone";
 import { leadAPI, voiceAgentAPI } from "../services/api";
@@ -187,52 +197,287 @@ function Leads() {
   };
 
   const columns = [
-    { field: "id", headerName: "ID", flex: 0.5, minWidth: 60 },
+    {
+      field: "id",
+      headerName: "ID",
+      flex: 0.4,
+      minWidth: 50,
+      renderCell: (params) => (
+        <Box
+          sx={{
+            fontWeight: 600,
+            color: "text.secondary",
+            fontSize: "0.75rem",
+          }}
+        >
+          #{params.value}
+        </Box>
+      ),
+    },
     {
       field: "lead_type",
       headerName: "Type",
-      flex: 0.7,
-      minWidth: 100,
-      renderCell: (params) => (
-        <Chip
-          label={params.value.toUpperCase()}
-          size="small"
-          sx={{
-            fontWeight: 600,
-            letterSpacing: "-0.01em",
-            backdropFilter: "blur(10px)",
-          }}
-          color={
-            params.value === "ftd"
-              ? "success"
-              : params.value === "live"
-              ? "primary"
-              : params.value === "cold"
-              ? "default"
-              : "secondary"
+      flex: 0.8,
+      minWidth: 110,
+      renderCell: (params) => {
+        const getTypeIcon = () => {
+          switch (params.value) {
+            case "ftd":
+              return <TrendingUpIcon sx={{ fontSize: 16 }} />;
+            case "live":
+              return <PhoneIcon sx={{ fontSize: 16 }} />;
+            case "cold":
+              return <PersonIcon sx={{ fontSize: 16 }} />;
+            default:
+              return <FlagIcon sx={{ fontSize: 16 }} />;
           }
-        />
+        };
+
+        return (
+          <Chip
+            icon={getTypeIcon()}
+            label={params.value.toUpperCase()}
+            size="small"
+            sx={{
+              fontWeight: 700,
+              letterSpacing: "-0.01em",
+              backdropFilter: "blur(10px)",
+              border: "1px solid",
+              borderColor:
+                params.value === "ftd"
+                  ? "success.light"
+                  : params.value === "live"
+                  ? "primary.light"
+                  : params.value === "cold"
+                  ? "grey.300"
+                  : "secondary.light",
+              "& .MuiChip-icon": {
+                color:
+                  params.value === "ftd"
+                    ? "success.main"
+                    : params.value === "live"
+                    ? "primary.main"
+                    : params.value === "cold"
+                    ? "grey.600"
+                    : "secondary.main",
+              },
+            }}
+            color={
+              params.value === "ftd"
+                ? "success"
+                : params.value === "live"
+                ? "primary"
+                : params.value === "cold"
+                ? "default"
+                : "secondary"
+            }
+            variant="outlined"
+          />
+        );
+      },
+    },
+    {
+      field: "full_name",
+      headerName: "Name",
+      flex: 1.3,
+      minWidth: 200,
+      renderCell: (params) => {
+        const getGenderIcon = () => {
+          const gender = params.row.gender;
+          if (gender === "male")
+            return <MaleIcon sx={{ fontSize: 18, color: "#64B5F6" }} />;
+          if (gender === "female")
+            return <FemaleIcon sx={{ fontSize: 18, color: "#F48FB1" }} />;
+          return (
+            <QuestionMarkIcon sx={{ fontSize: 18, color: "text.secondary" }} />
+          );
+        };
+
+        return (
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            <Box
+              sx={{
+                p: 0.75,
+                borderRadius: "50%",
+                background: "rgba(200, 92, 60, 0.08)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              {getGenderIcon()}
+            </Box>
+            <Box>
+              <Typography variant="body2" fontWeight={600}>
+                {params.value || "—"}
+              </Typography>
+              {params.row.lead_type === "ftd" && (
+                <Typography
+                  variant="caption"
+                  sx={{ color: "success.main", fontWeight: 500 }}
+                >
+                  First Time Deposit
+                </Typography>
+              )}
+            </Box>
+          </Box>
+        );
+      },
+    },
+    {
+      field: "email",
+      headerName: "Email",
+      flex: 1.5,
+      minWidth: 220,
+      renderCell: (params) => (
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <EmailIcon sx={{ fontSize: 18, color: "text.secondary" }} />
+          <Typography
+            variant="body2"
+            sx={{
+              color: params.value ? "text.primary" : "text.disabled",
+              fontFamily: "monospace",
+              fontSize: "0.875rem",
+            }}
+          >
+            {params.value || "No email"}
+          </Typography>
+        </Box>
       ),
     },
-    { field: "full_name", headerName: "Name", flex: 1.2, minWidth: 180 },
-    { field: "email", headerName: "Email", flex: 1.5, minWidth: 200 },
-    { field: "full_phone", headerName: "Phone", flex: 1, minWidth: 140 },
-    { field: "country", headerName: "Country", flex: 0.8, minWidth: 100 },
+    {
+      field: "full_phone",
+      headerName: "Phone",
+      flex: 1.1,
+      minWidth: 160,
+      renderCell: (params) => (
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
+            px: 1.5,
+            py: 0.5,
+            borderRadius: 2,
+            background: "rgba(92, 138, 166, 0.08)",
+          }}
+        >
+          <PhoneIcon sx={{ fontSize: 16, color: "info.main" }} />
+          <Typography
+            variant="body2"
+            fontWeight={500}
+            sx={{
+              fontFamily: "monospace",
+              letterSpacing: "0.5px",
+            }}
+          >
+            {params.value}
+          </Typography>
+        </Box>
+      ),
+    },
+    {
+      field: "country",
+      headerName: "Country",
+      flex: 0.9,
+      minWidth: 120,
+      renderCell: (params) => (
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+          <LocationIcon sx={{ fontSize: 16, color: "text.secondary" }} />
+          <Typography variant="body2" fontWeight={500}>
+            {params.value || "—"}
+          </Typography>
+        </Box>
+      ),
+    },
     {
       field: "call_count",
       headerName: "Calls",
-      flex: 0.5,
-      minWidth: 70,
+      flex: 0.6,
+      minWidth: 80,
       align: "center",
       headerAlign: "center",
+      renderCell: (params) => (
+        <Box
+          sx={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            px: 1.5,
+            py: 0.5,
+            borderRadius: 10,
+            background:
+              params.value > 0
+                ? `rgba(107, 154, 90, ${Math.min(params.value * 0.1, 0.3)})`
+                : "rgba(0, 0, 0, 0.05)",
+            border: "1px solid",
+            borderColor: params.value > 0 ? "success.light" : "divider",
+          }}
+        >
+          <Typography
+            variant="body2"
+            fontWeight={700}
+            sx={{
+              color: params.value > 0 ? "success.dark" : "text.secondary",
+            }}
+          >
+            {params.value}
+          </Typography>
+        </Box>
+      ),
     },
     {
       field: "last_called_at",
       headerName: "Last Called",
-      flex: 1.2,
-      minWidth: 160,
-      valueFormatter: (params) => {
-        return params.value ? new Date(params.value).toLocaleString() : "Never";
+      flex: 1.3,
+      minWidth: 180,
+      renderCell: (params) => {
+        if (!params.value) {
+          return (
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+              <AccessTimeIcon sx={{ fontSize: 16, color: "text.disabled" }} />
+              <Typography variant="body2" color="text.disabled">
+                Never called
+              </Typography>
+            </Box>
+          );
+        }
+
+        const date = new Date(params.value);
+        const now = new Date();
+        const diffHours = Math.floor((now - date) / (1000 * 60 * 60));
+        const diffDays = Math.floor(diffHours / 24);
+
+        let timeAgo = "";
+        let color = "text.primary";
+
+        if (diffHours < 1) {
+          timeAgo = "Just now";
+          color = "success.main";
+        } else if (diffHours < 24) {
+          timeAgo = `${diffHours}h ago`;
+          color = "info.main";
+        } else if (diffDays < 7) {
+          timeAgo = `${diffDays}d ago`;
+          color = "warning.main";
+        } else {
+          timeAgo = date.toLocaleDateString();
+          color = "text.secondary";
+        }
+
+        return (
+          <Box>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+              <AccessTimeIcon sx={{ fontSize: 16, color }} />
+              <Typography variant="body2" fontWeight={500} color={color}>
+                {timeAgo}
+              </Typography>
+            </Box>
+            <Typography variant="caption" color="text.secondary">
+              {date.toLocaleTimeString()}
+            </Typography>
+          </Box>
+        );
       },
     },
     {
@@ -311,53 +556,65 @@ ftd,Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
         alignItems="center"
         mb={4}
       >
-        <Typography
-          variant="h4"
-          sx={{
-            fontWeight: 700,
-            background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
-            WebkitBackgroundClip: "text",
-            WebkitTextFillColor: "transparent",
-            backgroundClip: "text",
-          }}
-        >
-          👥 Leads
-        </Typography>
-        <Box>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <Typography variant="h4">👥</Typography>
+          <Typography
+            variant="h4"
+            sx={{
+              fontWeight: 700,
+              background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+              WebkitBackgroundClip: "text",
+              WebkitTextFillColor: "transparent",
+              backgroundClip: "text",
+            }}
+          >
+            Leads
+          </Typography>
+        </Box>
+        <Box sx={{ display: "flex", gap: 1 }}>
           <Button
             variant="outlined"
             startIcon={<DownloadIcon />}
             onClick={handleExportTemplate}
+            className="ios-button"
             sx={{
-              mr: 1,
-              borderColor: "primary.main",
-              color: "primary.main",
+              borderColor: "divider",
+              color: "text.secondary",
               fontWeight: 600,
+              backdropFilter: "blur(10px)",
+              background: "rgba(255, 255, 255, 0.5)",
               "&:hover": {
-                borderColor: "primary.dark",
+                borderColor: "primary.light",
                 backgroundColor: "rgba(200, 92, 60, 0.08)",
-                transform: "translateY(-2px)",
+                color: "primary.main",
+                "& .MuiSvgIcon-root": {
+                  transform: "translateY(2px)",
+                },
               },
-              transition: "all 0.3s ease",
+              transition: "all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
             }}
           >
-            Download Template
+            Template
           </Button>
           <Button
             variant="outlined"
             startIcon={<UploadIcon />}
             onClick={() => setImportDialog(true)}
+            className="ios-button"
             sx={{
-              mr: 1,
-              borderColor: "primary.main",
-              color: "primary.main",
+              borderColor: "info.light",
+              color: "info.main",
               fontWeight: 600,
+              backdropFilter: "blur(10px)",
+              background: "rgba(92, 138, 166, 0.08)",
               "&:hover": {
-                borderColor: "primary.dark",
-                backgroundColor: "rgba(200, 92, 60, 0.08)",
-                transform: "translateY(-2px)",
+                borderColor: "info.main",
+                backgroundColor: "rgba(92, 138, 166, 0.15)",
+                "& .MuiSvgIcon-root": {
+                  transform: "translateY(-2px)",
+                },
               },
-              transition: "all 0.3s ease",
+              transition: "all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
             }}
           >
             Import CSV
@@ -366,14 +623,21 @@ ftd,Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
             variant="contained"
             startIcon={<AddIcon />}
             onClick={handleAddLead}
+            className="ios-button"
             sx={{
               background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
               fontWeight: 600,
               boxShadow: "0 4px 16px rgba(200, 92, 60, 0.3)",
+              px: 3,
               "&:hover": {
                 background: "linear-gradient(135deg, #E07B5F 0%, #C85C3C 100%)",
                 boxShadow: "0 8px 24px rgba(200, 92, 60, 0.4)",
-                transform: "translateY(-2px)",
+                "& .MuiSvgIcon-root": {
+                  transform: "rotate(90deg)",
+                },
+              },
+              "& .MuiSvgIcon-root": {
+                transition: "transform 0.3s ease",
               },
             }}
           >
@@ -414,26 +678,50 @@ ftd,Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
           onPageSizeChange={(newPageSize) => setPageSize(newPageSize)}
           disableSelectionOnClick
           disableColumnMenu
+          rowHeight={72}
           sx={{
             "& .MuiDataGrid-cell": {
-              borderBottom: "1px solid rgba(224, 224, 224, 0.2)",
+              borderBottom: "1px solid rgba(224, 224, 224, 0.15)",
               fontSize: "0.875rem",
+              py: 2,
+              display: "flex",
+              alignItems: "center",
             },
             "& .MuiDataGrid-columnHeaders": {
-              backgroundColor: "rgba(248, 243, 239, 0.8)",
-              backdropFilter: "blur(10px)",
-              borderBottom: "2px solid rgba(200, 92, 60, 0.15)",
-              fontWeight: 600,
-              fontSize: "0.875rem",
+              backgroundColor: "rgba(248, 243, 239, 0.95)",
+              backdropFilter: "blur(20px)",
+              borderBottom: "2px solid rgba(200, 92, 60, 0.2)",
+              fontWeight: 700,
+              fontSize: "0.8125rem",
+              letterSpacing: "0.5px",
+              textTransform: "uppercase",
+              color: "text.secondary",
+            },
+            "& .MuiDataGrid-columnHeader": {
+              "&:focus": {
+                outline: "none",
+              },
+              "&:focus-within": {
+                outline: "none",
+              },
             },
             "& .MuiDataGrid-footerContainer": {
-              borderTop: "2px solid rgba(200, 92, 60, 0.15)",
-              backgroundColor: "rgba(248, 243, 239, 0.8)",
-              backdropFilter: "blur(10px)",
+              borderTop: "2px solid rgba(200, 92, 60, 0.2)",
+              backgroundColor: "rgba(248, 243, 239, 0.95)",
+              backdropFilter: "blur(20px)",
             },
             "& .MuiDataGrid-row": {
+              transition: "all 0.2s ease",
+              "&:nth-of-type(even)": {
+                backgroundColor: "rgba(248, 243, 239, 0.3)",
+              },
               "&:hover": {
-                backgroundColor: "rgba(200, 92, 60, 0.04)",
+                backgroundColor: "rgba(200, 92, 60, 0.06)",
+                transform: "translateX(2px)",
+                boxShadow: "0 2px 8px rgba(200, 92, 60, 0.1)",
+                "& .MuiDataGrid-cell": {
+                  borderBottomColor: "transparent",
+                },
               },
             },
             "& .MuiDataGrid-virtualScrollerContent": {
@@ -441,6 +729,24 @@ ftd,Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
             },
             "& .MuiDataGrid-columnHeadersInner": {
               minWidth: "100% !important",
+            },
+            "& .MuiDataGrid-cell:focus": {
+              outline: "none",
+            },
+            "& .MuiDataGrid-cell:focus-within": {
+              outline: "none",
+            },
+            "& .MuiDataGrid-columnSeparator": {
+              visibility: "hidden",
+            },
+            "& .MuiDataGrid-menuIcon": {
+              visibility: "hidden",
+            },
+            "& .MuiDataGrid-sortIcon": {
+              color: "primary.main",
+            },
+            "& .MuiCircularProgress-root": {
+              color: "primary.main",
             },
           }}
         />

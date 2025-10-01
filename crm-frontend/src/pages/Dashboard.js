@@ -248,18 +248,21 @@ function Dashboard() {
         alignItems="center"
         mb={4}
       >
-        <Typography
-          variant="h4"
-          sx={{
-            fontWeight: 700,
-            background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
-            WebkitBackgroundClip: "text",
-            WebkitTextFillColor: "transparent",
-            backgroundClip: "text",
-          }}
-        >
-          📊 Dashboard
-        </Typography>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <Typography variant="h4">📊</Typography>
+          <Typography
+            variant="h4"
+            sx={{
+              fontWeight: 700,
+              background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+              WebkitBackgroundClip: "text",
+              WebkitTextFillColor: "transparent",
+              backgroundClip: "text",
+            }}
+          >
+            Dashboard
+          </Typography>
+        </Box>
         <IconButton
           onClick={loadDashboardData}
           className="ios-button"
@@ -328,14 +331,20 @@ function Dashboard() {
             </Box>
           </Grid>
           <Grid item xs={12} md={4}>
-            <Typography variant="body2" fontWeight={500}>
-              📞 Active Sessions: {systemHealth?.active_sessions || 0}
-            </Typography>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+              <Typography variant="body2">📞</Typography>
+              <Typography variant="body2" fontWeight={500}>
+                Active Sessions: {systemHealth?.active_sessions || 0}
+              </Typography>
+            </Box>
           </Grid>
           <Grid item xs={12} md={4}>
-            <Typography variant="body2" fontWeight={500}>
-              📱 Phone: {systemHealth?.phone_number || "Not configured"}
-            </Typography>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+              <Typography variant="body2">📱</Typography>
+              <Typography variant="body2" fontWeight={500}>
+                Phone: {systemHealth?.phone_number || "Not configured"}
+              </Typography>
+            </Box>
           </Grid>
         </Grid>
       </Paper>
@@ -394,9 +403,12 @@ function Dashboard() {
               animationFillMode: "both",
             }}
           >
-            <Typography variant="h6" gutterBottom fontWeight={700}>
-              📈 Call Trends (Last 7 Days)
-            </Typography>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}>
+              <Typography variant="h6">📈</Typography>
+              <Typography variant="h6" fontWeight={700}>
+                Call Trends (Last 7 Days)
+              </Typography>
+            </Box>
             <Box height={300}>
               <Line
                 data={callTrendData}
@@ -428,9 +440,12 @@ function Dashboard() {
               animationFillMode: "both",
             }}
           >
-            <Typography variant="h6" gutterBottom fontWeight={700}>
-              🎯 Call Outcomes
-            </Typography>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}>
+              <Typography variant="h6">🎯</Typography>
+              <Typography variant="h6" fontWeight={700}>
+                Call Outcomes
+              </Typography>
+            </Box>
             <Box
               height={300}
               display="flex"
@@ -464,9 +479,12 @@ function Dashboard() {
           animationFillMode: "both",
         }}
       >
-        <Typography variant="h6" gutterBottom fontWeight={700}>
-          📞 Recent Call Sessions
-        </Typography>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
+          <Typography variant="h6">📞</Typography>
+          <Typography variant="h6" fontWeight={700}>
+            Recent Call Sessions
+          </Typography>
+        </Box>
         {recentSessions.length > 0 ? (
           <Box>
             {recentSessions.map((session) => (
