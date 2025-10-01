@@ -27,7 +27,6 @@ from scipy import signal
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from contextlib import asynccontextmanager
 import uvicorn
 
 # Configure logging first
@@ -405,30 +404,7 @@ def load_config():
 
 config = load_config()
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Manage application lifespan - startup and shutdown"""
-    global sip_handler
-    # Startup
-    try:
-        # Initialize CRM database
-        init_database()
-        logger.info("CRM database initialized")
-        
-        sip_handler.start_sip_listener()
-        logger.info("Windows VoIP Voice Agent started")
-        logger.info(f"Phone number: {config['phone_number']}")
-        logger.info(f"Local IP: {config['local_ip']}")
-        logger.info(f"Gate VoIP: {config['host']}")
-        
-        yield
-        
-    finally:
-        # Shutdown
-        logger.info("Shutting down Windows VoIP Voice Agent...")
-        sip_handler.stop()
-
-app = FastAPI(title="Windows VoIP Voice Agent", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Windows VoIP Voice Agent", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -2049,11 +2025,11 @@ class RTPSession:
             self.output_queue.put(ulaw[i:i + packet_size])
     
     def play_greeting_file(self, greeting_file: str = "greeting.wav"):
-        """Play a greeting WAV file at the start of the call"""
+        """Play a greeting WAV file at the start of the call and return estimated duration"""
         try:
             if not os.path.exists(greeting_file):
                 logger.warning(f"Greeting file {greeting_file} not found, skipping greeting")
-                return
+                return 0.0
                 
             logger.info(f"🎵 Playing greeting file: {greeting_file}")
             
@@ -2065,7 +2041,11 @@ class RTPSession:
                 channels = wav_file.getnchannels()
                 sample_width = wav_file.getsampwidth()
                 
+                # Calculate duration in seconds
+                duration_seconds = frames / sample_rate if sample_rate > 0 else 0.0
+                
                 logger.info(f"Greeting file info: {frames} frames, {sample_rate}Hz, {channels}ch, {sample_width}bytes/sample")
+                logger.info(f"Estimated duration: {duration_seconds:.2f} seconds")
                 
                 # Read all audio data
                 audio_data = wav_file.readframes(frames)
@@ -2101,19 +2081,24 @@ class RTPSession:
                     # Convert back to bytes
                     audio_data = resampled_array.astype(np.int16).tobytes()
                     
-                    logger.info(f"Resampled from {sample_rate}Hz to 8000Hz")
+                    # Update duration for resampled audio
+                    duration_seconds = target_samples / 8000.0
+                    
+                    logger.info(f"Resampled from {sample_rate}Hz to 8000Hz, new duration: {duration_seconds:.2f}s")
                 
                 # Send the greeting audio
                 logger.info(f"🎙️ Sending greeting audio: {len(audio_data)} bytes")
                 self.send_audio(audio_data)
                 
                 logger.info("✅ Greeting played successfully")
+                return duration_seconds
                 
         except Exception as e:
             logger.error(f"Error playing greeting file: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             # Continue without greeting - don't let this break the call
+            return 0.0
     
     def _process_output_queue(self):
         """
@@ -2298,7 +2283,7 @@ class WindowsSIPHandler:
                     self._handle_ack(message, addr)
                 elif first_line.startswith('REGISTER'):
                     self._handle_register(message, addr)
-                elif first_line.startswith('SIP/2.0') and ('200 OK' in first_line or '401 Unauthorized' in first_line or '403 Forbidden' in first_line or '100 Trying' in first_line or '180 Ringing' in first_line or '183 Progress' in first_line or '486 Busy Here' in first_line or '487 Request Terminated' in first_line or '404 Not Found' in first_line):
+                elif first_line.startswith('SIP/2.0') and ('200 OK' in first_line or '401 Unauthorized' in first_line or '403 Forbidden' in first_line):
                     self._handle_sip_response(message, addr)
                 else:
                     logger.warning(f"⚠️  Unhandled SIP message type: {first_line}")
@@ -2422,36 +2407,45 @@ class WindowsSIPHandler:
                         def start_ai_conversation():
                             time.sleep(0.5)  # Allow RTP connection to stabilize
                             logger.info("🎵 Playing greeting and triggering AI response...")
-                            rtp_session.play_greeting_file("greeting.wav")
                             
-                            # Wait briefly for greeting to start, then trigger AI response
-                            time.sleep(0.8)  # Allow greeting to begin playing
+                            # Play greeting file first and get actual duration
+                            greeting_duration = rtp_session.play_greeting_file("greeting.wav")
                             
-                            # Send a brief silence to trigger AI response immediately
-                            silence_chunk = b'\x00' * 640  # 40ms of silence to trigger response
+                            # Wait for greeting to finish playing plus small buffer
+                            wait_time = max(greeting_duration + 0.5, 2.0)  # At least 2 seconds, or duration + buffer
+                            logger.info(f"⏱️ Waiting {wait_time:.1f}s for greeting to complete...")
+                            time.sleep(wait_time)
+                            
+                            # Now trigger AI to start conversation by sending a small audio trigger
                             if session_id in active_sessions and active_sessions[session_id]["voice_session"]:
                                 voice_session = active_sessions[session_id]["voice_session"]
                                 if hasattr(voice_session, 'gemini_session') and voice_session.gemini_session:
                                     try:
-                                        # Convert silence to Gemini format and send to trigger immediate response
-                                        processed_silence = voice_session.convert_telephony_to_gemini(silence_chunk)
+                                        # Send a small audio trigger to start AI conversation
+                                        # Use a very brief audio sample to trigger response
+                                        trigger_audio = b'\x00\x01' * 160  # 20ms of minimal audio at 8kHz
+                                        processed_trigger = voice_session.convert_telephony_to_gemini(trigger_audio)
                                         
-                                        # Create a simple async trigger function
-                                        async def trigger_ai():
-                                            await voice_session.gemini_session.send(
-                                                input={"data": processed_silence, "mime_type": "audio/pcm;rate=16000"}
-                                            )
+                                        # Create async function to trigger AI conversation start
+                                        async def trigger_ai_conversation():
+                                            try:
+                                                await voice_session.gemini_session.send(
+                                                    input={"data": processed_trigger, "mime_type": "audio/pcm;rate=16000"}
+                                                )
+                                                logger.info("✅ AI conversation triggered after greeting")
+                                            except Exception as e:
+                                                logger.error(f"Error triggering AI conversation: {e}")
                                         
                                         # Run the trigger in a new event loop
                                         loop = asyncio.new_event_loop()
                                         asyncio.set_event_loop(loop)
                                         try:
-                                            loop.run_until_complete(trigger_ai())
+                                            loop.run_until_complete(trigger_ai_conversation())
                                         finally:
                                             loop.close()
-                                        logger.info("🎤 Triggered AI to start conversation immediately")
+                                            
                                     except Exception as e:
-                                        logger.error(f"Error triggering AI conversation: {e}")
+                                        logger.error(f"Error setting up AI conversation trigger: {e}")
                         
                         threading.Thread(target=start_ai_conversation, daemon=True).start()
                         
@@ -3211,7 +3205,7 @@ Content-Length: {len(sdp_content)}
                     from_tag = line[tag_start:tag_end].strip()
             
             if not call_id or call_id not in self.pending_invites:
-                logger.debug(f"📞 Received duplicate 200 OK response for call {call_id[:8] if call_id else 'unknown'} (call already established)")
+                logger.warning("❌ Cannot find pending INVITE for successful response")
                 return
             
             invite_info = self.pending_invites[call_id]
@@ -3268,12 +3262,49 @@ Content-Length: {len(sdp_content)}
                         logger.info(f"🎯 Outbound voice session {session_id} is now active and ready")
                         
                         # For outbound calls, we should start talking first
-                        def start_conversation():
-                            time.sleep(0.5)  # Small delay
-                            logger.info("🎤 Starting conversation with called party...")
-                            # The AI will start talking based on its system prompt
+                        def start_outbound_conversation():
+                            time.sleep(0.5)  # Small delay for RTP to stabilize
+                            logger.info("🎵 Playing greeting and starting conversation with called party...")
+                            
+                            # Play greeting file first and get actual duration
+                            greeting_duration = rtp_session.play_greeting_file("greeting.wav")
+                            
+                            # Wait for greeting to finish playing plus small buffer
+                            wait_time = max(greeting_duration + 0.5, 2.0)  # At least 2 seconds, or duration + buffer
+                            logger.info(f"⏱️ Waiting {wait_time:.1f}s for greeting to complete...")
+                            time.sleep(wait_time)
+                            
+                            # Now trigger AI to start conversation for outbound call
+                            if session_id in active_sessions and active_sessions[session_id]["voice_session"]:
+                                voice_session = active_sessions[session_id]["voice_session"]
+                                if hasattr(voice_session, 'gemini_session') and voice_session.gemini_session:
+                                    try:
+                                        # Send a small audio trigger to start AI conversation
+                                        trigger_audio = b'\x00\x01' * 160  # 20ms of minimal audio at 8kHz
+                                        processed_trigger = voice_session.convert_telephony_to_gemini(trigger_audio)
+                                        
+                                        # Create async function to trigger AI conversation start
+                                        async def trigger_outbound_ai_conversation():
+                                            try:
+                                                await voice_session.gemini_session.send(
+                                                    input={"data": processed_trigger, "mime_type": "audio/pcm;rate=16000"}
+                                                )
+                                                logger.info("✅ AI conversation triggered for outbound call after greeting")
+                                            except Exception as e:
+                                                logger.error(f"Error triggering outbound AI conversation: {e}")
+                                        
+                                        # Run the trigger in a new event loop
+                                        loop = asyncio.new_event_loop()
+                                        asyncio.set_event_loop(loop)
+                                        try:
+                                            loop.run_until_complete(trigger_outbound_ai_conversation())
+                                        finally:
+                                            loop.close()
+                                            
+                                    except Exception as e:
+                                        logger.error(f"Error setting up outbound AI conversation trigger: {e}")
                         
-                        threading.Thread(target=start_conversation, daemon=True).start()
+                        threading.Thread(target=start_outbound_conversation, daemon=True).start()
                         
                 except Exception as e:
                     logger.error(f"❌ Failed to start outbound voice session: {e}")
@@ -3389,35 +3420,6 @@ Content-Length: 0
                 logger.error(f"❌ Authentication failed: {first_line}")
                 logger.error("💡 Check username/password in asterisk_config.json")
                 logger.error("💡 Verify extension 200 is properly configured in Gate VoIP")
-                
-            elif '100 Trying' in first_line:
-                # SIP provisional response - call is being processed
-                logger.debug(f"📞 Received provisional response: {first_line}")
-                # No action needed, just acknowledge that call processing started
-                
-            elif '180 Ringing' in first_line:
-                # Phone is ringing
-                logger.info(f"📞 Call is ringing: {first_line}")
-                
-            elif '183 Progress' in first_line:
-                # Early media or call progress
-                logger.info(f"📞 Call progress: {first_line}")
-                
-            elif '486 Busy Here' in first_line or '487 Request Terminated' in first_line:
-                # Call was busy or terminated
-                logger.warning(f"📞 Call unsuccessful: {first_line}")
-                # Extract Call-ID and clean up pending invite if needed
-                call_id = None
-                for line in message.split('\n'):
-                    line = line.strip()
-                    if line.startswith('Call-ID:'):
-                        call_id = line.split(':', 1)[1].strip()
-                        break
-                
-                if call_id and call_id in self.pending_invites:
-                    phone_number = self.pending_invites[call_id]['phone_number']
-                    logger.info(f"📞 Cleaning up failed call to {phone_number}")
-                    del self.pending_invites[call_id]
                 
             elif '404 Not Found' in first_line:
                 if 'INVITE' in message:
@@ -3877,6 +3879,24 @@ class WindowsVoiceSession:
 
 # Initialize SIP handler
 sip_handler = WindowsSIPHandler()
+
+@app.on_event("startup")
+async def startup_event():
+    """Start SIP listener when FastAPI starts"""
+    # Initialize CRM database
+    init_database()
+    logger.info("CRM database initialized")
+    
+    sip_handler.start_sip_listener()
+    logger.info("Windows VoIP Voice Agent started")
+    logger.info(f"Phone number: {config['phone_number']}")
+    logger.info(f"Local IP: {config['local_ip']}")
+    logger.info(f"Gate VoIP: {config['host']}")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup when shutting down"""
+    sip_handler.stop()
 
 @app.post("/api/make_call")
 async def make_outbound_call(call_request: dict):
@@ -4418,6 +4438,10 @@ if __name__ == "__main__":
     logger.info("🎵 Audio Preprocessing: ENABLED (6-stage noise filtering pipeline)")
     logger.info("   ✅ Pre-emphasis, bandpass filtering, noise reduction, compression")
     logger.info("   🎯 Optimized for improved user speech transcription accuracy")
+    logger.info("🔊 Greeting System: ENABLED for both incoming and outbound calls")
+    logger.info("   🎙️ Plays greeting.wav file automatically when call is answered")
+    logger.info("   🤖 Triggers AI conversation after greeting completes")
+    logger.info("   📏 Dynamic timing based on actual audio file duration")
     logger.info("=" * 60)
     logger.info("Endpoints:")
     logger.info("  GET /health - System health check (includes transcription status)")
