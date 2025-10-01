@@ -265,16 +265,38 @@ function Sessions() {
   ];
 
   return (
-    <Box>
+    <Box className="fade-in">
       <Box
         display="flex"
         justifyContent="space-between"
         alignItems="center"
-        mb={3}
+        mb={4}
       >
-        <Typography variant="h4">Call Sessions</Typography>
+        <Typography
+          variant="h4"
+          sx={{
+            fontWeight: 700,
+            background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+            WebkitBackgroundClip: "text",
+            WebkitTextFillColor: "transparent",
+            backgroundClip: "text",
+          }}
+        >
+          📞 Call Sessions
+        </Typography>
         <Box display="flex" alignItems="center" gap={2}>
-          <FormControl size="small" sx={{ minWidth: 150 }}>
+          <FormControl
+            size="small"
+            sx={{
+              minWidth: 150,
+              "& .MuiOutlinedInput-root": {
+                borderRadius: 2,
+                "&:hover fieldset": {
+                  borderColor: "primary.main",
+                },
+              },
+            }}
+          >
             <InputLabel>Status Filter</InputLabel>
             <Select
               value={statusFilter}
@@ -295,6 +317,15 @@ function Sessions() {
               loadRecordings();
               loadActiveVoiceSessions();
             }}
+            sx={{
+              backgroundColor: "primary.main",
+              color: "white",
+              "&:hover": {
+                backgroundColor: "primary.dark",
+                transform: "rotate(180deg)",
+              },
+              transition: "all 0.5s ease",
+            }}
           >
             <RefreshIcon />
           </IconButton>
@@ -303,9 +334,21 @@ function Sessions() {
 
       {/* Active Sessions */}
       {activeVoiceSessions.length > 0 && (
-        <Paper sx={{ p: 2, mb: 3 }}>
-          <Typography variant="h6" gutterBottom>
-            Active Voice Sessions
+        <Paper
+          className="slide-in"
+          sx={{
+            p: 3,
+            mb: 4,
+            borderRadius: 3,
+            background:
+              "linear-gradient(135deg, rgba(107, 154, 90, 0.1) 0%, rgba(255, 255, 255, 0.95) 100%)",
+            border: "1px solid rgba(107, 154, 90, 0.3)",
+            boxShadow: "0 8px 24px rgba(107, 154, 90, 0.2)",
+            animation: "pulse 2s ease-in-out infinite",
+          }}
+        >
+          <Typography variant="h6" gutterBottom fontWeight={700}>
+            🔴 Active Voice Sessions
           </Typography>
           <Box>
             {activeVoiceSessions.map((session) => (
@@ -340,10 +383,21 @@ function Sessions() {
       )}
 
       {/* CRM Sessions */}
-      <Paper sx={{ mb: 3 }}>
-        <Box p={2}>
-          <Typography variant="h6" gutterBottom>
-            CRM Call Sessions
+      <Paper
+        className="fade-in"
+        sx={{
+          mb: 4,
+          borderRadius: 3,
+          background:
+            "linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 243, 239, 0.95) 100%)",
+          border: "1px solid rgba(200, 92, 60, 0.1)",
+          boxShadow: "0 8px 24px rgba(200, 92, 60, 0.12)",
+          overflow: "hidden",
+        }}
+      >
+        <Box p={3}>
+          <Typography variant="h6" gutterBottom fontWeight={700}>
+            📊 CRM Call Sessions
           </Typography>
         </Box>
         <DataGrid
@@ -358,10 +412,20 @@ function Sessions() {
       </Paper>
 
       {/* Voice Agent Recordings */}
-      <Paper>
-        <Box p={2}>
-          <Typography variant="h6" gutterBottom>
-            Voice Agent Recordings
+      <Paper
+        className="fade-in"
+        sx={{
+          borderRadius: 3,
+          background:
+            "linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 243, 239, 0.95) 100%)",
+          border: "1px solid rgba(200, 92, 60, 0.1)",
+          boxShadow: "0 8px 24px rgba(200, 92, 60, 0.12)",
+          overflow: "hidden",
+        }}
+      >
+        <Box p={3}>
+          <Typography variant="h6" gutterBottom fontWeight={700}>
+            🎙️ Voice Agent Recordings
           </Typography>
         </Box>
         <DataGrid

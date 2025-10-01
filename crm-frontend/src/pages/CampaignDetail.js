@@ -36,7 +36,7 @@ import {
   ArrowBack as ArrowBackIcon,
   PlayArrow as PlayIcon,
   Pause as PauseIcon,
-  Stop as StopIcon,
+  Edit as EditIcon,
   Add as AddIcon,
   FilterList as FilterIcon,
   Phone as PhoneIcon,
@@ -71,10 +71,25 @@ function CampaignDetail() {
   const [tabValue, setTabValue] = useState(0);
   const [openAddLeadsDialog, setOpenAddLeadsDialog] = useState(false);
   const [openFilterDialog, setOpenFilterDialog] = useState(false);
+  const [openEditDialog, setOpenEditDialog] = useState(false);
   const [availableLeads, setAvailableLeads] = useState([]);
   const [selectedLeadIds, setSelectedLeadIds] = useState([]);
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(25);
+
+  const [formData, setFormData] = useState({
+    name: "",
+    description: "",
+    bot_config: {
+      greeting_delay: 1,
+      max_call_duration: 300,
+      voice_speed: 1.0,
+    },
+    dialing_config: {
+      concurrent_calls: 1,
+      retry_attempts: 2,
+    },
+  });
 
   const [filterCriteria, setFilterCriteria] = useState({
     countries: [],
@@ -146,14 +161,23 @@ function CampaignDetail() {
     }
   };
 
-  const handleStopCampaign = async () => {
-    if (window.confirm("Are you sure you want to stop this campaign?")) {
-      try {
-        await campaignAPI.stop(id);
-        loadCampaignData();
-      } catch (error) {
-        console.error("Error stopping campaign:", error);
-      }
+  const handleOpenEditDialog = () => {
+    setFormData({
+      name: campaign.name,
+      description: campaign.description || "",
+      bot_config: campaign.bot_config,
+      dialing_config: campaign.dialing_config,
+    });
+    setOpenEditDialog(true);
+  };
+
+  const handleSaveCampaign = async () => {
+    try {
+      await campaignAPI.update(id, formData);
+      setOpenEditDialog(false);
+      loadCampaignData();
+    } catch (error) {
+      console.error("Error updating campaign:", error);
     }
   };
 
@@ -217,10 +241,6 @@ function CampaignDetail() {
         return "success";
       case "paused":
         return "warning";
-      case "completed":
-        return "primary";
-      case "cancelled":
-        return "error";
       default:
         return "default";
     }
@@ -269,19 +289,37 @@ function CampaignDetail() {
     );
   }
 
-  const progressPercentage =
-    campaign.total_leads > 0
-      ? Math.round((campaign.leads_called / campaign.total_leads) * 100)
-      : 0;
-
   return (
-    <Box>
-      <Box display="flex" alignItems="center" mb={3}>
-        <IconButton onClick={() => navigate("/campaigns")} sx={{ mr: 2 }}>
+    <Box className="fade-in">
+      <Box display="flex" alignItems="center" mb={4}>
+        <IconButton
+          onClick={() => navigate("/campaigns")}
+          sx={{
+            mr: 2,
+            backgroundColor: "primary.main",
+            color: "white",
+            "&:hover": {
+              backgroundColor: "primary.dark",
+              transform: "translateX(-4px)",
+            },
+            transition: "all 0.3s ease",
+          }}
+        >
           <ArrowBackIcon />
         </IconButton>
         <Box flexGrow={1}>
-          <Typography variant="h4">{campaign.name}</Typography>
+          <Typography
+            variant="h4"
+            sx={{
+              fontWeight: 700,
+              background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+              WebkitBackgroundClip: "text",
+              WebkitTextFillColor: "transparent",
+              backgroundClip: "text",
+            }}
+          >
+            {campaign.name}
+          </Typography>
           {campaign.description && (
             <Typography variant="body1" color="text.secondary">
               {campaign.description}
@@ -293,6 +331,14 @@ function CampaignDetail() {
           color={getStatusColor(campaign.status)}
           sx={{ mr: 2 }}
         />
+        <Button
+          variant="outlined"
+          startIcon={<EditIcon />}
+          onClick={handleOpenEditDialog}
+          sx={{ mr: 1 }}
+        >
+          Edit
+        </Button>
         {campaign.status === "draft" || campaign.status === "ready" ? (
           <Button
             variant="contained"
@@ -303,43 +349,21 @@ function CampaignDetail() {
             Start Campaign
           </Button>
         ) : campaign.status === "running" ? (
-          <>
-            <Button
-              variant="outlined"
-              startIcon={<PauseIcon />}
-              onClick={handlePauseCampaign}
-              sx={{ mr: 1 }}
-            >
-              Pause
-            </Button>
-            <Button
-              variant="outlined"
-              color="error"
-              startIcon={<StopIcon />}
-              onClick={handleStopCampaign}
-            >
-              Stop
-            </Button>
-          </>
+          <Button
+            variant="outlined"
+            startIcon={<PauseIcon />}
+            onClick={handlePauseCampaign}
+          >
+            Pause
+          </Button>
         ) : campaign.status === "paused" ? (
-          <>
-            <Button
-              variant="contained"
-              startIcon={<PlayIcon />}
-              onClick={handleStartCampaign}
-              sx={{ mr: 1 }}
-            >
-              Resume
-            </Button>
-            <Button
-              variant="outlined"
-              color="error"
-              startIcon={<StopIcon />}
-              onClick={handleStopCampaign}
-            >
-              Stop
-            </Button>
-          </>
+          <Button
+            variant="contained"
+            startIcon={<PlayIcon />}
+            onClick={handleStartCampaign}
+          >
+            Resume
+          </Button>
         ) : null}
       </Box>
 
@@ -387,21 +411,6 @@ function CampaignDetail() {
         </Grid>
       </Grid>
 
-      {/* Progress Bar */}
-      {campaign.status === "running" && (
-        <Paper sx={{ p: 2, mb: 3 }}>
-          <Box display="flex" justifyContent="space-between" mb={1}>
-            <Typography variant="body1">Campaign Progress</Typography>
-            <Typography variant="body1">{progressPercentage}%</Typography>
-          </Box>
-          <LinearProgress
-            variant="determinate"
-            value={progressPercentage}
-            sx={{ height: 8 }}
-          />
-        </Paper>
-      )}
-
       {/* Tabs */}
       <Paper>
         <Tabs
@@ -436,14 +445,6 @@ function CampaignDetail() {
                     </TableCell>
                   </TableRow>
                   <TableRow>
-                    <TableCell>Completed</TableCell>
-                    <TableCell>
-                      {campaign.completed_at
-                        ? new Date(campaign.completed_at).toLocaleString()
-                        : "Not completed"}
-                    </TableCell>
-                  </TableRow>
-                  <TableRow>
                     <TableCell>Rejected Calls</TableCell>
                     <TableCell>{campaign.leads_rejected}</TableCell>
                   </TableRow>
@@ -466,9 +467,9 @@ function CampaignDetail() {
                 <Alert severity="success" sx={{ mb: 2 }}>
                   Campaign is actively making calls
                 </Alert>
-              ) : campaign.status === "completed" ? (
-                <Alert severity="success" sx={{ mb: 2 }}>
-                  Campaign completed successfully
+              ) : campaign.status === "paused" ? (
+                <Alert severity="info" sx={{ mb: 2 }}>
+                  Campaign is paused. You can add more leads or resume calling.
                 </Alert>
               ) : null}
               <Box>
@@ -480,9 +481,6 @@ function CampaignDetail() {
                     setOpenAddLeadsDialog(true);
                   }}
                   sx={{ mb: 1, mr: 1 }}
-                  disabled={
-                    campaign.status !== "draft" && campaign.status !== "ready"
-                  }
                 >
                   Add Selected Leads
                 </Button>
@@ -491,9 +489,6 @@ function CampaignDetail() {
                   startIcon={<FilterIcon />}
                   onClick={() => setOpenFilterDialog(true)}
                   sx={{ mb: 1 }}
-                  disabled={
-                    campaign.status !== "draft" && campaign.status !== "ready"
-                  }
                 >
                   Add Filtered Leads
                 </Button>
@@ -729,6 +724,110 @@ function CampaignDetail() {
           <Button onClick={() => setOpenFilterDialog(false)}>Cancel</Button>
           <Button onClick={handleAddFilteredLeads} variant="contained">
             Add Filtered Leads
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Edit Campaign Dialog */}
+      <Dialog
+        open={openEditDialog}
+        onClose={() => setOpenEditDialog(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Edit Campaign</DialogTitle>
+        <DialogContent>
+          <Box sx={{ pt: 2 }}>
+            <TextField
+              fullWidth
+              margin="normal"
+              label="Campaign Name"
+              value={formData.name}
+              onChange={(e) =>
+                setFormData({ ...formData, name: e.target.value })
+              }
+              required
+            />
+            <TextField
+              fullWidth
+              margin="normal"
+              label="Description"
+              multiline
+              rows={3}
+              value={formData.description}
+              onChange={(e) =>
+                setFormData({ ...formData, description: e.target.value })
+              }
+            />
+
+            <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
+              Bot Configuration
+            </Typography>
+            <TextField
+              fullWidth
+              margin="normal"
+              label="Greeting Delay (seconds)"
+              type="number"
+              value={formData.bot_config.greeting_delay}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  bot_config: {
+                    ...formData.bot_config,
+                    greeting_delay: parseInt(e.target.value),
+                  },
+                })
+              }
+              inputProps={{ min: 0, max: 10 }}
+            />
+            <TextField
+              fullWidth
+              margin="normal"
+              label="Max Call Duration (seconds)"
+              type="number"
+              value={formData.bot_config.max_call_duration}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  bot_config: {
+                    ...formData.bot_config,
+                    max_call_duration: parseInt(e.target.value),
+                  },
+                })
+              }
+              inputProps={{ min: 30, max: 3600 }}
+            />
+
+            <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
+              Dialing Configuration
+            </Typography>
+            <TextField
+              fullWidth
+              margin="normal"
+              label="Concurrent Calls"
+              type="number"
+              value={formData.dialing_config.concurrent_calls}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  dialing_config: {
+                    ...formData.dialing_config,
+                    concurrent_calls: parseInt(e.target.value),
+                  },
+                })
+              }
+              inputProps={{ min: 1, max: 10 }}
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setOpenEditDialog(false)}>Cancel</Button>
+          <Button
+            onClick={handleSaveCampaign}
+            variant="contained"
+            disabled={!formData.name}
+          >
+            Save Changes
           </Button>
         </DialogActions>
       </Dialog>

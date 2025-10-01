@@ -270,20 +270,42 @@ ftd,Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
   };
 
   return (
-    <Box>
+    <Box className="fade-in">
       <Box
         display="flex"
         justifyContent="space-between"
         alignItems="center"
-        mb={3}
+        mb={4}
       >
-        <Typography variant="h4">Leads</Typography>
+        <Typography
+          variant="h4"
+          sx={{
+            fontWeight: 700,
+            background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+            WebkitBackgroundClip: "text",
+            WebkitTextFillColor: "transparent",
+            backgroundClip: "text",
+          }}
+        >
+          👥 Leads
+        </Typography>
         <Box>
           <Button
             variant="outlined"
             startIcon={<DownloadIcon />}
             onClick={handleExportTemplate}
-            sx={{ mr: 1 }}
+            sx={{
+              mr: 1,
+              borderColor: "primary.main",
+              color: "primary.main",
+              fontWeight: 600,
+              "&:hover": {
+                borderColor: "primary.dark",
+                backgroundColor: "rgba(200, 92, 60, 0.08)",
+                transform: "translateY(-2px)",
+              },
+              transition: "all 0.3s ease",
+            }}
           >
             Download Template
           </Button>
@@ -291,7 +313,18 @@ ftd,Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
             variant="outlined"
             startIcon={<UploadIcon />}
             onClick={() => setImportDialog(true)}
-            sx={{ mr: 1 }}
+            sx={{
+              mr: 1,
+              borderColor: "primary.main",
+              color: "primary.main",
+              fontWeight: 600,
+              "&:hover": {
+                borderColor: "primary.dark",
+                backgroundColor: "rgba(200, 92, 60, 0.08)",
+                transform: "translateY(-2px)",
+              },
+              transition: "all 0.3s ease",
+            }}
           >
             Import CSV
           </Button>
@@ -299,13 +332,33 @@ ftd,Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
             variant="contained"
             startIcon={<AddIcon />}
             onClick={handleAddLead}
+            sx={{
+              background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+              fontWeight: 600,
+              boxShadow: "0 4px 16px rgba(200, 92, 60, 0.3)",
+              "&:hover": {
+                background: "linear-gradient(135deg, #E07B5F 0%, #C85C3C 100%)",
+                boxShadow: "0 8px 24px rgba(200, 92, 60, 0.4)",
+                transform: "translateY(-2px)",
+              },
+            }}
           >
             Add Lead
           </Button>
         </Box>
       </Box>
 
-      <Paper sx={{ height: 600, width: "100%" }}>
+      <Paper
+        sx={{
+          height: 600,
+          width: "100%",
+          borderRadius: 3,
+          background:
+            "linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 243, 239, 0.95) 100%)",
+          border: "1px solid rgba(200, 92, 60, 0.1)",
+          boxShadow: "0 8px 24px rgba(200, 92, 60, 0.12)",
+        }}
+      >
         <DataGrid
           rows={leads}
           columns={columns}

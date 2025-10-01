@@ -23,7 +23,6 @@ import {
   Add as AddIcon,
   PlayArrow as PlayIcon,
   Pause as PauseIcon,
-  Stop as StopIcon,
   Edit as EditIcon,
   People as PeopleIcon,
   Phone as PhoneIcon,
@@ -37,6 +36,7 @@ function Campaigns() {
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(false);
   const [openDialog, setOpenDialog] = useState(false);
+  const [editingCampaign, setEditingCampaign] = useState(null);
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: "",
@@ -53,7 +53,6 @@ function Campaigns() {
     },
     dialing_config: {
       concurrent_calls: 1,
-      wait_between_calls: 5,
       retry_attempts: 2,
     },
   });
@@ -75,15 +74,54 @@ function Campaigns() {
     }
   };
 
-  const handleCreateCampaign = async () => {
+  const handleOpenCreateDialog = () => {
+    setEditingCampaign(null);
+    setFormData({
+      name: "",
+      description: "",
+      bot_config: {
+        greeting_delay: 1,
+        max_call_duration: 300,
+        voice_speed: 1.0,
+      },
+      dialing_config: {
+        concurrent_calls: 1,
+        retry_attempts: 2,
+      },
+    });
+    setOpenDialog(true);
+  };
+
+  const handleOpenEditDialog = (campaign) => {
+    setEditingCampaign(campaign);
+    setFormData({
+      name: campaign.name,
+      description: campaign.description || "",
+      bot_config: campaign.bot_config,
+      dialing_config: campaign.dialing_config,
+    });
+    setOpenDialog(true);
+  };
+
+  const handleSaveCampaign = async () => {
     try {
-      const response = await campaignAPI.create(formData);
-      showSnackbar("Campaign created successfully", "success");
-      setOpenDialog(false);
-      navigate(`/campaigns/${response.data.id}`);
+      if (editingCampaign) {
+        await campaignAPI.update(editingCampaign.id, formData);
+        showSnackbar("Campaign updated successfully", "success");
+        setOpenDialog(false);
+        loadCampaigns();
+      } else {
+        const response = await campaignAPI.create(formData);
+        showSnackbar("Campaign created successfully", "success");
+        setOpenDialog(false);
+        navigate(`/campaigns/${response.data.id}`);
+      }
     } catch (error) {
-      console.error("Error creating campaign:", error);
-      showSnackbar("Error creating campaign", "error");
+      console.error("Error saving campaign:", error);
+      showSnackbar(
+        `Error ${editingCampaign ? "updating" : "creating"} campaign`,
+        "error"
+      );
     }
   };
 
@@ -109,19 +147,6 @@ function Campaigns() {
     }
   };
 
-  const handleStopCampaign = async (id) => {
-    if (window.confirm("Are you sure you want to stop this campaign?")) {
-      try {
-        await campaignAPI.stop(id);
-        showSnackbar("Campaign stopped", "success");
-        loadCampaigns();
-      } catch (error) {
-        console.error("Error stopping campaign:", error);
-        showSnackbar("Error stopping campaign", "error");
-      }
-    }
-  };
-
   const showSnackbar = (message, severity) => {
     setSnackbar({ open: true, message, severity });
   };
@@ -136,33 +161,48 @@ function Campaigns() {
         return "success";
       case "paused":
         return "warning";
-      case "completed":
-        return "primary";
-      case "cancelled":
-        return "error";
       default:
         return "default";
     }
   };
 
-  const getProgressPercentage = (campaign) => {
-    if (campaign.total_leads === 0) return 0;
-    return Math.round((campaign.leads_called / campaign.total_leads) * 100);
-  };
-
   return (
-    <Box>
+    <Box className="fade-in">
       <Box
         display="flex"
         justifyContent="space-between"
         alignItems="center"
-        mb={3}
+        mb={4}
       >
-        <Typography variant="h4">Campaigns</Typography>
+        <Typography
+          variant="h4"
+          sx={{
+            fontWeight: 700,
+            background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+            WebkitBackgroundClip: "text",
+            WebkitTextFillColor: "transparent",
+            backgroundClip: "text",
+          }}
+        >
+          🎯 Campaigns
+        </Typography>
         <Button
           variant="contained"
           startIcon={<AddIcon />}
-          onClick={() => setOpenDialog(true)}
+          onClick={handleOpenCreateDialog}
+          sx={{
+            background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+            fontWeight: 600,
+            px: 3,
+            py: 1.5,
+            borderRadius: 2.5,
+            boxShadow: "0 4px 16px rgba(200, 92, 60, 0.3)",
+            "&:hover": {
+              background: "linear-gradient(135deg, #E07B5F 0%, #C85C3C 100%)",
+              boxShadow: "0 8px 24px rgba(200, 92, 60, 0.4)",
+              transform: "translateY(-2px)",
+            },
+          }}
         >
           Create Campaign
         </Button>
@@ -174,9 +214,25 @@ function Campaigns() {
         </Box>
       ) : (
         <Grid container spacing={3}>
-          {campaigns.map((campaign) => (
+          {campaigns.map((campaign, index) => (
             <Grid item xs={12} md={6} lg={4} key={campaign.id}>
-              <Card>
+              <Card
+                className="fade-in"
+                sx={{
+                  background:
+                    "linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 243, 239, 0.95) 100%)",
+                  backdropFilter: "blur(10px)",
+                  border: "1px solid rgba(200, 92, 60, 0.15)",
+                  borderRadius: 3,
+                  transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+                  animationDelay: `${index * 0.1}s`,
+                  "&:hover": {
+                    transform: "translateY(-8px) scale(1.02)",
+                    boxShadow: "0 16px 40px rgba(200, 92, 60, 0.25)",
+                    border: "1px solid rgba(200, 92, 60, 0.3)",
+                  },
+                }}
+              >
                 <CardContent>
                   <Box
                     display="flex"
@@ -184,13 +240,28 @@ function Campaigns() {
                     alignItems="center"
                     mb={2}
                   >
-                    <Typography variant="h6" component="div">
+                    <Typography
+                      variant="h6"
+                      component="div"
+                      fontWeight={700}
+                      sx={{
+                        background:
+                          "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+                        WebkitBackgroundClip: "text",
+                        WebkitTextFillColor: "transparent",
+                        backgroundClip: "text",
+                      }}
+                    >
                       {campaign.name}
                     </Typography>
                     <Chip
                       label={campaign.status.toUpperCase()}
                       color={getStatusColor(campaign.status)}
                       size="small"
+                      sx={{
+                        fontWeight: 700,
+                        boxShadow: "0 2px 8px rgba(200, 92, 60, 0.2)",
+                      }}
                     />
                   </Box>
 
@@ -237,21 +308,6 @@ function Campaigns() {
                     </Box>
                   </Box>
 
-                  {campaign.status === "running" && (
-                    <Box mb={2}>
-                      <Box display="flex" justifyContent="space-between" mb={1}>
-                        <Typography variant="body2">Progress</Typography>
-                        <Typography variant="body2">
-                          {getProgressPercentage(campaign)}%
-                        </Typography>
-                      </Box>
-                      <LinearProgress
-                        variant="determinate"
-                        value={getProgressPercentage(campaign)}
-                      />
-                    </Box>
-                  )}
-
                   <Typography variant="caption" color="text.secondary">
                     Created:{" "}
                     {new Date(campaign.created_at).toLocaleDateString()}
@@ -270,42 +326,30 @@ function Campaigns() {
                       Start
                     </Button>
                   ) : campaign.status === "running" ? (
-                    <>
-                      <Button
-                        size="small"
-                        startIcon={<PauseIcon />}
-                        onClick={() => handlePauseCampaign(campaign.id)}
-                      >
-                        Pause
-                      </Button>
-                      <Button
-                        size="small"
-                        startIcon={<StopIcon />}
-                        onClick={() => handleStopCampaign(campaign.id)}
-                        color="error"
-                      >
-                        Stop
-                      </Button>
-                    </>
+                    <Button
+                      size="small"
+                      startIcon={<PauseIcon />}
+                      onClick={() => handlePauseCampaign(campaign.id)}
+                    >
+                      Pause
+                    </Button>
                   ) : campaign.status === "paused" ? (
-                    <>
-                      <Button
-                        size="small"
-                        startIcon={<PlayIcon />}
-                        onClick={() => handleStartCampaign(campaign.id)}
-                      >
-                        Resume
-                      </Button>
-                      <Button
-                        size="small"
-                        startIcon={<StopIcon />}
-                        onClick={() => handleStopCampaign(campaign.id)}
-                        color="error"
-                      >
-                        Stop
-                      </Button>
-                    </>
+                    <Button
+                      size="small"
+                      startIcon={<PlayIcon />}
+                      onClick={() => handleStartCampaign(campaign.id)}
+                    >
+                      Resume
+                    </Button>
                   ) : null}
+
+                  <Button
+                    size="small"
+                    startIcon={<EditIcon />}
+                    onClick={() => handleOpenEditDialog(campaign)}
+                  >
+                    Edit
+                  </Button>
 
                   <Button
                     size="small"
@@ -320,14 +364,16 @@ function Campaigns() {
         </Grid>
       )}
 
-      {/* Create Campaign Dialog */}
+      {/* Create/Edit Campaign Dialog */}
       <Dialog
         open={openDialog}
         onClose={() => setOpenDialog(false)}
         maxWidth="sm"
         fullWidth
       >
-        <DialogTitle>Create New Campaign</DialogTitle>
+        <DialogTitle>
+          {editingCampaign ? "Edit Campaign" : "Create New Campaign"}
+        </DialogTitle>
         <DialogContent>
           <Box sx={{ pt: 2 }}>
             <TextField
@@ -410,33 +456,16 @@ function Campaigns() {
               }
               inputProps={{ min: 1, max: 10 }}
             />
-            <TextField
-              fullWidth
-              margin="normal"
-              label="Wait Between Calls (seconds)"
-              type="number"
-              value={formData.dialing_config.wait_between_calls}
-              onChange={(e) =>
-                setFormData({
-                  ...formData,
-                  dialing_config: {
-                    ...formData.dialing_config,
-                    wait_between_calls: parseInt(e.target.value),
-                  },
-                })
-              }
-              inputProps={{ min: 1, max: 60 }}
-            />
           </Box>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setOpenDialog(false)}>Cancel</Button>
           <Button
-            onClick={handleCreateCampaign}
+            onClick={handleSaveCampaign}
             variant="contained"
             disabled={!formData.name}
           >
-            Create Campaign
+            {editingCampaign ? "Save Changes" : "Create Campaign"}
           </Button>
         </DialogActions>
       </Dialog>

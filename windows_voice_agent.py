@@ -1756,9 +1756,13 @@ class RTPSession:
         self.timestamp = 0
         self.ssrc = hash(session_id) & 0xFFFFFFFF
         
-        # Audio processing
-        self.audio_queue = queue.Queue()
+        # Audio processing - use queue for thread-safe asyncio communication
         self.input_processing = False  # For incoming audio processing
+        self.audio_input_queue = queue.Queue()  # Queue audio for the asyncio thread
+        self.audio_buffer = b""  # Small buffer for packet assembly only
+        self.buffer_lock = threading.Lock()
+        self.asyncio_loop = None  # Will hold the dedicated event loop
+        self.asyncio_thread = None  # Dedicated thread for asyncio
         
         # Output audio queue for paced delivery
         self.output_queue = queue.Queue()
@@ -1785,7 +1789,7 @@ class RTPSession:
         self.processing = self.output_processing
         
     def process_incoming_audio(self, audio_data: bytes, payload_type: int, timestamp: int):
-        """Process incoming RTP audio packet with noise filtering"""
+        """Process incoming RTP audio packet with noise filtering - direct streaming to Gemini"""
         try:
             # Convert payload based on type
             if payload_type == 0:  # PCMU/μ-law
@@ -1808,94 +1812,89 @@ class RTPSession:
             if self.call_recorder:
                 self.call_recorder.record_incoming_audio(pcm_data)
             
-            # Queue the PROCESSED audio for AI transcription and processing
-            self.audio_queue.put(processed_pcm)
-            logger.info(f"🎤 Queued {len(processed_pcm)} bytes of enhanced PCM audio for AI processing")
-            
-            # Start input processing if not already running
+            # Start asyncio thread if not already running
             if not self.input_processing:
                 self.input_processing = True
-                threading.Thread(target=self._process_audio_queue, daemon=True).start()
+                self.asyncio_thread = threading.Thread(target=self._run_asyncio_thread, daemon=True)
+                self.asyncio_thread.start()
+                # Give it a moment to initialize
+                time.sleep(0.1)
+            
+            # Add to buffer and send immediately when we have enough for efficient transmission
+            with self.buffer_lock:
+                self.audio_buffer += processed_pcm
                 
+                # Send immediately with minimal buffering (20ms chunks) for natural conversation
+                min_chunk = 320  # 20ms at 8kHz = 160 samples * 2 bytes = 320 bytes
+                if len(self.audio_buffer) >= min_chunk:
+                    chunk_to_send = self.audio_buffer
+                    self.audio_buffer = b""  # Clear buffer
+                    
+                    # Queue audio for the asyncio thread to send
+                    self.audio_input_queue.put(chunk_to_send)
+                    
         except Exception as e:
             logger.error(f"Error processing incoming audio: {e}")
     
-    def _process_audio_queue(self):
-        """Process queued audio through voice session optimized for maximum performance"""
-        audio_buffer = b""
-        chunk_size = 480  # 30ms at 8kHz for maximum processing stability
-        
-        # Create dedicated event loop for this thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    def _run_asyncio_thread(self):
+        """Run dedicated asyncio thread for all Gemini communication"""
+        # Create and set event loop for this thread
+        self.asyncio_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.asyncio_loop)
         
         try:
-            # Run the async processing in the dedicated loop
-            loop.run_until_complete(self._async_process_audio_queue(audio_buffer, chunk_size))
+            # Run the main async loop
+            self.asyncio_loop.run_until_complete(self._async_main_loop())
         except Exception as e:
-            logger.error(f"Error in audio processing thread: {e}")
+            logger.error(f"Error in asyncio thread: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
         finally:
-            loop.close()
+            self.asyncio_loop.close()
             self.input_processing = False
     
-    async def _async_process_audio_queue(self, audio_buffer: bytes, chunk_size: int):
-        """Async version of audio queue processing optimized for maximum performance and stability"""
+    async def _async_main_loop(self):
+        """Main async loop - handles initialization, sending, and receiving"""
         try:
-            # Initialize voice session first
+            # Initialize voice session
             if not await self.voice_session.initialize_voice_session():
                 logger.error("Failed to initialize voice session")
                 return
-                
-            # Start receive task for continuous response handling
-            receive_task = asyncio.create_task(self._continuous_receive_responses())
             
-            # Large chunk sizes for maximum performance and stability
-            min_chunk_size = 480  # 30ms minimum - high performance
-            max_chunk_size = 640  # 40ms maximum - very stable processing
+            logger.info("🎤 Voice session initialized - starting audio streaming")
             
+            # Start continuous receiver task
+            receiver_task = asyncio.create_task(self._continuous_receive_responses())
+            
+            # Main loop: process audio from queue and send to Gemini
             while self.input_processing:
                 try:
-                    # Get audio chunk immediately without any timeout
+                    # Check for audio in queue (non-blocking with timeout)
                     try:
-                        audio_chunk = self.audio_queue.get_nowait()
-                        audio_buffer += audio_chunk
-                    except queue.Empty:
-                        # Send any buffered audio immediately, no matter how small
-                        if len(audio_buffer) >= min_chunk_size and self.voice_session.gemini_session:
-                            await self._send_audio_to_gemini(audio_buffer)
-                            audio_buffer = b""
-                        # Yield control less frequently with larger chunks
-                        await asyncio.sleep(0.01)
-                        continue
-                    
-                    # Send audio immediately as soon as we have minimum data
-                    while len(audio_buffer) >= min_chunk_size:
-                        chunk_to_process = audio_buffer[:max_chunk_size]
-                        audio_buffer = audio_buffer[max_chunk_size:]
+                        audio_chunk = self.audio_input_queue.get(timeout=0.1)
                         
-                        # Send audio to Gemini immediately without any delays
+                        # Send audio to Gemini immediately
                         if self.voice_session.gemini_session:
-                            await self._send_audio_to_gemini(chunk_to_process)
+                            await self._send_audio_to_gemini(audio_chunk)
+                    except queue.Empty:
+                        # No audio available, yield control briefly
+                        await asyncio.sleep(0.01)
                         
                 except Exception as e:
-                    logger.error(f"Error in async audio processing: {e}")
-                    # No retry delay - continue immediately
-                    continue
-                    
+                    logger.error(f"Error in main audio loop: {e}")
+                    await asyncio.sleep(0.1)  # Brief pause before retry
+            
+            # Clean up receiver task
+            receiver_task.cancel()
+            try:
+                await receiver_task
+            except asyncio.CancelledError:
+                pass
+                
         except Exception as e:
-            logger.error(f"Error in async audio queue processing: {e}")
+            logger.error(f"Error in async main loop: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
-        finally:
-            # Cancel receive task when done
-            if 'receive_task' in locals():
-                receive_task.cancel()
-                try:
-                    await receive_task
-                except asyncio.CancelledError:
-                    pass
     
     async def _send_audio_to_gemini(self, audio_chunk: bytes):
         """Send audio chunk to Gemini without waiting for response"""
@@ -1925,6 +1924,9 @@ class RTPSession:
                 turn = self.voice_session.gemini_session.receive()
                 
                 async for response in turn:
+                    if not self.input_processing:
+                        break
+                        
                     try:
                         # First check for server_content which contains the actual audio
                         if hasattr(response, 'server_content') and response.server_content:
@@ -1985,14 +1987,27 @@ class RTPSession:
                             logger.info(f"AI Response: {response.text}")
                             
                     except Exception as e:
-                        logger.error(f"Error processing response item: {e}")
+                        if self.input_processing:
+                            logger.error(f"Error processing response item: {e}")
                         # Continue processing other responses
                         continue
                         
+            except asyncio.CancelledError:
+                # Clean shutdown
+                logger.info("🎧 Receiver task cancelled")
+                break
             except Exception as e:
                 if self.input_processing:  # Only log if we're still processing
-                    logger.error(f"Error receiving from Gemini: {e}")
-                    # No sleep delay - continue immediately for fastest recovery
+                    # Check if it's a connection close error (expected during shutdown)
+                    error_str = str(e).lower()
+                    if 'close frame' in error_str or 'connection closed' in error_str:
+                        logger.debug(f"Connection closing: {e}")
+                        break  # Exit gracefully
+                    else:
+                        logger.error(f"Error receiving from Gemini: {e}")
+                        await asyncio.sleep(0.1)  # Brief pause before retry
+                else:
+                    break  # Exit if not processing anymore
                     
         logger.info("🎧 Stopped continuous response receiver")
     
@@ -2403,51 +2418,18 @@ class WindowsSIPHandler:
                         active_sessions[session_id]["status"] = "active"
                         logger.info(f"🎯 Voice session {session_id} is now active and ready")
                         
-                        # Start AI conversation immediately without waiting for user input
-                        def start_ai_conversation():
+                        # Play greeting and let natural conversation flow
+                        def play_greeting():
                             time.sleep(0.5)  # Allow RTP connection to stabilize
-                            logger.info("🎵 Playing greeting and triggering AI response...")
+                            logger.info("🎵 Playing greeting...")
                             
                             # Play greeting file first and get actual duration
                             greeting_duration = rtp_session.play_greeting_file("greeting.wav")
                             
-                            # Wait for greeting to finish playing plus small buffer
-                            wait_time = max(greeting_duration + 0.5, 2.0)  # At least 2 seconds, or duration + buffer
-                            logger.info(f"⏱️ Waiting {wait_time:.1f}s for greeting to complete...")
-                            time.sleep(wait_time)
-                            
-                            # Now trigger AI to start conversation by sending a small audio trigger
-                            if session_id in active_sessions and active_sessions[session_id]["voice_session"]:
-                                voice_session = active_sessions[session_id]["voice_session"]
-                                if hasattr(voice_session, 'gemini_session') and voice_session.gemini_session:
-                                    try:
-                                        # Send a small audio trigger to start AI conversation
-                                        # Use a very brief audio sample to trigger response
-                                        trigger_audio = b'\x00\x01' * 160  # 20ms of minimal audio at 8kHz
-                                        processed_trigger = voice_session.convert_telephony_to_gemini(trigger_audio)
-                                        
-                                        # Create async function to trigger AI conversation start
-                                        async def trigger_ai_conversation():
-                                            try:
-                                                await voice_session.gemini_session.send(
-                                                    input={"data": processed_trigger, "mime_type": "audio/pcm;rate=16000"}
-                                                )
-                                                logger.info("✅ AI conversation triggered after greeting")
-                                            except Exception as e:
-                                                logger.error(f"Error triggering AI conversation: {e}")
-                                        
-                                        # Run the trigger in a new event loop
-                                        loop = asyncio.new_event_loop()
-                                        asyncio.set_event_loop(loop)
-                                        try:
-                                            loop.run_until_complete(trigger_ai_conversation())
-                                        finally:
-                                            loop.close()
-                                            
-                                    except Exception as e:
-                                        logger.error(f"Error setting up AI conversation trigger: {e}")
+                            logger.info(f"✅ Greeting played ({greeting_duration:.1f}s). Voice session ready for natural conversation.")
+                            logger.info("🎤 Waiting for user to speak - AI will respond naturally when it detects speech")
                         
-                        threading.Thread(target=start_ai_conversation, daemon=True).start()
+                        threading.Thread(target=play_greeting, daemon=True).start()
                         
                 except Exception as e:
                     logger.error(f"❌ Failed to start voice session: {e}")
@@ -3261,50 +3243,18 @@ Content-Length: {len(sdp_content)}
                         active_sessions[session_id]["status"] = "active"
                         logger.info(f"🎯 Outbound voice session {session_id} is now active and ready")
                         
-                        # For outbound calls, we should start talking first
-                        def start_outbound_conversation():
+                        # For outbound calls, play greeting and let natural conversation flow
+                        def play_outbound_greeting():
                             time.sleep(0.5)  # Small delay for RTP to stabilize
-                            logger.info("🎵 Playing greeting and starting conversation with called party...")
+                            logger.info("🎵 Playing greeting to called party...")
                             
                             # Play greeting file first and get actual duration
                             greeting_duration = rtp_session.play_greeting_file("greeting.wav")
                             
-                            # Wait for greeting to finish playing plus small buffer
-                            wait_time = max(greeting_duration + 0.5, 2.0)  # At least 2 seconds, or duration + buffer
-                            logger.info(f"⏱️ Waiting {wait_time:.1f}s for greeting to complete...")
-                            time.sleep(wait_time)
-                            
-                            # Now trigger AI to start conversation for outbound call
-                            if session_id in active_sessions and active_sessions[session_id]["voice_session"]:
-                                voice_session = active_sessions[session_id]["voice_session"]
-                                if hasattr(voice_session, 'gemini_session') and voice_session.gemini_session:
-                                    try:
-                                        # Send a small audio trigger to start AI conversation
-                                        trigger_audio = b'\x00\x01' * 160  # 20ms of minimal audio at 8kHz
-                                        processed_trigger = voice_session.convert_telephony_to_gemini(trigger_audio)
-                                        
-                                        # Create async function to trigger AI conversation start
-                                        async def trigger_outbound_ai_conversation():
-                                            try:
-                                                await voice_session.gemini_session.send(
-                                                    input={"data": processed_trigger, "mime_type": "audio/pcm;rate=16000"}
-                                                )
-                                                logger.info("✅ AI conversation triggered for outbound call after greeting")
-                                            except Exception as e:
-                                                logger.error(f"Error triggering outbound AI conversation: {e}")
-                                        
-                                        # Run the trigger in a new event loop
-                                        loop = asyncio.new_event_loop()
-                                        asyncio.set_event_loop(loop)
-                                        try:
-                                            loop.run_until_complete(trigger_outbound_ai_conversation())
-                                        finally:
-                                            loop.close()
-                                            
-                                    except Exception as e:
-                                        logger.error(f"Error setting up outbound AI conversation trigger: {e}")
+                            logger.info(f"✅ Outbound greeting played ({greeting_duration:.1f}s). Voice session ready for natural conversation.")
+                            logger.info("🎤 Waiting for called party to speak - AI will respond naturally when it detects speech")
                         
-                        threading.Thread(target=start_outbound_conversation, daemon=True).start()
+                        threading.Thread(target=play_outbound_greeting, daemon=True).start()
                         
                 except Exception as e:
                     logger.error(f"❌ Failed to start outbound voice session: {e}")
@@ -4440,8 +4390,8 @@ if __name__ == "__main__":
     logger.info("   🎯 Optimized for improved user speech transcription accuracy")
     logger.info("🔊 Greeting System: ENABLED for both incoming and outbound calls")
     logger.info("   🎙️ Plays greeting.wav file automatically when call is answered")
-    logger.info("   🤖 Triggers AI conversation after greeting completes")
-    logger.info("   📏 Dynamic timing based on actual audio file duration")
+    logger.info("   🤖 AI responds naturally when user speaks (no artificial triggers)")
+    logger.info("   ⚡ Natural turn-taking with instant interruption support")
     logger.info("=" * 60)
     logger.info("Endpoints:")
     logger.info("  GET /health - System health check (includes transcription status)")

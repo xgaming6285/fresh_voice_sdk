@@ -134,21 +134,105 @@ function Dashboard() {
   };
 
   const StatCard = ({ title, value, icon, color }) => (
-    <Card>
+    <Card
+      className="fade-in"
+      sx={{
+        background: `linear-gradient(135deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.95) 100%)`,
+        backdropFilter: "blur(10px)",
+        border: "1px solid rgba(200, 92, 60, 0.1)",
+        transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+        "&:hover": {
+          transform: "translateY(-8px) scale(1.02)",
+          boxShadow: "0 16px 40px rgba(200, 92, 60, 0.25)",
+          border: "1px solid rgba(200, 92, 60, 0.3)",
+        },
+      }}
+    >
       <CardContent>
         <Box display="flex" justifyContent="space-between" alignItems="center">
           <Box>
-            <Typography color="textSecondary" gutterBottom>
+            <Typography
+              color="textSecondary"
+              gutterBottom
+              fontWeight={600}
+              fontSize="0.875rem"
+            >
               {title}
             </Typography>
-            <Typography variant="h4">{value}</Typography>
+            <Typography
+              variant="h4"
+              fontWeight={700}
+              sx={{
+                background: `linear-gradient(135deg, ${
+                  color === "primary"
+                    ? "#C85C3C"
+                    : color === "secondary"
+                    ? "#8B5E3C"
+                    : color === "info"
+                    ? "#5C8AA6"
+                    : color === "success"
+                    ? "#6B9A5A"
+                    : "#C85C3C"
+                } 0%, ${
+                  color === "primary"
+                    ? "#A0462A"
+                    : color === "secondary"
+                    ? "#6B4423"
+                    : color === "info"
+                    ? "#426D87"
+                    : color === "success"
+                    ? "#517542"
+                    : "#A0462A"
+                } 100%)`,
+                WebkitBackgroundClip: "text",
+                WebkitTextFillColor: "transparent",
+                backgroundClip: "text",
+              }}
+            >
+              {value}
+            </Typography>
           </Box>
           <Box
             sx={{
-              backgroundColor: `${color}.light`,
+              background: `linear-gradient(135deg, ${
+                color === "primary"
+                  ? "rgba(200, 92, 60, 0.15)"
+                  : color === "secondary"
+                  ? "rgba(139, 94, 60, 0.15)"
+                  : color === "info"
+                  ? "rgba(92, 138, 166, 0.15)"
+                  : color === "success"
+                  ? "rgba(107, 154, 90, 0.15)"
+                  : "rgba(200, 92, 60, 0.15)"
+              } 0%, ${
+                color === "primary"
+                  ? "rgba(200, 92, 60, 0.25)"
+                  : color === "secondary"
+                  ? "rgba(139, 94, 60, 0.25)"
+                  : color === "info"
+                  ? "rgba(92, 138, 166, 0.25)"
+                  : color === "success"
+                  ? "rgba(107, 154, 90, 0.25)"
+                  : "rgba(200, 92, 60, 0.25)"
+              } 100%)`,
               borderRadius: "50%",
-              p: 1,
+              p: 2,
               display: "flex",
+              boxShadow: `0 4px 16px ${
+                color === "primary"
+                  ? "rgba(200, 92, 60, 0.3)"
+                  : color === "secondary"
+                  ? "rgba(139, 94, 60, 0.3)"
+                  : color === "info"
+                  ? "rgba(92, 138, 166, 0.3)"
+                  : color === "success"
+                  ? "rgba(107, 154, 90, 0.3)"
+                  : "rgba(200, 92, 60, 0.3)"
+              }`,
+              transition: "all 0.3s ease",
+              "&:hover": {
+                transform: "rotate(10deg) scale(1.1)",
+              },
             }}
           >
             {icon}
@@ -172,22 +256,55 @@ function Dashboard() {
   }
 
   return (
-    <Box>
+    <Box className="fade-in">
       <Box
         display="flex"
         justifyContent="space-between"
         alignItems="center"
-        mb={3}
+        mb={4}
       >
-        <Typography variant="h4">Dashboard</Typography>
-        <IconButton onClick={loadDashboardData}>
+        <Typography
+          variant="h4"
+          sx={{
+            fontWeight: 700,
+            background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+            WebkitBackgroundClip: "text",
+            WebkitTextFillColor: "transparent",
+            backgroundClip: "text",
+          }}
+        >
+          📊 Dashboard
+        </Typography>
+        <IconButton
+          onClick={loadDashboardData}
+          sx={{
+            backgroundColor: "primary.main",
+            color: "white",
+            "&:hover": {
+              backgroundColor: "primary.dark",
+              transform: "rotate(180deg)",
+            },
+            transition: "all 0.5s ease",
+          }}
+        >
           <RefreshIcon />
         </IconButton>
       </Box>
 
       {/* System Status */}
-      <Paper sx={{ p: 2, mb: 3 }}>
-        <Typography variant="h6" gutterBottom>
+      <Paper
+        className="slide-in"
+        sx={{
+          p: 3,
+          mb: 4,
+          borderRadius: 3,
+          background:
+            "linear-gradient(135deg, rgba(200, 92, 60, 0.05) 0%, rgba(255, 255, 255, 0.95) 100%)",
+          border: "1px solid rgba(200, 92, 60, 0.15)",
+          boxShadow: "0 8px 24px rgba(200, 92, 60, 0.12)",
+        }}
+      >
+        <Typography variant="h6" gutterBottom fontWeight={700} sx={{ mb: 2 }}>
           System Status
         </Typography>
         <Grid container spacing={2} alignItems="center">
@@ -203,22 +320,37 @@ function Dashboard() {
                       ? "success.main"
                       : "error.main",
                   mr: 1,
+                  animation: "pulse 2s ease-in-out infinite",
+                  boxShadow:
+                    systemHealth?.status === "healthy"
+                      ? "0 0 15px rgba(107, 154, 90, 0.6)"
+                      : "0 0 15px rgba(199, 84, 80, 0.6)",
                 }}
               />
-              <Typography>
+              <Typography fontWeight={600}>
                 Voice Agent:{" "}
-                {systemHealth?.status === "healthy" ? "Online" : "Offline"}
+                <Box
+                  component="span"
+                  sx={{
+                    color:
+                      systemHealth?.status === "healthy"
+                        ? "success.main"
+                        : "error.main",
+                  }}
+                >
+                  {systemHealth?.status === "healthy" ? "Online" : "Offline"}
+                </Box>
               </Typography>
             </Box>
           </Grid>
           <Grid item xs={12} md={4}>
-            <Typography variant="body2">
-              Active Sessions: {systemHealth?.active_sessions || 0}
+            <Typography variant="body2" fontWeight={500}>
+              📞 Active Sessions: {systemHealth?.active_sessions || 0}
             </Typography>
           </Grid>
           <Grid item xs={12} md={4}>
-            <Typography variant="body2">
-              Phone: {systemHealth?.phone_number || "Not configured"}
+            <Typography variant="body2" fontWeight={500}>
+              📱 Phone: {systemHealth?.phone_number || "Not configured"}
             </Typography>
           </Grid>
         </Grid>
@@ -267,11 +399,25 @@ function Dashboard() {
       </Grid>
 
       {/* Charts */}
-      <Grid container spacing={3} mb={3}>
+      <Grid container spacing={3} mb={4}>
         <Grid item xs={12} md={8}>
-          <Paper sx={{ p: 2 }}>
-            <Typography variant="h6" gutterBottom>
-              Call Trends (Last 7 Days)
+          <Paper
+            className="fade-in"
+            sx={{
+              p: 3,
+              borderRadius: 3,
+              background:
+                "linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 243, 239, 0.95) 100%)",
+              border: "1px solid rgba(200, 92, 60, 0.1)",
+              boxShadow: "0 8px 24px rgba(200, 92, 60, 0.12)",
+              transition: "all 0.3s ease",
+              "&:hover": {
+                boxShadow: "0 12px 32px rgba(200, 92, 60, 0.2)",
+              },
+            }}
+          >
+            <Typography variant="h6" gutterBottom fontWeight={700}>
+              📈 Call Trends (Last 7 Days)
             </Typography>
             <Box height={300}>
               <Line
@@ -295,9 +441,23 @@ function Dashboard() {
           </Paper>
         </Grid>
         <Grid item xs={12} md={4}>
-          <Paper sx={{ p: 2 }}>
-            <Typography variant="h6" gutterBottom>
-              Call Outcomes
+          <Paper
+            className="fade-in"
+            sx={{
+              p: 3,
+              borderRadius: 3,
+              background:
+                "linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 243, 239, 0.95) 100%)",
+              border: "1px solid rgba(200, 92, 60, 0.1)",
+              boxShadow: "0 8px 24px rgba(200, 92, 60, 0.12)",
+              transition: "all 0.3s ease",
+              "&:hover": {
+                boxShadow: "0 12px 32px rgba(200, 92, 60, 0.2)",
+              },
+            }}
+          >
+            <Typography variant="h6" gutterBottom fontWeight={700}>
+              🎯 Call Outcomes
             </Typography>
             <Box
               height={300}
@@ -323,9 +483,19 @@ function Dashboard() {
       </Grid>
 
       {/* Recent Sessions */}
-      <Paper sx={{ p: 2 }}>
-        <Typography variant="h6" gutterBottom>
-          Recent Call Sessions
+      <Paper
+        className="slide-in"
+        sx={{
+          p: 3,
+          borderRadius: 3,
+          background:
+            "linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 243, 239, 0.95) 100%)",
+          border: "1px solid rgba(200, 92, 60, 0.1)",
+          boxShadow: "0 8px 24px rgba(200, 92, 60, 0.12)",
+        }}
+      >
+        <Typography variant="h6" gutterBottom fontWeight={700}>
+          📞 Recent Call Sessions
         </Typography>
         {recentSessions.length > 0 ? (
           <Box>
