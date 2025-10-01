@@ -317,14 +317,17 @@ function Sessions() {
               loadRecordings();
               loadActiveVoiceSessions();
             }}
+            className="ios-button"
             sx={{
-              backgroundColor: "primary.main",
+              background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
               color: "white",
+              boxShadow: "0 4px 16px rgba(200, 92, 60, 0.3)",
               "&:hover": {
-                backgroundColor: "primary.dark",
+                background: "linear-gradient(135deg, #E07B5F 0%, #C85C3C 100%)",
                 transform: "rotate(180deg)",
+                boxShadow: "0 8px 24px rgba(200, 92, 60, 0.4)",
               },
-              transition: "all 0.5s ease",
+              transition: "all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)",
             }}
           >
             <RefreshIcon />
@@ -335,16 +338,15 @@ function Sessions() {
       {/* Active Sessions */}
       {activeVoiceSessions.length > 0 && (
         <Paper
-          className="slide-in"
+          className="glass-effect-colored ios-blur-container"
           sx={{
             p: 3,
             mb: 4,
-            borderRadius: 3,
             background:
-              "linear-gradient(135deg, rgba(107, 154, 90, 0.1) 0%, rgba(255, 255, 255, 0.95) 100%)",
-            border: "1px solid rgba(107, 154, 90, 0.3)",
-            boxShadow: "0 8px 24px rgba(107, 154, 90, 0.2)",
-            animation: "pulse 2s ease-in-out infinite",
+              "linear-gradient(135deg, rgba(107, 154, 90, 0.08) 0%, rgba(107, 154, 90, 0.03) 100%)",
+            border: "1px solid rgba(107, 154, 90, 0.2)",
+            animation:
+              "pulse 2s ease-in-out infinite, slideUp 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)",
           }}
         >
           <Typography variant="h6" gutterBottom fontWeight={700}>
@@ -384,15 +386,13 @@ function Sessions() {
 
       {/* CRM Sessions */}
       <Paper
-        className="fade-in"
+        className="glass-effect ios-blur-container"
         sx={{
           mb: 4,
-          borderRadius: 3,
-          background:
-            "linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 243, 239, 0.95) 100%)",
-          border: "1px solid rgba(200, 92, 60, 0.1)",
-          boxShadow: "0 8px 24px rgba(200, 92, 60, 0.12)",
           overflow: "hidden",
+          animation: "springIn 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)",
+          animationDelay: "0.1s",
+          animationFillMode: "both",
         }}
       >
         <Box p={3}>
@@ -408,19 +408,40 @@ function Sessions() {
           loading={loading}
           autoHeight
           disableSelectionOnClick
+          sx={{
+            "& .MuiDataGrid-cell": {
+              borderBottom: "1px solid rgba(224, 224, 224, 0.2)",
+              fontSize: "0.875rem",
+            },
+            "& .MuiDataGrid-columnHeaders": {
+              backgroundColor: "rgba(248, 243, 239, 0.8)",
+              backdropFilter: "blur(10px)",
+              borderBottom: "2px solid rgba(200, 92, 60, 0.15)",
+              fontWeight: 600,
+              fontSize: "0.875rem",
+            },
+            "& .MuiDataGrid-footerContainer": {
+              borderTop: "2px solid rgba(200, 92, 60, 0.15)",
+              backgroundColor: "rgba(248, 243, 239, 0.8)",
+              backdropFilter: "blur(10px)",
+            },
+            "& .MuiDataGrid-row": {
+              "&:hover": {
+                backgroundColor: "rgba(200, 92, 60, 0.04)",
+              },
+            },
+          }}
         />
       </Paper>
 
       {/* Voice Agent Recordings */}
       <Paper
-        className="fade-in"
+        className="glass-effect ios-blur-container"
         sx={{
-          borderRadius: 3,
-          background:
-            "linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 243, 239, 0.95) 100%)",
-          border: "1px solid rgba(200, 92, 60, 0.1)",
-          boxShadow: "0 8px 24px rgba(200, 92, 60, 0.12)",
           overflow: "hidden",
+          animation: "springIn 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)",
+          animationDelay: "0.2s",
+          animationFillMode: "both",
         }}
       >
         <Box p={3}>
@@ -436,6 +457,29 @@ function Sessions() {
           autoHeight
           disableSelectionOnClick
           getRowId={(row) => row.session_id}
+          sx={{
+            "& .MuiDataGrid-cell": {
+              borderBottom: "1px solid rgba(224, 224, 224, 0.2)",
+              fontSize: "0.875rem",
+            },
+            "& .MuiDataGrid-columnHeaders": {
+              backgroundColor: "rgba(248, 243, 239, 0.8)",
+              backdropFilter: "blur(10px)",
+              borderBottom: "2px solid rgba(200, 92, 60, 0.15)",
+              fontWeight: 600,
+              fontSize: "0.875rem",
+            },
+            "& .MuiDataGrid-footerContainer": {
+              borderTop: "2px solid rgba(200, 92, 60, 0.15)",
+              backgroundColor: "rgba(248, 243, 239, 0.8)",
+              backdropFilter: "blur(10px)",
+            },
+            "& .MuiDataGrid-row": {
+              "&:hover": {
+                backgroundColor: "rgba(200, 92, 60, 0.04)",
+              },
+            },
+          }}
         />
       </Paper>
     </Box>

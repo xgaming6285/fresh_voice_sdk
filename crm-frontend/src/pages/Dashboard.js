@@ -135,16 +135,13 @@ function Dashboard() {
 
   const StatCard = ({ title, value, icon, color }) => (
     <Card
-      className="fade-in"
+      className="glass-effect ios-card"
       sx={{
-        background: `linear-gradient(135deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.95) 100%)`,
-        backdropFilter: "blur(10px)",
-        border: "1px solid rgba(200, 92, 60, 0.1)",
-        transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+        animation: "springIn 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)",
         "&:hover": {
-          transform: "translateY(-8px) scale(1.02)",
-          boxShadow: "0 16px 40px rgba(200, 92, 60, 0.25)",
-          border: "1px solid rgba(200, 92, 60, 0.3)",
+          "& .stat-icon": {
+            transform: "rotate(10deg) scale(1.1)",
+          },
         },
       }}
     >
@@ -193,46 +190,34 @@ function Dashboard() {
             </Typography>
           </Box>
           <Box
+            className="stat-icon glass-effect-colored"
             sx={{
-              background: `linear-gradient(135deg, ${
-                color === "primary"
-                  ? "rgba(200, 92, 60, 0.15)"
-                  : color === "secondary"
-                  ? "rgba(139, 94, 60, 0.15)"
-                  : color === "info"
-                  ? "rgba(92, 138, 166, 0.15)"
-                  : color === "success"
-                  ? "rgba(107, 154, 90, 0.15)"
-                  : "rgba(200, 92, 60, 0.15)"
-              } 0%, ${
-                color === "primary"
-                  ? "rgba(200, 92, 60, 0.25)"
-                  : color === "secondary"
-                  ? "rgba(139, 94, 60, 0.25)"
-                  : color === "info"
-                  ? "rgba(92, 138, 166, 0.25)"
-                  : color === "success"
-                  ? "rgba(107, 154, 90, 0.25)"
-                  : "rgba(200, 92, 60, 0.25)"
-              } 100%)`,
               borderRadius: "50%",
               p: 2,
               display: "flex",
-              boxShadow: `0 4px 16px ${
+              background: `linear-gradient(135deg, ${
                 color === "primary"
-                  ? "rgba(200, 92, 60, 0.3)"
+                  ? "rgba(200, 92, 60, 0.1)"
                   : color === "secondary"
-                  ? "rgba(139, 94, 60, 0.3)"
+                  ? "rgba(139, 94, 60, 0.1)"
                   : color === "info"
-                  ? "rgba(92, 138, 166, 0.3)"
+                  ? "rgba(92, 138, 166, 0.1)"
                   : color === "success"
-                  ? "rgba(107, 154, 90, 0.3)"
-                  : "rgba(200, 92, 60, 0.3)"
+                  ? "rgba(107, 154, 90, 0.1)"
+                  : "rgba(200, 92, 60, 0.1)"
+              } 0%, transparent 100%)`,
+              boxShadow: `0 8px 24px ${
+                color === "primary"
+                  ? "rgba(200, 92, 60, 0.2)"
+                  : color === "secondary"
+                  ? "rgba(139, 94, 60, 0.2)"
+                  : color === "info"
+                  ? "rgba(92, 138, 166, 0.2)"
+                  : color === "success"
+                  ? "rgba(107, 154, 90, 0.2)"
+                  : "rgba(200, 92, 60, 0.2)"
               }`,
-              transition: "all 0.3s ease",
-              "&:hover": {
-                transform: "rotate(10deg) scale(1.1)",
-              },
+              transition: "all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
             }}
           >
             {icon}
@@ -277,14 +262,17 @@ function Dashboard() {
         </Typography>
         <IconButton
           onClick={loadDashboardData}
+          className="ios-button"
           sx={{
-            backgroundColor: "primary.main",
+            background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
             color: "white",
+            boxShadow: "0 4px 16px rgba(200, 92, 60, 0.3)",
             "&:hover": {
-              backgroundColor: "primary.dark",
+              background: "linear-gradient(135deg, #E07B5F 0%, #C85C3C 100%)",
               transform: "rotate(180deg)",
+              boxShadow: "0 8px 24px rgba(200, 92, 60, 0.4)",
             },
-            transition: "all 0.5s ease",
+            transition: "all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)",
           }}
         >
           <RefreshIcon />
@@ -293,15 +281,11 @@ function Dashboard() {
 
       {/* System Status */}
       <Paper
-        className="slide-in"
+        className="glass-effect-colored ios-blur-container"
         sx={{
           p: 3,
           mb: 4,
-          borderRadius: 3,
-          background:
-            "linear-gradient(135deg, rgba(200, 92, 60, 0.05) 0%, rgba(255, 255, 255, 0.95) 100%)",
-          border: "1px solid rgba(200, 92, 60, 0.15)",
-          boxShadow: "0 8px 24px rgba(200, 92, 60, 0.12)",
+          animation: "slideUp 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)",
         }}
       >
         <Typography variant="h6" gutterBottom fontWeight={700} sx={{ mb: 2 }}>
@@ -402,18 +386,12 @@ function Dashboard() {
       <Grid container spacing={3} mb={4}>
         <Grid item xs={12} md={8}>
           <Paper
-            className="fade-in"
+            className="glass-effect ios-blur-container"
             sx={{
               p: 3,
-              borderRadius: 3,
-              background:
-                "linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 243, 239, 0.95) 100%)",
-              border: "1px solid rgba(200, 92, 60, 0.1)",
-              boxShadow: "0 8px 24px rgba(200, 92, 60, 0.12)",
-              transition: "all 0.3s ease",
-              "&:hover": {
-                boxShadow: "0 12px 32px rgba(200, 92, 60, 0.2)",
-              },
+              animation: "springIn 0.7s cubic-bezier(0.34, 1.56, 0.64, 1)",
+              animationDelay: "0.1s",
+              animationFillMode: "both",
             }}
           >
             <Typography variant="h6" gutterBottom fontWeight={700}>
@@ -442,18 +420,12 @@ function Dashboard() {
         </Grid>
         <Grid item xs={12} md={4}>
           <Paper
-            className="fade-in"
+            className="glass-effect ios-blur-container"
             sx={{
               p: 3,
-              borderRadius: 3,
-              background:
-                "linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 243, 239, 0.95) 100%)",
-              border: "1px solid rgba(200, 92, 60, 0.1)",
-              boxShadow: "0 8px 24px rgba(200, 92, 60, 0.12)",
-              transition: "all 0.3s ease",
-              "&:hover": {
-                boxShadow: "0 12px 32px rgba(200, 92, 60, 0.2)",
-              },
+              animation: "springIn 0.7s cubic-bezier(0.34, 1.56, 0.64, 1)",
+              animationDelay: "0.2s",
+              animationFillMode: "both",
             }}
           >
             <Typography variant="h6" gutterBottom fontWeight={700}>
@@ -484,14 +456,12 @@ function Dashboard() {
 
       {/* Recent Sessions */}
       <Paper
-        className="slide-in"
+        className="glass-effect ios-blur-container"
         sx={{
           p: 3,
-          borderRadius: 3,
-          background:
-            "linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 243, 239, 0.95) 100%)",
-          border: "1px solid rgba(200, 92, 60, 0.1)",
-          boxShadow: "0 8px 24px rgba(200, 92, 60, 0.12)",
+          animation: "slideUp 0.8s cubic-bezier(0.34, 1.56, 0.64, 1)",
+          animationDelay: "0.3s",
+          animationFillMode: "both",
         }}
       >
         <Typography variant="h6" gutterBottom fontWeight={700}>
@@ -550,6 +520,14 @@ function Dashboard() {
                       size="small"
                       variant="outlined"
                       href={`/sessions/${session.session_id}`}
+                      className="ios-button"
+                      sx={{
+                        borderRadius: 10,
+                        fontWeight: 600,
+                        "&:hover": {
+                          backgroundColor: "rgba(200, 92, 60, 0.04)",
+                        },
+                      }}
                     >
                       View Details
                     </Button>

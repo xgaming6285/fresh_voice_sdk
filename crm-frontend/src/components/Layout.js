@@ -45,45 +45,57 @@ function Layout({ children }) {
   };
 
   const drawer = (
-    <div>
+    <div className="h-full">
       <Toolbar
         sx={{
           background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
           color: "white",
+          backdropFilter: "blur(10px)",
+          boxShadow: "0 4px 16px rgba(200, 92, 60, 0.2)",
         }}
       >
         <Typography
           variant="h6"
           noWrap
           component="div"
-          sx={{ fontWeight: 700 }}
+          sx={{
+            fontWeight: 700,
+            letterSpacing: "-0.02em",
+            textShadow: "0 2px 4px rgba(0, 0, 0, 0.1)",
+          }}
         >
           🎙️ Voice Agent CRM
         </Typography>
       </Toolbar>
-      <Divider sx={{ borderColor: "rgba(200, 92, 60, 0.1)" }} />
+      <Divider sx={{ borderColor: "rgba(200, 92, 60, 0.1)", opacity: 0.5 }} />
       <List sx={{ px: 1, py: 2 }}>
         {menuItems.map((item, index) => (
           <ListItem key={item.text} disablePadding sx={{ mb: 0.5 }}>
             <ListItemButton
               selected={location.pathname === item.path}
               onClick={() => navigate(item.path)}
+              className="ios-button"
               sx={{
                 borderRadius: 2,
-                transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+                transition: "all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
+                backdropFilter: "blur(10px)",
                 "&.Mui-selected": {
-                  backgroundColor: "primary.main",
+                  background:
+                    "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
                   color: "white",
+                  boxShadow: "0 4px 16px rgba(200, 92, 60, 0.3)",
                   "& .MuiListItemIcon-root": {
                     color: "white",
                   },
                   "&:hover": {
-                    backgroundColor: "primary.dark",
+                    background:
+                      "linear-gradient(135deg, #E07B5F 0%, #C85C3C 100%)",
+                    boxShadow: "0 6px 20px rgba(200, 92, 60, 0.4)",
                   },
                 },
                 "&:hover": {
                   backgroundColor: "rgba(200, 92, 60, 0.08)",
-                  transform: "translateX(4px)",
+                  transform: "translateX(6px) scale(1.02)",
                 },
               }}
             >
@@ -108,13 +120,14 @@ function Layout({ children }) {
       </List>
       <Divider sx={{ borderColor: "rgba(200, 92, 60, 0.1)" }} />
       <Box
+        className="glass-effect-colored"
         sx={{
           p: 2,
           m: 2,
           borderRadius: 3,
-          background:
-            "linear-gradient(135deg, rgba(200, 92, 60, 0.1) 0%, rgba(160, 70, 42, 0.1) 100%)",
-          border: "1px solid rgba(200, 92, 60, 0.2)",
+          animation: "springIn 0.8s cubic-bezier(0.34, 1.56, 0.64, 1)",
+          animationDelay: "0.5s",
+          animationFillMode: "both",
         }}
       >
         <Typography variant="body2" color="text.secondary" fontWeight={600}>
@@ -161,11 +174,16 @@ function Layout({ children }) {
       <CssBaseline />
       <AppBar
         position="fixed"
+        className="glass-effect"
         sx={{
           width: { sm: `calc(100% - ${drawerWidth}px)` },
           ml: { sm: `${drawerWidth}px` },
-          background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
-          boxShadow: "0 4px 20px rgba(200, 92, 60, 0.3)",
+          background:
+            "linear-gradient(135deg, rgba(200, 92, 60, 0.95) 0%, rgba(160, 70, 42, 0.95) 100%)",
+          backdropFilter: "blur(20px) saturate(180%)",
+          WebkitBackdropFilter: "blur(20px) saturate(180%)",
+          boxShadow: "0 8px 32px rgba(200, 92, 60, 0.25)",
+          borderBottom: "1px solid rgba(255, 255, 255, 0.1)",
         }}
       >
         <Toolbar>
@@ -242,6 +260,10 @@ function Layout({ children }) {
             "& .MuiDrawer-paper": {
               boxSizing: "border-box",
               width: drawerWidth,
+              background: "rgba(255, 255, 255, 0.85)",
+              backdropFilter: "blur(20px) saturate(180%)",
+              WebkitBackdropFilter: "blur(20px) saturate(180%)",
+              borderRight: "1px solid rgba(200, 92, 60, 0.1)",
             },
           }}
         >
@@ -254,6 +276,11 @@ function Layout({ children }) {
             "& .MuiDrawer-paper": {
               boxSizing: "border-box",
               width: drawerWidth,
+              background: "rgba(255, 255, 255, 0.85)",
+              backdropFilter: "blur(20px) saturate(180%)",
+              WebkitBackdropFilter: "blur(20px) saturate(180%)",
+              borderRight: "1px solid rgba(200, 92, 60, 0.1)",
+              boxShadow: "4px 0 24px rgba(200, 92, 60, 0.08)",
             },
           }}
           open

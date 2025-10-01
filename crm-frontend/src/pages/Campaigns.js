@@ -217,19 +217,15 @@ function Campaigns() {
           {campaigns.map((campaign, index) => (
             <Grid item xs={12} md={6} lg={4} key={campaign.id}>
               <Card
-                className="fade-in"
+                className="glass-effect ios-card"
                 sx={{
-                  background:
-                    "linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 243, 239, 0.95) 100%)",
-                  backdropFilter: "blur(10px)",
-                  border: "1px solid rgba(200, 92, 60, 0.15)",
-                  borderRadius: 3,
-                  transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+                  animation: "springIn 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)",
                   animationDelay: `${index * 0.1}s`,
+                  animationFillMode: "both",
                   "&:hover": {
-                    transform: "translateY(-8px) scale(1.02)",
-                    boxShadow: "0 16px 40px rgba(200, 92, 60, 0.25)",
-                    border: "1px solid rgba(200, 92, 60, 0.3)",
+                    "& .campaign-status": {
+                      transform: "scale(1.1)",
+                    },
                   },
                 }}
               >
@@ -258,9 +254,12 @@ function Campaigns() {
                       label={campaign.status.toUpperCase()}
                       color={getStatusColor(campaign.status)}
                       size="small"
+                      className="campaign-status"
                       sx={{
                         fontWeight: 700,
-                        boxShadow: "0 2px 8px rgba(200, 92, 60, 0.2)",
+                        backdropFilter: "blur(10px)",
+                        transition:
+                          "all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
                       }}
                     />
                   </Box>
@@ -272,37 +271,83 @@ function Campaigns() {
                   )}
 
                   <Box mb={2}>
-                    <Box display="flex" alignItems="center" mb={1}>
-                      <PeopleIcon fontSize="small" sx={{ mr: 1 }} />
-                      <Typography variant="body2">
+                    <Box
+                      display="flex"
+                      alignItems="center"
+                      mb={1}
+                      sx={{
+                        p: 1.5,
+                        borderRadius: 2,
+                        background: "rgba(248, 243, 239, 0.5)",
+                        backdropFilter: "blur(10px)",
+                      }}
+                    >
+                      <PeopleIcon
+                        fontSize="small"
+                        sx={{ mr: 1, color: "primary.main" }}
+                      />
+                      <Typography variant="body2" fontWeight={500}>
                         {campaign.total_leads} leads
                       </Typography>
                     </Box>
-                    <Box display="flex" alignItems="center" mb={1}>
-                      <PhoneIcon fontSize="small" sx={{ mr: 1 }} />
-                      <Typography variant="body2">
+                    <Box
+                      display="flex"
+                      alignItems="center"
+                      mb={1}
+                      sx={{
+                        p: 1.5,
+                        borderRadius: 2,
+                        background: "rgba(248, 243, 239, 0.5)",
+                        backdropFilter: "blur(10px)",
+                      }}
+                    >
+                      <PhoneIcon
+                        fontSize="small"
+                        sx={{ mr: 1, color: "info.main" }}
+                      />
+                      <Typography variant="body2" fontWeight={500}>
                         {campaign.leads_called} called
                       </Typography>
                     </Box>
-                    <Box display="flex" alignItems="center" gap={2}>
-                      <Box display="flex" alignItems="center">
+                    <Box display="flex" alignItems="center" gap={1}>
+                      <Box
+                        display="flex"
+                        alignItems="center"
+                        sx={{
+                          p: 1,
+                          px: 1.5,
+                          borderRadius: 2,
+                          background: "rgba(107, 154, 90, 0.1)",
+                          backdropFilter: "blur(10px)",
+                        }}
+                      >
                         <CheckCircleIcon
                           fontSize="small"
                           color="success"
                           sx={{ mr: 0.5 }}
                         />
-                        <Typography variant="body2">
-                          {campaign.leads_answered} answered
+                        <Typography variant="body2" fontWeight={500}>
+                          {campaign.leads_answered}
                         </Typography>
                       </Box>
-                      <Box display="flex" alignItems="center">
+                      <Box
+                        display="flex"
+                        alignItems="center"
+                        sx={{
+                          p: 1,
+                          px: 1.5,
+                          borderRadius: 2,
+                          background: "rgba(199, 84, 80, 0.1)",
+                          backdropFilter: "blur(10px)",
+                        }}
+                      >
                         <CancelIcon
                           fontSize="small"
                           color="error"
                           sx={{ mr: 0.5 }}
                         />
-                        <Typography variant="body2">
-                          {campaign.leads_rejected} rejected
+                        <Typography variant="body2" fontWeight={500}>
+                          {campaign.leads_rejected}
                         </Typography>
                       </Box>
                     </Box>
@@ -314,7 +359,7 @@ function Campaigns() {
                   </Typography>
                 </CardContent>
 
-                <CardActions>
+                <CardActions sx={{ p: 2, pt: 0 }}>
                   {campaign.status === "draft" ||
                   campaign.status === "ready" ? (
                     <Button
@@ -322,6 +367,14 @@ function Campaigns() {
                       startIcon={<PlayIcon />}
                       onClick={() => handleStartCampaign(campaign.id)}
                       disabled={campaign.total_leads === 0}
+                      className="ios-button"
+                      sx={{
+                        fontWeight: 600,
+                        color: "success.main",
+                        "&:hover": {
+                          backgroundColor: "rgba(107, 154, 90, 0.08)",
+                        },
+                      }}
                     >
                       Start
                     </Button>
@@ -330,6 +383,14 @@ function Campaigns() {
                       size="small"
                       startIcon={<PauseIcon />}
                       onClick={() => handlePauseCampaign(campaign.id)}
+                      className="ios-button"
+                      sx={{
+                        fontWeight: 600,
+                        color: "warning.main",
+                        "&:hover": {
+                          backgroundColor: "rgba(217, 156, 94, 0.08)",
+                        },
+                      }}
                     >
                       Pause
                     </Button>
@@ -338,6 +399,14 @@ function Campaigns() {
                       size="small"
                       startIcon={<PlayIcon />}
                       onClick={() => handleStartCampaign(campaign.id)}
+                      className="ios-button"
+                      sx={{
+                        fontWeight: 600,
+                        color: "success.main",
+                        "&:hover": {
+                          backgroundColor: "rgba(107, 154, 90, 0.08)",
+                        },
+                      }}
                     >
                       Resume
                     </Button>
@@ -347,6 +416,13 @@ function Campaigns() {
                     size="small"
                     startIcon={<EditIcon />}
                     onClick={() => handleOpenEditDialog(campaign)}
+                    className="ios-button"
+                    sx={{
+                      fontWeight: 600,
+                      "&:hover": {
+                        backgroundColor: "rgba(139, 94, 60, 0.08)",
+                      },
+                    }}
                   >
                     Edit
                   </Button>
@@ -354,8 +430,17 @@ function Campaigns() {
                   <Button
                     size="small"
                     onClick={() => navigate(`/campaigns/${campaign.id}`)}
+                    variant="text"
+                    className="ios-button"
+                    sx={{
+                      fontWeight: 600,
+                      color: "primary.main",
+                      "&:hover": {
+                        backgroundColor: "rgba(200, 92, 60, 0.08)",
+                      },
+                    }}
                   >
-                    View Details
+                    Details →
                   </Button>
                 </CardActions>
               </Card>

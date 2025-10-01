@@ -187,15 +187,21 @@ function Leads() {
   };
 
   const columns = [
-    { field: "id", headerName: "ID", width: 70 },
+    { field: "id", headerName: "ID", flex: 0.5, minWidth: 60 },
     {
       field: "lead_type",
       headerName: "Type",
-      width: 100,
+      flex: 0.7,
+      minWidth: 100,
       renderCell: (params) => (
         <Chip
           label={params.value.toUpperCase()}
           size="small"
+          sx={{
+            fontWeight: 600,
+            letterSpacing: "-0.01em",
+            backdropFilter: "blur(10px)",
+          }}
           color={
             params.value === "ftd"
               ? "success"
@@ -208,20 +214,23 @@ function Leads() {
         />
       ),
     },
-    { field: "full_name", headerName: "Name", width: 200 },
-    { field: "email", headerName: "Email", width: 200 },
-    { field: "full_phone", headerName: "Phone", width: 150 },
-    { field: "country", headerName: "Country", width: 120 },
+    { field: "full_name", headerName: "Name", flex: 1.2, minWidth: 180 },
+    { field: "email", headerName: "Email", flex: 1.5, minWidth: 200 },
+    { field: "full_phone", headerName: "Phone", flex: 1, minWidth: 140 },
+    { field: "country", headerName: "Country", flex: 0.8, minWidth: 100 },
     {
       field: "call_count",
       headerName: "Calls",
-      width: 80,
+      flex: 0.5,
+      minWidth: 70,
       align: "center",
+      headerAlign: "center",
     },
     {
       field: "last_called_at",
       headerName: "Last Called",
-      width: 180,
+      flex: 1.2,
+      minWidth: 160,
       valueFormatter: (params) => {
         return params.value ? new Date(params.value).toLocaleString() : "Never";
       },
@@ -229,26 +238,51 @@ function Leads() {
     {
       field: "actions",
       headerName: "Actions",
-      width: 180,
+      flex: 1,
+      minWidth: 150,
       sortable: false,
       renderCell: (params) => (
-        <Box>
+        <Box sx={{ display: "flex", gap: 0.5 }}>
           <IconButton
             size="small"
             onClick={() => handleCallLead(params.row)}
             color="primary"
+            sx={{
+              transition: "all 0.2s ease",
+              "&:hover": {
+                transform: "scale(1.1)",
+                backgroundColor: "rgba(200, 92, 60, 0.1)",
+              },
+            }}
           >
-            <PhoneIcon />
+            <PhoneIcon fontSize="small" />
           </IconButton>
-          <IconButton size="small" onClick={() => handleEditLead(params.row)}>
-            <EditIcon />
+          <IconButton
+            size="small"
+            onClick={() => handleEditLead(params.row)}
+            sx={{
+              transition: "all 0.2s ease",
+              "&:hover": {
+                transform: "scale(1.1)",
+                backgroundColor: "rgba(139, 94, 60, 0.1)",
+              },
+            }}
+          >
+            <EditIcon fontSize="small" />
           </IconButton>
           <IconButton
             size="small"
             onClick={() => handleDeleteLead(params.row.id)}
             color="error"
+            sx={{
+              transition: "all 0.2s ease",
+              "&:hover": {
+                transform: "scale(1.1)",
+                backgroundColor: "rgba(199, 84, 80, 0.1)",
+              },
+            }}
           >
-            <DeleteIcon />
+            <DeleteIcon fontSize="small" />
           </IconButton>
         </Box>
       ),
@@ -349,14 +383,22 @@ ftd,Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
       </Box>
 
       <Paper
+        className="glass-effect ios-blur-container"
         sx={{
           height: 600,
           width: "100%",
           borderRadius: 3,
-          background:
-            "linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 243, 239, 0.95) 100%)",
-          border: "1px solid rgba(200, 92, 60, 0.1)",
-          boxShadow: "0 8px 24px rgba(200, 92, 60, 0.12)",
+          overflow: "hidden",
+          position: "relative",
+          "& .MuiDataGrid-root": {
+            border: "none",
+          },
+          "& .MuiDataGrid-main": {
+            overflow: "auto",
+          },
+          "& .MuiDataGrid-virtualScroller": {
+            overflow: "auto !important",
+          },
         }}
       >
         <DataGrid
@@ -371,6 +413,36 @@ ftd,Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
           onPageChange={(newPage) => setPage(newPage)}
           onPageSizeChange={(newPageSize) => setPageSize(newPageSize)}
           disableSelectionOnClick
+          disableColumnMenu
+          sx={{
+            "& .MuiDataGrid-cell": {
+              borderBottom: "1px solid rgba(224, 224, 224, 0.2)",
+              fontSize: "0.875rem",
+            },
+            "& .MuiDataGrid-columnHeaders": {
+              backgroundColor: "rgba(248, 243, 239, 0.8)",
+              backdropFilter: "blur(10px)",
+              borderBottom: "2px solid rgba(200, 92, 60, 0.15)",
+              fontWeight: 600,
+              fontSize: "0.875rem",
+            },
+            "& .MuiDataGrid-footerContainer": {
+              borderTop: "2px solid rgba(200, 92, 60, 0.15)",
+              backgroundColor: "rgba(248, 243, 239, 0.8)",
+              backdropFilter: "blur(10px)",
+            },
+            "& .MuiDataGrid-row": {
+              "&:hover": {
+                backgroundColor: "rgba(200, 92, 60, 0.04)",
+              },
+            },
+            "& .MuiDataGrid-virtualScrollerContent": {
+              minWidth: "100% !important",
+            },
+            "& .MuiDataGrid-columnHeadersInner": {
+              minWidth: "100% !important",
+            },
+          }}
         />
       </Paper>
 
