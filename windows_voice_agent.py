@@ -27,6 +27,7 @@ from scipy import signal
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
 import uvicorn
 
 # Configure logging first
@@ -404,7 +405,30 @@ def load_config():
 
 config = load_config()
 
-app = FastAPI(title="Windows VoIP Voice Agent", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifespan - startup and shutdown"""
+    global sip_handler
+    # Startup
+    try:
+        # Initialize CRM database
+        init_database()
+        logger.info("CRM database initialized")
+        
+        sip_handler.start_sip_listener()
+        logger.info("Windows VoIP Voice Agent started")
+        logger.info(f"Phone number: {config['phone_number']}")
+        logger.info(f"Local IP: {config['local_ip']}")
+        logger.info(f"Gate VoIP: {config['host']}")
+        
+        yield
+        
+    finally:
+        # Shutdown
+        logger.info("Shutting down Windows VoIP Voice Agent...")
+        sip_handler.stop()
+
+app = FastAPI(title="Windows VoIP Voice Agent", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -2274,7 +2298,7 @@ class WindowsSIPHandler:
                     self._handle_ack(message, addr)
                 elif first_line.startswith('REGISTER'):
                     self._handle_register(message, addr)
-                elif first_line.startswith('SIP/2.0') and ('200 OK' in first_line or '401 Unauthorized' in first_line or '403 Forbidden' in first_line):
+                elif first_line.startswith('SIP/2.0') and ('200 OK' in first_line or '401 Unauthorized' in first_line or '403 Forbidden' in first_line or '100 Trying' in first_line or '180 Ringing' in first_line or '183 Progress' in first_line or '486 Busy Here' in first_line or '487 Request Terminated' in first_line or '404 Not Found' in first_line):
                     self._handle_sip_response(message, addr)
                 else:
                     logger.warning(f"⚠️  Unhandled SIP message type: {first_line}")
@@ -3187,7 +3211,7 @@ Content-Length: {len(sdp_content)}
                     from_tag = line[tag_start:tag_end].strip()
             
             if not call_id or call_id not in self.pending_invites:
-                logger.warning("❌ Cannot find pending INVITE for successful response")
+                logger.debug(f"📞 Received duplicate 200 OK response for call {call_id[:8] if call_id else 'unknown'} (call already established)")
                 return
             
             invite_info = self.pending_invites[call_id]
@@ -3365,6 +3389,35 @@ Content-Length: 0
                 logger.error(f"❌ Authentication failed: {first_line}")
                 logger.error("💡 Check username/password in asterisk_config.json")
                 logger.error("💡 Verify extension 200 is properly configured in Gate VoIP")
+                
+            elif '100 Trying' in first_line:
+                # SIP provisional response - call is being processed
+                logger.debug(f"📞 Received provisional response: {first_line}")
+                # No action needed, just acknowledge that call processing started
+                
+            elif '180 Ringing' in first_line:
+                # Phone is ringing
+                logger.info(f"📞 Call is ringing: {first_line}")
+                
+            elif '183 Progress' in first_line:
+                # Early media or call progress
+                logger.info(f"📞 Call progress: {first_line}")
+                
+            elif '486 Busy Here' in first_line or '487 Request Terminated' in first_line:
+                # Call was busy or terminated
+                logger.warning(f"📞 Call unsuccessful: {first_line}")
+                # Extract Call-ID and clean up pending invite if needed
+                call_id = None
+                for line in message.split('\n'):
+                    line = line.strip()
+                    if line.startswith('Call-ID:'):
+                        call_id = line.split(':', 1)[1].strip()
+                        break
+                
+                if call_id and call_id in self.pending_invites:
+                    phone_number = self.pending_invites[call_id]['phone_number']
+                    logger.info(f"📞 Cleaning up failed call to {phone_number}")
+                    del self.pending_invites[call_id]
                 
             elif '404 Not Found' in first_line:
                 if 'INVITE' in message:
@@ -3824,24 +3877,6 @@ class WindowsVoiceSession:
 
 # Initialize SIP handler
 sip_handler = WindowsSIPHandler()
-
-@app.on_event("startup")
-async def startup_event():
-    """Start SIP listener when FastAPI starts"""
-    # Initialize CRM database
-    init_database()
-    logger.info("CRM database initialized")
-    
-    sip_handler.start_sip_listener()
-    logger.info("Windows VoIP Voice Agent started")
-    logger.info(f"Phone number: {config['phone_number']}")
-    logger.info(f"Local IP: {config['local_ip']}")
-    logger.info(f"Gate VoIP: {config['host']}")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup when shutting down"""
-    sip_handler.stop()
 
 @app.post("/api/make_call")
 async def make_outbound_call(call_request: dict):
