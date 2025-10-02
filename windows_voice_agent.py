@@ -1644,12 +1644,12 @@ class CallRecorder:
                 size_mb = self.mixed_wav_path.stat().st_size / (1024 * 1024)
                 logger.info(f"📁 Mixed audio: {self.mixed_wav_path} ({size_mb:.2f} MB)")
             
-            # Start transcription in background thread to avoid blocking (only if available)
+            # Automatic transcription disabled - can be triggered manually through CRM
+            logger.info(f"📼 Call recording completed for session {self.session_id}")
             if TRANSCRIPTION_AVAILABLE:
-                logger.info(f"🎙️ Starting audio transcription for session {self.session_id}...")
-                threading.Thread(target=self._transcribe_recordings, daemon=True).start()
+                logger.info(f"🎤 Transcription available - can be triggered manually through CRM interface")
             else:
-                logger.info(f"⚠️ Skipping transcription for session {self.session_id} - transcription not available")
+                logger.info(f"⚠️ Transcription service not available")
             
         except Exception as e:
             logger.error(f"Error stopping recording: {e}")
@@ -2677,65 +2677,87 @@ Content-Length: 0
             logger.error(f"Error handling OPTIONS: {e}")
     
     def _handle_bye(self, message: str, addr):
-        """Handle call termination"""
+        """Handle call termination with immediate cleanup for next call readiness"""
         try:
             # Find session for this address
+            session_found = False
             for session_id, session_data in list(active_sessions.items()):
                 if session_data.get("caller_addr") == addr:
-                    logger.info(f"Call ended: {session_id}")
+                    session_found = True
+                    logger.info(f"📞 Call termination received for session {session_id}")
                     
-                    # Update CRM database
-                    db = get_session()
-                    try:
-                        crm_session = db.query(CallSession).filter(CallSession.session_id == session_id).first()
-                        if crm_session:
-                            crm_session.status = "COMPLETED"  # Use proper enum value
-                            crm_session.ended_at = datetime.utcnow()
-                            if crm_session.started_at and crm_session.ended_at:
-                                crm_session.duration = int((crm_session.ended_at - crm_session.started_at).total_seconds())
-                            db.commit()
-                    except Exception as e:
-                        logger.error(f"Error updating CRM session: {e}")
-                    finally:
-                        db.close()
+                    # Send 200 OK response immediately
+                    ok_response = "SIP/2.0 200 OK\r\n\r\n"
+                    self.socket.sendto(ok_response.encode(), addr)
+                    logger.info(f"✅ Sent BYE 200 OK response")
                     
-                    # Cleanup voice session
+                    # Immediate session cleanup for next call readiness
                     voice_session = session_data["voice_session"]
                     rtp_session = session_data.get("rtp_session")
                     
-                    # Stop RTP processing first
+                    # Stop all processing immediately
                     if rtp_session:
                         rtp_session.input_processing = False
                         rtp_session.output_processing = False
-                        rtp_session.processing = False  # For backward compatibility
+                        rtp_session.processing = False
+                        logger.info(f"🛑 RTP processing stopped for session {session_id}")
                     
-                    try:
-                        if hasattr(voice_session, 'cleanup'):
-                            # Handle cleanup properly without creating async task in wrong context
-                            voice_session.cleanup()
-                    except Exception as e:
-                        logger.error(f"Error cleaning up voice session: {e}")
+                    # Remove from active sessions immediately
+                    del active_sessions[session_id]
+                    logger.info(f"🗑️ Session {session_id} removed from active sessions")
                     
                     # Cleanup RTP session
                     self.rtp_server.remove_session(session_id)
                     
-                    # Small delay to allow pending tasks to complete
+                    # Voice session cleanup (non-blocking)
                     try:
-                        import time
-                        time.sleep(0.1)  # Give pending tasks a moment to complete
-                    except:
-                        pass
+                        if hasattr(voice_session, 'cleanup'):
+                            voice_session.cleanup()
+                    except Exception as e:
+                        logger.warning(f"Voice session cleanup warning (non-critical): {e}")
                     
-                    # Remove from active sessions
-                    del active_sessions[session_id]
+                    # Update CRM database asynchronously to avoid blocking
+                    def update_crm_async():
+                        try:
+                            db = get_session()
+                            try:
+                                crm_session = db.query(CallSession).filter(CallSession.session_id == session_id).first()
+                                if crm_session:
+                                    crm_session.status = "COMPLETED"
+                                    crm_session.ended_at = datetime.utcnow()
+                                    if crm_session.started_at and crm_session.ended_at:
+                                        crm_session.duration = int((crm_session.ended_at - crm_session.started_at).total_seconds())
+                                    db.commit()
+                                    logger.info(f"📋 CRM database updated for session {session_id}")
+                            except Exception as e:
+                                logger.error(f"Error updating CRM session: {e}")
+                            finally:
+                                db.close()
+                        except Exception as e:
+                            logger.error(f"Error in CRM update thread: {e}")
                     
-                    # Send 200 OK
-                    ok_response = "SIP/2.0 200 OK\r\n\r\n"
-                    self.socket.sendto(ok_response.encode(), addr)
+                    # Run CRM update in background thread to avoid blocking
+                    threading.Thread(target=update_crm_async, daemon=True).start()
+                    
+                    # System ready for next call
+                    logger.info(f"✅ Call cleanup completed - system ready for next call")
+                    logger.info(f"📞 Active sessions: {len(active_sessions)}")
                     break
+            
+            if not session_found:
+                # Still send OK response even if session not found
+                ok_response = "SIP/2.0 200 OK\r\n\r\n"
+                self.socket.sendto(ok_response.encode(), addr)
+                logger.warning(f"⚠️ BYE received from unknown address {addr}, sent OK anyway")
                     
         except Exception as e:
             logger.error(f"Error handling BYE: {e}")
+            # Always try to send OK response
+            try:
+                ok_response = "SIP/2.0 200 OK\r\n\r\n"
+                self.socket.sendto(ok_response.encode(), addr)
+            except:
+                pass
     
     def _handle_ack(self, message: str, addr):
         """Handle ACK message"""
@@ -4633,8 +4655,9 @@ if __name__ == "__main__":
     logger.info(f"SIP Port: {config['sip_port']}")
     logger.info(f"API Server: {args.host}:{args.port}")
     if TRANSCRIPTION_AVAILABLE:
-        logger.info(f"🎤 Transcription: {TRANSCRIPTION_METHOD} with '{audio_transcriber.model_size}' model")
+        logger.info(f"🎤 Transcription: {TRANSCRIPTION_METHOD} with '{audio_transcriber.model_size}' model (manual only)")
         logger.info("🇧🇬 Optimized for Bulgarian and multilingual transcription")
+        logger.info("   📋 Automatic transcription disabled - available through CRM interface")
     else:
         logger.info("⚠️ Transcription: DISABLED (no method available)")
     logger.info("🎵 Audio Preprocessing: ENABLED (6-stage noise filtering pipeline)")
