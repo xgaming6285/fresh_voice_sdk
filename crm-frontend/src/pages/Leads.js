@@ -39,6 +39,7 @@ import {
 } from "@mui/icons-material";
 import { useDropzone } from "react-dropzone";
 import { leadAPI, voiceAgentAPI } from "../services/api";
+import CustomCallDialog from "../components/CustomCallDialog";
 
 function Leads() {
   const [leads, setLeads] = useState([]);
@@ -54,6 +55,8 @@ function Leads() {
     severity: "success",
   });
   const [importDialog, setImportDialog] = useState(false);
+  const [callDialog, setCallDialog] = useState(false);
+  const [selectedLead, setSelectedLead] = useState(null);
 
   const [formData, setFormData] = useState({
     lead_type: "cold",
@@ -153,16 +156,22 @@ function Leads() {
     }
   };
 
-  const handleCallLead = async (lead) => {
+  const handleCallLead = (lead) => {
+    setSelectedLead(lead);
+    setCallDialog(true);
+  };
+
+  const handleMakeCustomCall = async (lead, callConfig) => {
     try {
-      await voiceAgentAPI.makeCall(lead.full_phone);
+      await voiceAgentAPI.makeCall(lead.full_phone, callConfig);
       showSnackbar(
-        `Calling ${lead.full_name} at ${lead.full_phone}`,
+        `Custom call initiated to ${lead.full_name} at ${lead.full_phone}`,
         "success"
       );
     } catch (error) {
       console.error("Error making call:", error);
       showSnackbar("Error making call", "error");
+      throw error; // Re-throw to handle in dialog
     }
   };
 
@@ -918,6 +927,17 @@ ftd,Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
           <Button onClick={() => setImportDialog(false)}>Cancel</Button>
         </DialogActions>
       </Dialog>
+
+      {/* Custom Call Dialog */}
+      <CustomCallDialog
+        open={callDialog}
+        onClose={() => {
+          setCallDialog(false);
+          setSelectedLead(null);
+        }}
+        lead={selectedLead}
+        onMakeCall={handleMakeCustomCall}
+      />
 
       {/* Snackbar */}
       <Snackbar

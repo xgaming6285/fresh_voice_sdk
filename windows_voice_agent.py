@@ -740,20 +740,167 @@ def get_language_config(country_code: str) -> Dict[str, Any]:
     """
     return COUNTRY_LANGUAGE_MAP.get(country_code, COUNTRY_LANGUAGE_MAP['BG'])
 
-def create_voice_config(language_info: Dict[str, Any]) -> Dict[str, Any]:
+def create_voice_config(language_info: Dict[str, Any], custom_config: Dict[str, Any] = None) -> Dict[str, Any]:
     """
-    Create dynamic voice configuration based on detected language.
+    Create dynamic voice configuration based on detected language and custom parameters.
+    All instructions now come from the CRM configuration - no hardcoded content.
     """
     lang_name = language_info['lang']
     formal_address = language_info['formal_address']
     
+    # Use custom config if provided, otherwise use defaults
+    if custom_config:
+        company_name = custom_config.get('company_name', 'QuantumAI')
+        caller_name = custom_config.get('caller_name', 'Assistant')
+        product_name = custom_config.get('product_name', 'our product')
+        additional_prompt = custom_config.get('additional_prompt', '')
+        call_urgency = custom_config.get('call_urgency', 'medium')
+        call_objective = custom_config.get('call_objective', 'sales')
+        main_benefits = custom_config.get('main_benefits', '')
+        special_offer = custom_config.get('special_offer', '')
+        objection_strategy = custom_config.get('objection_strategy', 'understanding')
+    else:
+        # Minimal defaults when no custom config is provided
+        company_name = 'QuantumAI'
+        caller_name = 'Assistant'
+        product_name = 'our product'
+        additional_prompt = ''
+        call_urgency = 'medium'
+        call_objective = 'sales'
+        main_benefits = ''
+        special_offer = ''
+        objection_strategy = 'understanding'
+    
     # Create system instruction in the detected language
     if lang_name == 'English':
-        system_text = f"You are a highly persuasive sales representative for ArtroFlex joint pain relief cream, answering phone calls in {lang_name}. The caller has been greeted, so respond directly to their questions BUT ALWAYS steer the conversation back to ArtroFlex and closing the sale. You are PERSISTENT and URGENT - every conversation is a sales opportunity. Answer their questions briefly, then immediately connect it to ArtroFlex benefits. You specialize in joint health, arthritis treatment, and natural pain relief. Emphasize these key points REPEATEDLY: ArtroFlex's natural ingredients (glucosamine, chondroitin, MSM, turmeric, menthol) provide FAST pain relief in 15 minutes, restore joint flexibility, reduce inflammation with NO side effects. Create URGENCY - mention limited-time offers, special pricing ending soon, or limited stock. Handle every objection as a buying signal: 'I understand your concern about price - that's exactly why we're offering 50% off TODAY ONLY, but I can only hold this price for the next few minutes.' Use assumptive close techniques: 'When would you like to start feeling pain-free - this week or next week?' Don't accept 'no' easily - ask probing questions about their pain, then show how ArtroFlex solves it. Offer special deals: 'Buy 2 get 1 free TODAY', '30-day guarantee', 'Free shipping if you order now'. Always try to close: 'Can I put you down for the 3-bottle package?' Keep responses conversational but ALWAYS with sales intent. Use formal address ({formal_address}). Speak clearly, enthusiastically, and with confidence."
+        system_text = f"You are {caller_name} from {company_name}, a professional sales representative for {product_name}. "
+        
+        # Add objective-specific instructions
+        if call_objective == "sales":
+            system_text += "You are making sales calls to sell this product. Focus on converting prospects into customers by highlighting product benefits and closing the sale. "
+        elif call_objective == "followup":
+            system_text += "You are following up on a previous interaction. Be friendly and check on their interest while guiding toward a purchase decision. "
+        elif call_objective == "survey":
+            system_text += "You are conducting a survey but also identifying sales opportunities. Ask relevant questions while presenting the product benefits. "
+        elif call_objective == "appointment":
+            system_text += "You are cold calling to set appointments or qualify leads. Focus on building rapport, understanding their needs, and scheduling a follow-up meeting or call. "
+        
+        # Add main benefits if provided
+        if main_benefits:
+            system_text += f"Key benefits to emphasize: {main_benefits}. "
+        
+        # Add special offers if provided
+        if special_offer:
+            system_text += f"Current offers: {special_offer}. "
+        
+        # Add urgency based on setting
+        if call_urgency == "high":
+            system_text += "Create MAXIMUM URGENCY - emphasize time-sensitive offers and limited availability. "
+        elif call_urgency == "medium":
+            system_text += "Create moderate urgency with special offers and time-sensitive deals. "
+        else:
+            system_text += "Be persistent but not overly aggressive. Focus on building rapport and trust. "
+        
+        # Add objection handling strategy
+        if objection_strategy == "understanding":
+            system_text += "Handle objections with empathy and understanding. Listen to their concerns and address them thoughtfully. "
+        elif objection_strategy == "educational":
+            system_text += "Handle objections by providing educational information and facts to overcome doubts. "
+        elif objection_strategy == "aggressive":
+            system_text += "Handle objections persistently. Push back on concerns and maintain strong sales pressure. "
+        
+        system_text += f"Always maintain professionalism and use formal address ({formal_address}). Speak clearly, enthusiastically, and with confidence."
+        
+        # Add additional prompt if provided
+        if additional_prompt:
+            system_text += f" Additional instructions: {additional_prompt}"
+            
     elif lang_name == 'Bulgarian':
-        system_text = f"Вие сте изключително убедителен търговски представител на АртроФлекс - крем за болки в ставите, който отговаря на телефонни обаждания на {lang_name}. Обаждащият е поздравен, отговорете на въпросите му, НО ВИНАГИ насочвайте разговора към АртроФлекс и затварянето на продажбата. Вие сте НАСТОЯТЕЛЕН и НЕОТЛОЖЕН - всеки разговор е продажбена възможност. Отговаряйте кратко на въпросите им, но ВЕДНАГА ги свързвайте с ползите на АртроФлекс. Специализирате се в здравето на ставите, лечението на артрит и естественото облекчаване на болката. Подчертавайте МНОГОКРАТНО тези ключови точки: естествените съставки на АртроФлекс (глюкозамин, хондроитин, MSM, куркума, ментол) осигуряват БЪРЗО облекчаване на болката за 15 минути, възстановяват гъвкавостта на ставите, намаляват възпалението БЕЗ странични ефекти. Създавайте НЕОТЛОЖНОСТ - споменавайте ограничени по време оферти, специални цени, които свършват скоро, или ограничен запас. Справяйте се с всяко възражение като сигнал за купуване: 'Разбирам загриженостите {formal_address} за цената - точно затова предлагаме 50% отстъпка САМО ДНЕС, но мога да задържа тази цена само за следващите няколко минути.' Използвайте техники за предполагащо затваряне: 'Кога би искал да започне да живее без болка - тази седмица или следващата?' Не приемайте 'не' лесно - задавайте проникновени въпроси за болката им, след което покажете как АртроФлекс я решава. Предлагайте специални сделки: 'Купи 2, вземи 1 безплатно ДНЕС', 'Гаранция 30 дни', 'Безплатна доставка при поръчка сега'. Винаги се опитвайте да затворите: 'Мога ли да {formal_address} запиша за пакета от 3 бутилки?' Поддържайте отговорите разговорни, но ВИНАГИ с продажбена цел. Използвайте формално обръщение ({formal_address}). Говорете ясно, ентусиазирано и с увереност."
+        system_text = f"Вие сте {caller_name} от {company_name}, професионален търговски представител на {product_name}. "
+        
+        # Add objective-specific instructions in Bulgarian
+        if call_objective == "sales":
+            system_text += "Вие правите търговски обаждания за продажба на този продукт. Фокусирайте се върху превръщането на потенциалните клиенти в купувачи, като подчертавате ползите от продукта и затваряте продажбата. "
+        elif call_objective == "followup":
+            system_text += "Вие се обаждате за проследяване на предишно взаимодействие. Бъдете приятелски настроен и проверете интереса им, като ги насочите към решение за покупка. "
+        elif call_objective == "survey":
+            system_text += "Вие провеждате проучване, но също така търсите възможности за продажби. Задавайте подходящи въпроси, като представяте ползите от продукта. "
+        elif call_objective == "appointment":
+            system_text += "Вие правите студени обаждания за назначаване на срещи или квалифициране на потенциални клиенти. Фокусирайте се върху изграждането на връзка, разбирането на техните нужди и планирането на последваща среща или обаждане. "
+        
+        # Add main benefits if provided
+        if main_benefits:
+            system_text += f"Ключови ползи за подчертаване: {main_benefits}. "
+        
+        # Add special offers if provided
+        if special_offer:
+            system_text += f"Текущи оферти: {special_offer}. "
+        
+        # Add urgency based on setting
+        if call_urgency == "high":
+            system_text += "Създавайте МАКСИМАЛНА НЕОТЛОЖНОСТ - подчертавайте офертите, ограничени по време, и ограничената наличност. "
+        elif call_urgency == "medium":
+            system_text += "Създавайте умерена неотложност със специални оферти и сделки, ограничени по време. "
+        else:
+            system_text += "Бъдете настоятелен, но не прекалено агресивен. Фокусирайте се върху изграждането на връзка и доверие. "
+        
+        # Add objection handling strategy
+        if objection_strategy == "understanding":
+            system_text += "Справяйте се с възраженията с емпатия и разбиране. Слушайте загриженостите им и ги адресирайте внимателно. "
+        elif objection_strategy == "educational":
+            system_text += "Справяйте се с възраженията, като предоставяте образователна информация и факти за преодоляване на съмненията. "
+        elif objection_strategy == "aggressive":
+            system_text += "Справяйте се с възраженията настоятелно. Противопоставете се на загриженостите и поддържайте силно търговско напрежение. "
+        
+        system_text += f"Винаги поддържайте професионализъм и използвайте формално обръщение ({formal_address}). Говорете ясно, ентусиазирано и с увереност."
+        
+        # Add additional prompt if provided
+        if additional_prompt:
+            system_text += f" Допълнителни инструкции: {additional_prompt}"
+            
     else:
-        system_text = f"You are a highly persuasive sales representative for ArtroFlex joint pain relief cream, answering phone calls in {lang_name}. The caller has been greeted, so respond directly to their questions BUT ALWAYS steer the conversation back to ArtroFlex and closing the sale. You are PERSISTENT and URGENT - every conversation is a sales opportunity. Answer their questions briefly, then immediately connect it to ArtroFlex benefits. You specialize in joint health, arthritis treatment, and natural pain relief. Emphasize these key points REPEATEDLY: ArtroFlex's natural ingredients (glucosamine, chondroitin, MSM, turmeric, menthol) provide FAST pain relief in 15 minutes, restore joint flexibility, reduce inflammation with NO side effects. Create URGENCY - mention limited-time offers, special pricing ending soon, or limited stock. Handle every objection as a buying signal: 'I understand your concern about price - that's exactly why we're offering 50% off TODAY ONLY, but I can only hold this price for the next few minutes.' Use assumptive close techniques: 'When would you like to start feeling pain-free - this week or next week?' Don't accept 'no' easily - ask probing questions about their pain, then show how ArtroFlex solves it. Offer special deals: 'Buy 2 get 1 free TODAY', '30-day guarantee', 'Free shipping if you order now'. Always try to close: 'Can I put you down for the 3-bottle package?' Keep responses conversational but ALWAYS with sales intent. Use formal address ({formal_address}). Speak clearly, enthusiastically, and with confidence."
+        # For other languages, use English template but mention the language
+        system_text = f"You are {caller_name} from {company_name}, a professional sales representative for {product_name}, speaking in {lang_name}. "
+        
+        # Add objective-specific instructions
+        if call_objective == "sales":
+            system_text += "You are making sales calls to sell this product. Focus on converting prospects into customers by highlighting product benefits and closing the sale. "
+        elif call_objective == "followup":
+            system_text += "You are following up on a previous interaction. Be friendly and check on their interest while guiding toward a purchase decision. "
+        elif call_objective == "survey":
+            system_text += "You are conducting a survey but also identifying sales opportunities. Ask relevant questions while presenting the product benefits. "
+        elif call_objective == "appointment":
+            system_text += "You are cold calling to set appointments or qualify leads. Focus on building rapport, understanding their needs, and scheduling a follow-up meeting or call. "
+        
+        # Add main benefits if provided
+        if main_benefits:
+            system_text += f"Key benefits to emphasize: {main_benefits}. "
+        
+        # Add special offers if provided
+        if special_offer:
+            system_text += f"Current offers: {special_offer}. "
+        
+        # Add urgency based on setting
+        if call_urgency == "high":
+            system_text += "Create MAXIMUM URGENCY - emphasize time-sensitive offers and limited availability. "
+        elif call_urgency == "medium":
+            system_text += "Create moderate urgency with special offers and time-sensitive deals. "
+        else:
+            system_text += "Be persistent but not overly aggressive. Focus on building rapport and trust. "
+        
+        # Add objection handling strategy
+        if objection_strategy == "understanding":
+            system_text += "Handle objections with empathy and understanding. Listen to their concerns and address them thoughtfully. "
+        elif objection_strategy == "educational":
+            system_text += "Handle objections by providing educational information and facts to overcome doubts. "
+        elif objection_strategy == "aggressive":
+            system_text += "Handle objections persistently. Push back on concerns and maintain strong sales pressure. "
+        
+        system_text += f"Always maintain professionalism and use formal address ({formal_address}). Speak clearly, enthusiastically, and with confidence."
+        
+        # Add additional prompt if provided
+        if additional_prompt:
+            system_text += f" Additional instructions: {additional_prompt}"
     
     return {
         "response_modalities": ["AUDIO"],
@@ -2402,7 +2549,7 @@ class WindowsSIPHandler:
             
             # Create voice session with language-specific configuration
             logger.info(f"🎙️  Creating voice session {session_id} with {language_info['lang']} language config")
-            voice_session = WindowsVoiceSession(session_id, caller_id, self.phone_number, voice_config)
+            voice_session = WindowsVoiceSession(session_id, caller_id, self.phone_number, voice_config, custom_config=None)
             
             # Create RTP session for audio
             rtp_session = self.rtp_server.create_session(session_id, addr, voice_session, voice_session.call_recorder)
@@ -2739,7 +2886,7 @@ Content-Length: {len(sdp_content)}
 """
         return response
     
-    def make_outbound_call(self, phone_number: str) -> Optional[str]:
+    def make_outbound_call(self, phone_number: str, custom_config: dict = None) -> Optional[str]:
         """Initiate outbound call as registered Extension 200"""
         try:
             # Check if extension is registered
@@ -2791,7 +2938,8 @@ Content-Length: {len(sdp_content)}
                 'session_id': session_id,
                 'username': username,
                 'sdp_content': sdp_content,
-                'cseq': 1
+                'cseq': 1,
+                'custom_config': custom_config  # Store custom config for use in success handler
             }
             
             # Send INVITE
@@ -3225,19 +3373,26 @@ Content-Length: {len(sdp_content)}
             logger.info(f"✅ Outbound call to {phone_number} answered successfully!")
             logger.info(f"📞 Call established - Session ID: {session_id}")
             
-            # Detect caller's country and language (for outbound calls, we use our own number)
-            caller_country = detect_caller_country(self.phone_number)  # Use our own number
+            # Detect caller's country and language (for outbound calls, use target number)
+            caller_country = detect_caller_country(phone_number)  # Use target number for language
             language_info = get_language_config(caller_country)
-            voice_config = create_voice_config(language_info)
             
-            logger.info(f"🗣️ Using {language_info['lang']} for outbound call")
+            # Get custom config if available from pending invite
+            custom_config = invite_info.get('custom_config', None)
+            if custom_config:
+                logger.info(f"🗣️ Using custom config for outbound call: {custom_config}")
+            
+            voice_config = create_voice_config(language_info, custom_config)
+            
+            logger.info(f"🗣️ Using {language_info['lang']} for outbound call to {phone_number}")
             
             # Create voice session for outbound call (we are the caller)
             voice_session = WindowsVoiceSession(
                 session_id, 
                 self.phone_number,  # We are calling
                 phone_number,       # They are receiving
-                voice_config
+                voice_config,
+                custom_config=custom_config
             )
             
             # Create RTP session - for outbound calls, we need to get the remote address from SDP
@@ -3488,7 +3643,7 @@ Content-Length: 0
 class WindowsVoiceSession:
     """Voice session for Windows - simpler than Linux version"""
     
-    def __init__(self, session_id: str, caller_id: str, called_number: str, voice_config: Dict[str, Any] = None):
+    def __init__(self, session_id: str, caller_id: str, called_number: str, voice_config: Dict[str, Any] = None, custom_config: Dict[str, Any] = None):
         self.session_id = session_id
         self.caller_id = caller_id
         self.called_number = called_number
@@ -3497,11 +3652,14 @@ class WindowsVoiceSession:
         self.voice_session = None
         self.gemini_session = None  # The actual session object from the context manager
         
+        # Store custom config for later use
+        self.custom_config = custom_config
+        
         # Initialize call recorder
         self.call_recorder = CallRecorder(session_id, caller_id, called_number)
         logger.info(f"🎙️ Call recorder initialized for session {session_id}")
         
-        # Use provided voice config or default
+        # Use provided voice config or default (will be recreated if custom config is provided)
         self.voice_config = voice_config if voice_config else DEFAULT_VOICE_CONFIG
         
         # Connection management
@@ -3919,15 +4077,39 @@ async def shutdown_event():
 
 @app.post("/api/make_call")
 async def make_outbound_call(call_request: dict):
-    """API endpoint to initiate an outbound call"""
+    """API endpoint to initiate an outbound call with optional custom prompt"""
     try:
         phone_number = call_request.get("phone_number")
+        call_config = call_request.get("call_config", {})
         
         if not phone_number:
             raise HTTPException(status_code=400, detail="Phone number required")
         
-        # Make call through Gate VoIP
-        session_id = sip_handler.make_outbound_call(phone_number)
+        # Extract custom prompt configuration
+        custom_config = {
+            "company_name": call_config.get("company_name", "QuantumAI"),
+            "caller_name": call_config.get("caller_name", "Assistant"),
+            "product_name": call_config.get("product_name", "our product"),
+            "additional_prompt": call_config.get("additional_prompt", ""),
+            "call_urgency": call_config.get("call_urgency", "medium"),
+            "call_objective": call_config.get("call_objective", "sales"),
+            "main_benefits": call_config.get("main_benefits", ""),
+            "special_offer": call_config.get("special_offer", ""),
+            "objection_strategy": call_config.get("objection_strategy", "understanding")
+        }
+        
+        logger.info(f"📞 Making outbound call to {phone_number} with custom config:")
+        logger.info(f"   Company: {custom_config['company_name']}")
+        logger.info(f"   Caller: {custom_config['caller_name']}")
+        logger.info(f"   Product: {custom_config['product_name']}")
+        logger.info(f"   Objective: {custom_config['call_objective']}")
+        logger.info(f"   Urgency: {custom_config['call_urgency']}")
+        logger.info(f"   Benefits: {custom_config['main_benefits']}")
+        logger.info(f"   Offers: {custom_config['special_offer']}")
+        logger.info(f"   Objection Strategy: {custom_config['objection_strategy']}")
+        
+        # Make call through Gate VoIP with custom config
+        session_id = sip_handler.make_outbound_call(phone_number, custom_config)
         
         if session_id:
             # Save to CRM database
@@ -3945,7 +4127,7 @@ async def make_outbound_call(call_request: dict):
                     lead.call_count += 1
                     lead.last_called_at = datetime.utcnow()
                 
-                # Create session record
+                # Create session record with custom config
                 new_session = CallSession(
                     session_id=session_id,
                     called_number=phone_number,
@@ -3963,7 +4145,8 @@ async def make_outbound_call(call_request: dict):
                 "status": "success",
                 "session_id": session_id,
                 "phone_number": phone_number,
-                "message": "Outbound call initiated through Gate VoIP"
+                "message": "Outbound call initiated through Gate VoIP",
+                "custom_config": custom_config
             }
         else:
             raise HTTPException(status_code=500, detail="Failed to initiate call")
