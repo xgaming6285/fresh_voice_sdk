@@ -88,10 +88,13 @@ export const voiceAgentAPI = {
     api.get(`/api/transcripts/${sessionId}/${audioType}`),
   retranscribe: (sessionId) =>
     api.post(`/api/transcripts/${sessionId}/retranscribe`),
-  makeCall: (phoneNumber, callConfig = null) => {
+  makeCall: (phoneNumber, callConfig = null, greetingFile = null) => {
     const payload = { phone_number: phoneNumber };
     if (callConfig) {
       payload.call_config = callConfig;
+    }
+    if (greetingFile) {
+      payload.greeting_file = greetingFile;
     }
     return api.post("/api/make_call", payload);
   },

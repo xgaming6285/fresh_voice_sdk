@@ -18,6 +18,7 @@ import {
   AccordionSummary,
   AccordionDetails,
   Grid,
+  CircularProgress,
 } from "@mui/material";
 import {
   ExpandMore as ExpandMoreIcon,
@@ -40,14 +41,58 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
     main_benefits: "natural ingredients, fast pain relief, no side effects",
     special_offer: "50% off today only, free shipping, 30-day guarantee",
     objection_strategy: "understanding", // understanding, aggressive, educational
+    voice_name: "Puck", // Gemini voice selection
+    greeting_instruction: "", // Custom greeting text
   });
 
   const [loading, setLoading] = useState(false);
+  const [greetingStatus, setGreetingStatus] = useState(""); // "generating", "ready", ""
 
   const handleMakeCall = async () => {
     setLoading(true);
+    setGreetingStatus("generating");
+
     try {
-      await onMakeCall(lead, callConfig);
+      // Step 1: Generate custom greeting
+      console.log("Generating custom greeting...");
+      const greetingResponse = await fetch(
+        "http://localhost:8000/api/generate_greeting",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            phone_number: lead.full_phone,
+            call_config: callConfig,
+          }),
+        }
+      );
+
+      if (!greetingResponse.ok) {
+        const error = await greetingResponse.json();
+        console.error("Failed to generate greeting:", error);
+
+        // Check if it's because greeting generator is not available
+        if (greetingResponse.status === 503) {
+          // Proceed without custom greeting
+          console.log(
+            "Greeting generator not available, using default greeting"
+          );
+          await onMakeCall(lead, callConfig);
+        } else {
+          throw new Error(error.detail || "Failed to generate greeting");
+        }
+      } else {
+        // Greeting generated successfully
+        const greetingData = await greetingResponse.json();
+        console.log("Greeting generated:", greetingData);
+        setGreetingStatus("ready");
+
+        // Step 2: Make call with custom greeting
+        await onMakeCall(lead, callConfig, greetingData.greeting_file);
+      }
+
       onClose();
       // Reset form
       setCallConfig({
@@ -60,11 +105,15 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
         main_benefits: "natural ingredients, fast pain relief, no side effects",
         special_offer: "50% off today only, free shipping, 30-day guarantee",
         objection_strategy: "understanding",
+        voice_name: "Puck",
+        greeting_instruction: "",
       });
     } catch (error) {
       console.error("Error making call:", error);
+      alert("Failed to make call: " + error.message);
     } finally {
       setLoading(false);
+      setGreetingStatus("");
     }
   };
 
@@ -360,6 +409,63 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
           </Grid>
         </Box>
 
+        {/* Greeting Configuration */}
+        <Box sx={{ mb: 3 }}>
+          <Typography
+            variant="h6"
+            gutterBottom
+            sx={{ display: "flex", alignItems: "center", gap: 1 }}
+          >
+            <PhoneIcon color="primary" />
+            Greeting Configuration
+          </Typography>
+
+          <Grid container spacing={2}>
+            <Grid item xs={12} md={6}>
+              <FormControl fullWidth>
+                <InputLabel>Voice Selection</InputLabel>
+                <Select
+                  value={callConfig.voice_name}
+                  onChange={(e) =>
+                    setCallConfig({
+                      ...callConfig,
+                      voice_name: e.target.value,
+                    })
+                  }
+                  label="Voice Selection"
+                >
+                  <MenuItem value="Puck">Puck (Male, Confident)</MenuItem>
+                  <MenuItem value="Charon">
+                    Charon (Male, Authoritative)
+                  </MenuItem>
+                  <MenuItem value="Kore">Kore (Female, Warm)</MenuItem>
+                  <MenuItem value="Fenrir">Fenrir (Male, Energetic)</MenuItem>
+                  <MenuItem value="Aoede">
+                    Aoede (Female, Professional)
+                  </MenuItem>
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                label="Custom Greeting Text"
+                multiline
+                rows={3}
+                value={callConfig.greeting_instruction}
+                onChange={(e) =>
+                  setCallConfig({
+                    ...callConfig,
+                    greeting_instruction: e.target.value,
+                  })
+                }
+                helperText="Enter the exact greeting the bot should say (leave empty for auto-generated greeting based on language and product)"
+                placeholder="e.g., 'Здравейте! Аз съм Maria от компания QuantumAI. Обаждам се във връзка с АртроФлекс. Интересувате ли се да научите повече?'"
+              />
+            </Grid>
+          </Grid>
+        </Box>
+
         {/* Sales Configuration */}
         <Box sx={{ mb: 3 }}>
           <Typography
@@ -530,13 +636,30 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
             !callConfig.main_benefits ||
             !callConfig.special_offer
           }
-          startIcon={getObjectiveIcon(callConfig.call_objective)}
+          startIcon={
+            greetingStatus === "generating" ? (
+              <CircularProgress size={20} color="inherit" />
+            ) : (
+              getObjectiveIcon(callConfig.call_objective)
+            )
+          }
           sx={{
-            background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
-            minWidth: 140,
+            background:
+              greetingStatus === "generating"
+                ? "linear-gradient(135deg, #666 0%, #444 100%)"
+                : "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+            minWidth: 180,
           }}
         >
-          {loading ? "Calling..." : `Make ${callConfig.call_objective} Call`}
+          {loading && greetingStatus === "generating"
+            ? "Generating Greeting..."
+            : loading
+            ? "Calling..."
+            : `Make ${
+                callConfig.call_objective === "appointment"
+                  ? "Appointment"
+                  : callConfig.call_objective
+              } Call`}
         </Button>
       </DialogActions>
     </Dialog>

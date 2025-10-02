@@ -114,10 +114,23 @@ class AudioPreprocessor:
         self.pre_emphasis = 0.97
         self.previous_sample = 0
         
-        # Voice activity detection
+        # Advanced Voice Activity Detection (VAD)
         self.energy_threshold = None
         self.energy_history = []
-        self.max_history = 30  # 300ms of history at 10ms frames
+        self.max_history = 50  # 500ms of history
+        self.zcr_threshold = None  # Zero crossing rate threshold
+        self.zcr_history = []
+        
+        # Speech probability tracking
+        self.speech_frames = 0
+        self.silence_frames = 0
+        self.min_speech_frames = 3  # Minimum consecutive frames to consider as speech
+        self.min_silence_frames = 10  # Minimum consecutive frames to consider as silence
+        self.is_speech_active = False
+        
+        # Aggressive noise gate for non-speech
+        self.noise_gate_threshold = 0.02  # Very aggressive threshold
+        self.speech_energy_multiplier = 3.0  # Speech should be 3x louder than noise
         
         # Dynamic range compression
         self.compressor_threshold = 0.7
@@ -126,7 +139,7 @@ class AudioPreprocessor:
         self.compressor_release = 0.1   # 100ms
         self.compressor_envelope = 0.0
         
-        logger.info("🎵 AudioPreprocessor initialized for speech enhancement")
+        logger.info("🎵 AudioPreprocessor initialized with advanced VAD for speech focus")
     
     def process_audio(self, audio_data: bytes) -> bytes:
         """
@@ -221,34 +234,107 @@ class AudioPreprocessor:
             logger.debug(f"Bandpass filtering failed: {e}")
             return audio
     
-    def _apply_noise_gate(self, audio: np.ndarray) -> np.ndarray:
-        """Apply voice activity detection and noise gating"""
+    def _calculate_zero_crossing_rate(self, audio: np.ndarray) -> float:
+        """Calculate zero crossing rate for speech detection"""
+        try:
+            if len(audio) < 2:
+                return 0.0
+            
+            # Count zero crossings
+            zero_crossings = np.sum(np.abs(np.diff(np.sign(audio)))) / 2
+            zcr = zero_crossings / len(audio)
+            
+            return zcr
+        except Exception as e:
+            logger.debug(f"ZCR calculation failed: {e}")
+            return 0.0
+    
+    def _is_speech(self, audio: np.ndarray) -> bool:
+        """
+        Advanced VAD: Determine if audio contains speech using multiple features.
+        Returns True only if confident it's speech, False otherwise.
+        """
         try:
             if len(audio) == 0:
-                return audio
-                
-            # Calculate energy
-            energy = np.mean(audio ** 2)
+                return False
             
-            # Update energy history
+            # Feature 1: Energy (RMS)
+            energy = np.sqrt(np.mean(audio ** 2))
+            
+            # Feature 2: Zero Crossing Rate
+            zcr = self._calculate_zero_crossing_rate(audio)
+            
+            # Update histories
             self.energy_history.append(energy)
             if len(self.energy_history) > self.max_history:
                 self.energy_history.pop(0)
             
-            # Set threshold based on recent history
-            if self.energy_threshold is None and len(self.energy_history) >= 10:
-                # Initial threshold: median energy * 2
-                self.energy_threshold = np.median(self.energy_history) * 2.0
-            elif len(self.energy_history) >= self.max_history:
-                # Adaptive threshold
-                recent_min = np.percentile(self.energy_history, 20)  # 20th percentile
-                self.energy_threshold = max(recent_min * 3.0, self.noise_floor)
+            self.zcr_history.append(zcr)
+            if len(self.zcr_history) > self.max_history:
+                self.zcr_history.pop(0)
             
-            # Apply noise gate
-            if self.energy_threshold is not None and energy < self.energy_threshold:
-                # Reduce noise segments by 80%
-                audio = audio * 0.2
+            # Initialize thresholds
+            if self.energy_threshold is None and len(self.energy_history) >= 20:
+                # More conservative initial threshold
+                noise_floor = np.percentile(self.energy_history, 30)
+                self.energy_threshold = max(noise_floor * self.speech_energy_multiplier, self.noise_gate_threshold)
+                logger.info(f"🎤 VAD initialized: energy_threshold={self.energy_threshold:.4f}")
             
+            if self.zcr_threshold is None and len(self.zcr_history) >= 20:
+                # Speech typically has ZCR between 0.02 and 0.15
+                self.zcr_threshold = np.percentile(self.zcr_history, 70)
+                logger.debug(f"🎤 VAD ZCR threshold: {self.zcr_threshold:.4f}")
+            
+            # Need both thresholds initialized
+            if self.energy_threshold is None or self.zcr_threshold is None:
+                return False  # Don't send audio during calibration
+            
+            # Adaptive threshold update (slowly track noise floor)
+            if len(self.energy_history) >= self.max_history:
+                recent_noise_floor = np.percentile(self.energy_history, 25)
+                self.energy_threshold = 0.95 * self.energy_threshold + 0.05 * (recent_noise_floor * self.speech_energy_multiplier)
+                self.energy_threshold = max(self.energy_threshold, self.noise_gate_threshold)
+            
+            # Decision logic: Both energy AND zero-crossing rate must indicate speech
+            is_energetic = energy > self.energy_threshold
+            has_speech_zcr = zcr > (self.zcr_threshold * 0.5) and zcr < 0.2  # Speech ZCR range
+            
+            # Speech detection with hysteresis
+            if is_energetic and has_speech_zcr:
+                self.speech_frames += 1
+                self.silence_frames = 0
+                
+                # Need consecutive speech frames to activate
+                if self.speech_frames >= self.min_speech_frames:
+                    self.is_speech_active = True
+            else:
+                self.silence_frames += 1
+                self.speech_frames = 0
+                
+                # Need consecutive silence frames to deactivate
+                if self.silence_frames >= self.min_silence_frames:
+                    self.is_speech_active = False
+            
+            return self.is_speech_active
+            
+        except Exception as e:
+            logger.debug(f"Speech detection failed: {e}")
+            return False
+    
+    def _apply_noise_gate(self, audio: np.ndarray) -> np.ndarray:
+        """Apply aggressive voice activity detection and noise gating"""
+        try:
+            if len(audio) == 0:
+                return audio
+            
+            # Check if this is speech
+            is_speech = self._is_speech(audio)
+            
+            if not is_speech:
+                # COMPLETELY ZERO OUT non-speech audio (don't send noise to Gemini)
+                return np.zeros_like(audio)
+            
+            # If speech, return as-is (will be further processed)
             return audio
             
         except Exception as e:
@@ -396,6 +482,24 @@ from google import genai
 # Import CRM API
 from crm_api import crm_router
 from crm_database import init_database, get_session, Lead, CallSession
+
+# Import Gemini greeting generator (the only supported method)
+try:
+    from greeting_generator_gemini import generate_greeting_for_lead
+    GREETING_GENERATOR_AVAILABLE = True
+    GREETING_GENERATOR_METHOD = "gemini-live"
+    logger.info("✅ Gemini greeting generator loaded (Gemini Live API)")
+    logger.info("🎤 Using Gemini voices (Puck, Charon, Kore, Fenrir, Aoede) - same as voice calls")
+except ImportError as e:
+    GREETING_GENERATOR_AVAILABLE = False
+    GREETING_GENERATOR_METHOD = None
+    logger.warning("⚠️ Gemini greeting generator not available")
+    logger.warning(f"💡 Error: {e}")
+    logger.warning("💡 Make sure google-genai is installed: pip install google-genai")
+except Exception as e:
+    GREETING_GENERATOR_AVAILABLE = False
+    GREETING_GENERATOR_METHOD = None
+    logger.warning(f"⚠️ Gemini greeting generator failed to load: {e}")
 
 # Load configuration
 def load_config():
@@ -1937,7 +2041,7 @@ class RTPSession:
         self.processing = self.output_processing
         
     def process_incoming_audio(self, audio_data: bytes, payload_type: int, timestamp: int):
-        """Process incoming RTP audio packet with noise filtering - direct streaming to Gemini"""
+        """Process incoming RTP audio packet with advanced VAD - only send speech to Gemini"""
         try:
             # Convert payload based on type
             if payload_type == 0:  # PCMU/μ-law
@@ -1948,17 +2052,31 @@ class RTPSession:
                 # Assume it's already PCM
                 pcm_data = audio_data
             
-            # Apply audio preprocessing for noise reduction and speech enhancement
-            try:
-                processed_pcm = self.audio_preprocessor.process_audio(pcm_data)
-                logger.debug(f"🎵 Audio preprocessed: {len(pcm_data)} → {len(processed_pcm)} bytes")
-            except Exception as preprocess_error:
-                logger.warning(f"⚠️ Audio preprocessing failed, using original: {preprocess_error}")
-                processed_pcm = pcm_data
-            
             # Record the ORIGINAL audio (before preprocessing) for authentic recordings
             if self.call_recorder:
                 self.call_recorder.record_incoming_audio(pcm_data)
+            
+            # Apply audio preprocessing with advanced VAD
+            try:
+                processed_pcm = self.audio_preprocessor.process_audio(pcm_data)
+                
+                # Check if this is just silence/noise (all zeros from VAD)
+                if len(processed_pcm) > 0:
+                    audio_array = np.frombuffer(processed_pcm, dtype=np.int16)
+                    is_silence = np.all(audio_array == 0)
+                    
+                    if is_silence:
+                        # Don't send silence to Gemini - this saves bandwidth and prevents confusion
+                        logger.debug(f"🔇 Silence detected, not sending to Gemini")
+                        return
+                    
+                    logger.debug(f"🎤 Speech detected: {len(pcm_data)} → {len(processed_pcm)} bytes")
+                else:
+                    return
+                    
+            except Exception as preprocess_error:
+                logger.warning(f"⚠️ Audio preprocessing failed, using original: {preprocess_error}")
+                processed_pcm = pcm_data
             
             # Start asyncio thread if not already running
             if not self.input_processing:
@@ -1966,14 +2084,14 @@ class RTPSession:
                 self.asyncio_thread = threading.Thread(target=self._run_asyncio_thread, daemon=True)
                 self.asyncio_thread.start()
                 # Give it a moment to initialize
-                time.sleep(0.1)
+                time.sleep(0.05)  # Reduced from 0.1s for faster startup
             
-            # Add to buffer and send immediately when we have enough for efficient transmission
+            # Add to buffer and send when we have enough for efficient transmission
             with self.buffer_lock:
                 self.audio_buffer += processed_pcm
                 
-                # Send immediately with minimal buffering (20ms chunks) for natural conversation
-                min_chunk = 320  # 20ms at 8kHz = 160 samples * 2 bytes = 320 bytes
+                # Send in 40ms chunks for optimal balance between latency and efficiency
+                min_chunk = 640  # 40ms at 8kHz = 320 samples * 2 bytes = 640 bytes
                 if len(self.audio_buffer) >= min_chunk:
                     chunk_to_send = self.audio_buffer
                     self.audio_buffer = b""  # Clear buffer
@@ -2014,23 +2132,23 @@ class RTPSession:
             # Start continuous receiver task
             receiver_task = asyncio.create_task(self._continuous_receive_responses())
             
-            # Main loop: process audio from queue and send to Gemini
+            # Main loop: process audio from queue and send to Gemini with minimal latency
             while self.input_processing:
                 try:
-                    # Check for audio in queue (non-blocking with timeout)
+                    # Check for audio in queue (non-blocking with short timeout for responsiveness)
                     try:
-                        audio_chunk = self.audio_input_queue.get(timeout=0.1)
+                        audio_chunk = self.audio_input_queue.get(timeout=0.02)  # Reduced from 0.1s to 0.02s
                         
                         # Send audio to Gemini immediately
                         if self.voice_session.gemini_session:
                             await self._send_audio_to_gemini(audio_chunk)
                     except queue.Empty:
-                        # No audio available, yield control briefly
-                        await asyncio.sleep(0.01)
+                        # No audio available, yield control very briefly
+                        await asyncio.sleep(0.005)  # Reduced from 0.01s to 0.005s
                         
                 except Exception as e:
                     logger.error(f"Error in main audio loop: {e}")
-                    await asyncio.sleep(0.1)  # Brief pause before retry
+                    await asyncio.sleep(0.05)  # Brief pause before retry (reduced from 0.1s)
             
             # Clean up receiver task
             receiver_task.cancel()
@@ -2190,34 +2308,67 @@ class RTPSession:
     def play_greeting_file(self, greeting_file: str = "greeting.wav"):
         """Play a greeting WAV file at the start of the call and return estimated duration"""
         try:
-            if not os.path.exists(greeting_file):
-                logger.warning(f"Greeting file {greeting_file} not found, skipping greeting")
-                return 0.0
+            # Check if it's an absolute path or relative
+            if os.path.isabs(greeting_file):
+                greeting_path = greeting_file
+            else:
+                greeting_path = greeting_file
+                
+            if not os.path.exists(greeting_path):
+                logger.warning(f"Greeting file {greeting_path} not found, trying default greeting.wav")
+                # Fall back to default greeting
+                greeting_path = "greeting.wav"
+                if not os.path.exists(greeting_path):
+                    logger.warning(f"Default greeting file not found either, skipping greeting")
+                    return 0.0
             
             # Check if RTP session is ready
             if not self.output_processing:
                 logger.warning("⚠️ RTP output processing not ready, cannot play greeting")
                 return 0.0
                 
-            logger.info(f"🎵 Playing greeting file: {greeting_file}")
+            logger.info(f"🎵 Playing greeting file: {greeting_path}")
             logger.info(f"📞 RTP session state: output_processing={self.output_processing}, remote_addr={self.remote_addr}")
             
-            # Load WAV file
-            with wave.open(greeting_file, 'rb') as wav_file:
-                # Get WAV parameters
-                frames = wav_file.getnframes()
-                sample_rate = wav_file.getframerate()
-                channels = wav_file.getnchannels()
-                sample_width = wav_file.getsampwidth()
-                
-                # Calculate duration in seconds
-                duration_seconds = frames / sample_rate if sample_rate > 0 else 0.0
-                
-                logger.info(f"Greeting file info: {frames} frames, {sample_rate}Hz, {channels}ch, {sample_width}bytes/sample")
-                logger.info(f"Estimated duration: {duration_seconds:.2f} seconds")
-                
-                # Read all audio data
-                audio_data = wav_file.readframes(frames)
+            # Check file extension
+            file_ext = os.path.splitext(greeting_path)[1].lower()
+            
+            if file_ext == '.mp3':
+                # Handle MP3 file
+                try:
+                    from pydub import AudioSegment
+                    audio = AudioSegment.from_mp3(greeting_path)
+                    # Convert to WAV format in memory
+                    audio = audio.set_frame_rate(8000).set_channels(1).set_sample_width(2)
+                    wav_data = audio.raw_data
+                    frames = len(wav_data) // 2  # 16-bit samples
+                    sample_rate = 8000
+                    channels = 1
+                    sample_width = 2
+                    audio_data = wav_data
+                    duration_seconds = frames / sample_rate
+                    logger.info(f"Converted MP3 to PCM: {frames} frames, {duration_seconds:.2f}s")
+                except ImportError:
+                    logger.error("❌ pydub not installed - cannot play MP3 files")
+                    logger.error("💡 Install pydub: pip install pydub")
+                    return 0.0
+            else:
+                # Load WAV file
+                with wave.open(greeting_path, 'rb') as wav_file:
+                    # Get WAV parameters
+                    frames = wav_file.getnframes()
+                    sample_rate = wav_file.getframerate()
+                    channels = wav_file.getnchannels()
+                    sample_width = wav_file.getsampwidth()
+                    
+                    # Calculate duration in seconds
+                    duration_seconds = frames / sample_rate if sample_rate > 0 else 0.0
+                    
+                    logger.info(f"Greeting file info: {frames} frames, {sample_rate}Hz, {channels}ch, {sample_width}bytes/sample")
+                    logger.info(f"Estimated duration: {duration_seconds:.2f} seconds")
+                    
+                    # Read all audio data
+                    audio_data = wav_file.readframes(frames)
                 
                 # Convert to mono if stereo
                 if channels == 2:
@@ -2574,8 +2725,8 @@ class WindowsSIPHandler:
                         
                         # Play greeting and let natural conversation flow
                         def play_greeting():
-                            # Wait for call to be fully established
-                            time.sleep(3.0)  # 3 second delay as requested
+                            # Wait briefly for call to be fully established
+                            time.sleep(1.0)  # 1 second delay for call establishment
                             
                             # Ensure RTP session is ready and processing
                             max_wait = 5.0  # Maximum 5 seconds wait
@@ -3450,8 +3601,8 @@ Content-Length: {len(sdp_content)}
                         
                         # For outbound calls, play greeting and let natural conversation flow
                         def play_outbound_greeting():
-                            # Wait for call to be fully established
-                            time.sleep(3.0)  # 3 second delay as requested
+                            # Wait briefly for call to be fully established
+                            time.sleep(1.0)  # 1 second delay for call establishment
                             
                             # Ensure RTP session is ready and processing
                             max_wait = 5.0  # Maximum 5 seconds wait
@@ -3472,7 +3623,9 @@ Content-Length: {len(sdp_content)}
                             logger.info(f"📞 Outbound call status: {active_sessions[session_id]['status']}")
                             
                             # Play greeting file first and get actual duration
-                            greeting_duration = rtp_session.play_greeting_file("greeting.wav")
+                            # Check if custom greeting file is available
+                            custom_greeting = custom_config.get('greeting_file', 'greeting.wav') if custom_config else 'greeting.wav'
+                            greeting_duration = rtp_session.play_greeting_file(custom_greeting)
                             
                             if greeting_duration > 0:
                                 logger.info(f"✅ Outbound greeting played successfully ({greeting_duration:.1f}s). Voice session ready for natural conversation.")
@@ -3562,7 +3715,7 @@ Content-Length: 0
                     if call_id and call_id in self.pending_invites:
                         phone_number = self.pending_invites[call_id]['phone_number']
                         logger.info(f"🔔 Outbound call to {phone_number} is ringing...")
-                        logger.info("📞 Waiting for answer - greeting will play 3 seconds after call is answered")
+                        logger.info("📞 Waiting for answer - greeting will play 1 second after call is answered")
                     else:
                         logger.info("🔔 Received 180 Ringing response")
                 else:
@@ -4097,12 +4250,71 @@ async def shutdown_event():
     """Cleanup when shutting down"""
     sip_handler.stop()
 
+@app.post("/api/generate_greeting")
+async def generate_greeting(greeting_request: dict):
+    """Generate custom greeting audio file for a lead with specified voice and greeting text"""
+    try:
+        if not GREETING_GENERATOR_AVAILABLE:
+            raise HTTPException(
+                status_code=503,
+                detail="Greeting generator not available - Gemini API not configured"
+            )
+        
+        phone_number = greeting_request.get("phone_number")
+        call_config = greeting_request.get("call_config", {})
+        
+        if not phone_number:
+            raise HTTPException(status_code=400, detail="Phone number required")
+        
+        # Detect language from phone number
+        caller_country = detect_caller_country(phone_number)
+        language_info = get_language_config(caller_country)
+        
+        # Extract voice and greeting instruction from call_config
+        voice_name = call_config.get("voice_name", "Puck")
+        greeting_instruction = call_config.get("greeting_instruction")
+        
+        logger.info(f"🎤 Generating greeting for {phone_number}")
+        logger.info(f"🌍 Detected language: {language_info['lang']} ({language_info['code']})")
+        logger.info(f"🎙️ Using voice: {voice_name}")
+        if greeting_instruction:
+            logger.info(f"📝 Custom greeting instruction: {greeting_instruction[:100]}...")
+        
+        # Generate greeting
+        result = await generate_greeting_for_lead(
+            language=language_info['lang'],
+            language_code=language_info['code'],
+            call_config=call_config
+        )
+        
+        if result.get("success"):
+            return {
+                "status": "success",
+                "greeting_file": result["greeting_file"],
+                "transcript": result["transcript"],
+                "language": result["language"],
+                "language_code": result["language_code"],
+                "voice": result.get("voice", voice_name)
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=result.get("error", "Failed to generate greeting")
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating greeting: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/make_call")
 async def make_outbound_call(call_request: dict):
     """API endpoint to initiate an outbound call with optional custom prompt"""
     try:
         phone_number = call_request.get("phone_number")
         call_config = call_request.get("call_config", {})
+        greeting_file = call_request.get("greeting_file")  # Optional custom greeting
         
         if not phone_number:
             raise HTTPException(status_code=400, detail="Phone number required")
@@ -4129,6 +4341,11 @@ async def make_outbound_call(call_request: dict):
         logger.info(f"   Benefits: {custom_config['main_benefits']}")
         logger.info(f"   Offers: {custom_config['special_offer']}")
         logger.info(f"   Objection Strategy: {custom_config['objection_strategy']}")
+        
+        # Store greeting file in custom config if provided
+        if greeting_file:
+            custom_config['greeting_file'] = greeting_file
+            logger.info(f"🎵 Using custom greeting: {greeting_file}")
         
         # Make call through Gate VoIP with custom config
         session_id = sip_handler.make_outbound_call(phone_number, custom_config)
@@ -4215,17 +4432,28 @@ async def health_check():
         "transcription_available": TRANSCRIPTION_AVAILABLE,
         "transcription_method": TRANSCRIPTION_METHOD if TRANSCRIPTION_AVAILABLE else None,
         "transcription_model": audio_transcriber.model_size if TRANSCRIPTION_AVAILABLE else None,
+        "greeting_generator_available": GREETING_GENERATOR_AVAILABLE,
+        "greeting_generator_method": GREETING_GENERATOR_METHOD if GREETING_GENERATOR_AVAILABLE else None,
         "audio_preprocessing": {
             "enabled": True,
             "features": [
+                "Advanced Voice Activity Detection (VAD)",
+                "Energy-based speech detection",
+                "Zero-Crossing Rate analysis",
+                "Silence/noise filtering (complete cutoff)",
                 "Pre-emphasis filtering",
                 "Bandpass filtering (300-3400 Hz)",
-                "Voice activity detection",
                 "Spectral noise reduction",
                 "Dynamic range compression",
                 "Audio normalization"
             ],
-            "purpose": "Enhanced speech recognition for incoming audio"
+            "purpose": "Only speech sent to Gemini - silence and noise completely filtered out",
+            "latency_optimizations": [
+                "Reduced polling intervals (5ms)",
+                "Faster call establishment (1s delay)",
+                "Optimized audio buffering (40ms chunks)",
+                "Immediate speech transmission"
+            ]
         },
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
@@ -4587,7 +4815,30 @@ async def get_audio_preprocessing_status():
         "status": "success",
         "preprocessing_enabled": True,
         "sample_rate": 8000,
+        "vad_configuration": {
+            "enabled": True,
+            "method": "Multi-feature VAD (Energy + Zero-Crossing Rate)",
+            "features": [
+                "Energy-based speech detection with adaptive threshold",
+                "Zero-Crossing Rate analysis for speech characteristics",
+                "Hysteresis (3 frames speech, 10 frames silence)",
+                "Complete silence cutoff (zeros sent to prevent Gemini confusion)"
+            ],
+            "thresholds": {
+                "energy_multiplier": 3.0,
+                "noise_gate_threshold": 0.02,
+                "min_speech_frames": 3,
+                "min_silence_frames": 10
+            }
+        },
         "processing_pipeline": [
+            {
+                "step": 0,
+                "name": "Advanced Voice Activity Detection",
+                "description": "Detects speech vs silence/noise using energy and ZCR",
+                "action": "Completely filters out non-speech audio",
+                "critical": True
+            },
             {
                 "step": 1,
                 "name": "Pre-emphasis filtering",
@@ -4602,9 +4853,9 @@ async def get_audio_preprocessing_status():
             },
             {
                 "step": 3,
-                "name": "Voice activity detection",
-                "description": "Identifies and gates background noise during silence",
-                "adaptive_threshold": True
+                "name": "Noise gating",
+                "description": "Applies aggressive gate to remove non-speech",
+                "method": "Zero-out non-speech segments"
             },
             {
                 "step": 4,
@@ -4626,14 +4877,22 @@ async def get_audio_preprocessing_status():
                 "target_rms": -20  # dBFS
             }
         ],
+        "latency_optimizations": {
+            "call_establishment_delay": "1 second (reduced from 3s)",
+            "audio_chunk_size": "40ms (optimal balance)",
+            "polling_interval": "5ms (reduced from 10ms)",
+            "asyncio_loop_delay": "5ms (reduced from 10ms)",
+            "speech_transmission": "Immediate upon detection"
+        },
         "benefits": [
-            "Improved speech-to-text transcription accuracy",
-            "Reduced background noise interference", 
-            "Better voice activity detection",
-            "Consistent audio levels",
-            "Enhanced speech clarity"
+            "🎯 Only speech sent to Gemini (silence completely filtered)",
+            "⚡ Minimum latency with optimized delays",
+            "🔇 No confusion from continuous noise/silence",
+            "🎤 Improved speech-to-text accuracy",
+            "✅ Natural conversation flow without delays",
+            "🚀 Instant AI response after user speaks"
         ],
-        "note": "Preprocessing only applied to incoming audio (user speech), not outgoing AI responses"
+        "note": "Preprocessing only applied to incoming audio (user speech), not outgoing AI responses. VAD ensures Gemini only receives actual speech, preventing it from being overwhelmed with continuous audio."
     }
 
 if __name__ == "__main__":
@@ -4660,9 +4919,11 @@ if __name__ == "__main__":
         logger.info("   📋 Automatic transcription disabled - available through CRM interface")
     else:
         logger.info("⚠️ Transcription: DISABLED (no method available)")
-    logger.info("🎵 Audio Preprocessing: ENABLED (6-stage noise filtering pipeline)")
+    logger.info("🎵 Audio Preprocessing: ENABLED (Advanced VAD + 6-stage pipeline)")
+    logger.info("   ✅ Voice Activity Detection (Energy + Zero-Crossing Rate)")
     logger.info("   ✅ Pre-emphasis, bandpass filtering, noise reduction, compression")
-    logger.info("   🎯 Optimized for improved user speech transcription accuracy")
+    logger.info("   🎯 Only speech sent to Gemini - silence/noise filtered out")
+    logger.info("   ⚡ Minimum latency - optimized delays and polling intervals")
     logger.info("🔊 Greeting System: ENABLED for both incoming and outbound calls")
     logger.info("   🎙️ Plays greeting.wav file automatically when call is answered")
     logger.info("   🤖 AI responds naturally when user speaks (no artificial triggers)")
