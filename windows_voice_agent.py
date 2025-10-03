@@ -43,8 +43,23 @@ TRANSCRIPTION_METHOD = None
 WHISPER_AVAILABLE = False
 FASTER_WHISPER_AVAILABLE = False
 OPENAI_API_AVAILABLE = False
+GEMINI_API_AVAILABLE = False
 
-# First try faster-whisper (Windows-friendly, no numba dependency)
+# Check for Gemini API (preferred - fast and accurate)
+try:
+    from google import genai
+    # Gemini API is always available if google-genai is installed
+    GEMINI_API_AVAILABLE = True
+    TRANSCRIPTION_METHOD = "gemini_api"
+    logger.info("✅ Gemini API available for transcription (fast cloud-based transcription)")
+    logger.info("🚀 Using Gemini for transcription - much faster than Whisper large model")
+except ImportError:
+    logger.info("💡 Gemini API not available, checking other methods...")
+except Exception as e:
+    logger.warning(f"⚠️ Gemini API setup failed: {e}")
+
+# Try faster-whisper (Windows-friendly, no numba dependency) - only if Gemini not available
+if not GEMINI_API_AVAILABLE:
 try:
     from faster_whisper import WhisperModel
     FASTER_WHISPER_AVAILABLE = True
@@ -55,8 +70,8 @@ except ImportError:
 except Exception as e:
     logger.warning(f"⚠️ faster-whisper failed to load: {e}")
 
-# Try original openai-whisper first (local, better for Bulgarian)
-if not FASTER_WHISPER_AVAILABLE:
+# Try original openai-whisper (local, better for Bulgarian)
+if not GEMINI_API_AVAILABLE and not FASTER_WHISPER_AVAILABLE:
     try:
         import whisper
         WHISPER_AVAILABLE = True
@@ -71,8 +86,8 @@ if not FASTER_WHISPER_AVAILABLE:
     except Exception as e:
         logger.warning(f"⚠️ Unexpected error loading openai-whisper: {e}")
 
-# Fallback to OpenAI API only if local whisper is not available
-if not FASTER_WHISPER_AVAILABLE and not WHISPER_AVAILABLE:
+# Fallback to OpenAI API only if nothing else is available
+if not GEMINI_API_AVAILABLE and not FASTER_WHISPER_AVAILABLE and not WHISPER_AVAILABLE:
     try:
         import openai
         # Check if API key is available in environment or can be configured
@@ -89,13 +104,13 @@ if not FASTER_WHISPER_AVAILABLE and not WHISPER_AVAILABLE:
         logger.warning(f"⚠️ OpenAI API setup failed: {e}")
 
 # Final status check
-TRANSCRIPTION_AVAILABLE = FASTER_WHISPER_AVAILABLE or OPENAI_API_AVAILABLE or WHISPER_AVAILABLE
+TRANSCRIPTION_AVAILABLE = GEMINI_API_AVAILABLE or FASTER_WHISPER_AVAILABLE or OPENAI_API_AVAILABLE or WHISPER_AVAILABLE
 if TRANSCRIPTION_AVAILABLE:
     logger.info(f"🎤 Transcription enabled using: {TRANSCRIPTION_METHOD}")
 else:
     logger.warning("⚠️ No transcription method available - transcription features will be disabled")
-    logger.warning("💡 To enable transcription on Windows, try: pip install faster-whisper")
-    logger.warning("💡 Or configure OpenAI API: set OPENAI_API_KEY environment variable")
+    logger.warning("💡 To enable transcription, install: pip install google-genai")
+    logger.warning("💡 Or for local transcription: pip install faster-whisper")
 
 class AudioPreprocessor:
     """Advanced audio preprocessing for noise reduction and speech enhancement"""
@@ -1048,6 +1063,16 @@ class AudioTranscriber:
         self.model = None
         self.model_loaded = False
         
+        # Initialize Gemini client if using Gemini API method
+        if self.transcription_method == "gemini_api":
+            try:
+                from google import genai
+                self.gemini_client = genai.Client(http_options={"api_version": "v1alpha"})
+                logger.info("✅ Gemini API client initialized for fast transcription")
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize Gemini client: {e}")
+                self.available = False
+        
         # Initialize OpenAI client if using API method
         if self.transcription_method == "openai_api":
             try:
@@ -1071,6 +1096,11 @@ class AudioTranscriber:
         
         For Bulgarian and other non-English languages, larger models provide significantly better accuracy.
         """
+        # If using Gemini API, model size doesn't matter (it's a cloud model)
+        if self.transcription_method == "gemini_api":
+            logger.info("🚀 Using Gemini API - cloud model with automatic optimization")
+            return "large"  # Return large to indicate best quality, but doesn't affect actual API usage
+        
         # If using OpenAI API, always use their best model (whisper-1 which is equivalent to large)
         if self.transcription_method == "openai_api":
             logger.info("🌐 Using OpenAI API - will use their best model (whisper-1)")
@@ -1104,7 +1134,11 @@ class AudioTranscriber:
             
         if not self.model_loaded:
             try:
-                if self.transcription_method == "faster_whisper":
+                if self.transcription_method == "gemini_api":
+                    # No model loading needed for Gemini API - client is already initialized
+                    logger.info(f"✅ Gemini API client ready for fast transcription")
+                    
+                elif self.transcription_method == "faster_whisper":
                     logger.info(f"📥 Loading faster-whisper model '{self.model_size}'... (this may take a moment)")
                     from faster_whisper import WhisperModel
                     self.model = WhisperModel(self.model_size, device="cpu")
@@ -1156,7 +1190,9 @@ class AudioTranscriber:
             logger.info(f"🎙️ Transcribing audio file using {self.transcription_method}: {audio_path} ({file_size:.2f} MB)")
             
             # Transcribe using the available method
-            if self.transcription_method == "openai_api":
+            if self.transcription_method == "gemini_api":
+                result = self._transcribe_with_gemini_api(audio_path, language)
+            elif self.transcription_method == "openai_api":
                 result = self._transcribe_with_openai_api(audio_path, language)
             else:
                 # Load local model if not already loaded
@@ -1195,6 +1231,88 @@ class AudioTranscriber:
                 "error": str(e),
                 "success": False
             }
+    
+    def _transcribe_with_gemini_api(self, audio_path: str, language: str = None) -> dict:
+        """Transcribe using Gemini API - fast and accurate transcription"""
+        try:
+            logger.info("🚀 Using Gemini API for fast transcription")
+            if language:
+                lang_name = {
+                    'bg': 'Bulgarian', 'en': 'English', 'ro': 'Romanian', 
+                    'el': 'Greek', 'de': 'German', 'fr': 'French', 
+                    'es': 'Spanish', 'it': 'Italian', 'ru': 'Russian'
+                }.get(language, language)
+                logger.info(f"🎯 Language hint: {lang_name}")
+            
+            # Read audio file
+            with open(audio_path, 'rb') as audio_file:
+                audio_data = audio_file.read()
+            
+            # Prepare the audio file for Gemini
+            # Gemini accepts various audio formats including WAV
+            audio_file_part = {
+                "inline_data": {
+                    "mime_type": "audio/wav",
+                    "data": base64.b64encode(audio_data).decode('utf-8')
+                }
+            }
+            
+            # Create the transcription prompt
+            if language:
+                lang_name = {
+                    'bg': 'Bulgarian', 'en': 'English', 'ro': 'Romanian',
+                    'el': 'Greek', 'de': 'German', 'fr': 'French',
+                    'es': 'Spanish', 'it': 'Italian', 'ru': 'Russian'
+                }.get(language, language)
+                prompt = f"Please transcribe this audio in {lang_name}. Provide only the transcription text, nothing else."
+            else:
+                prompt = "Please transcribe this audio. Provide only the transcription text, nothing else."
+            
+            # Use Gemini 2.0 Flash model which supports audio
+            model_id = "gemini-2.0-flash-exp"
+            
+            logger.info(f"📤 Sending audio to Gemini model: {model_id}")
+            
+            # Generate content with audio
+            response = self.gemini_client.models.generate_content(
+                model=model_id,
+                contents=[
+                    prompt,
+                    audio_file_part
+                ]
+            )
+            
+            # Extract transcription text
+            transcript_text = ""
+            if hasattr(response, 'text'):
+                transcript_text = response.text.strip()
+            elif hasattr(response, 'candidates') and response.candidates:
+                if hasattr(response.candidates[0], 'content'):
+                    if hasattr(response.candidates[0].content, 'parts'):
+                        for part in response.candidates[0].content.parts:
+                            if hasattr(part, 'text'):
+                                transcript_text += part.text
+            
+            transcript_text = transcript_text.strip()
+            
+            # Try to detect language from result if not provided
+            detected_language = language or 'unknown'
+            
+            logger.info(f"✅ Gemini API transcription completed: {len(transcript_text)} chars")
+            
+            return {
+                "text": transcript_text,
+                "language": detected_language,
+                "segments": [],  # Gemini doesn't provide segments by default
+                "confidence": None,  # Gemini doesn't provide confidence scores
+                "success": True,
+                "method": "gemini_api"
+            }
+        except Exception as e:
+            logger.error(f"❌ Gemini API transcription failed: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
     
     def _transcribe_with_openai_api(self, audio_path: str, language: str = None) -> dict:
         """Transcribe using OpenAI's cloud API with optimal settings"""
