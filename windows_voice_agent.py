@@ -1878,107 +1878,10 @@ class CallRecorder:
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
     
-    def _transcribe_recordings(self):
-        """Transcribe call recordings using Whisper (runs in background thread)"""
-        try:
-            logger.info(f"🎤 Transcribing recordings for session {self.session_id}")
-            
-            # Detect language from caller ID for better transcription
-            caller_country = detect_caller_country(self.caller_id)
-            language_info = get_language_config(caller_country)
-            language_hint = None
-            
-            # Map language codes to Whisper-compatible codes
-            lang_code = language_info.get('code', 'en')
-            if lang_code.startswith('en'):
-                language_hint = 'en'
-            elif lang_code.startswith('bg'):
-                language_hint = 'bg'
-            elif lang_code.startswith('ro'):
-                language_hint = 'ro'
-            elif lang_code.startswith('el'):
-                language_hint = 'el'
-            elif lang_code.startswith('de'):
-                language_hint = 'de'
-            elif lang_code.startswith('fr'):
-                language_hint = 'fr'
-            elif lang_code.startswith('es'):
-                language_hint = 'es'
-            elif lang_code.startswith('it'):
-                language_hint = 'it'
-            elif lang_code.startswith('ru'):
-                language_hint = 'ru'
-            # Add more language mappings as needed
-            
-            logger.info(f"Using language hint for transcription: {language_hint} (from {language_info.get('lang', 'Unknown')})")
-            
-            # Transcribe all recordings
-            transcripts = audio_transcriber.transcribe_call_recordings(
-                self.session_dir, 
-                language_hint=language_hint
-            )
-            
-            # Update session info with transcript information
-            self._update_session_info_with_transcripts(transcripts)
-            
-            # Log completion
-            logger.info(f"✅ Transcription completed for session {self.session_id}")
-            for audio_type, result in transcripts.items():
-                if result.get('success'):
-                    text_length = len(result.get('text', ''))
-                    detected_lang = result.get('language', 'unknown')
-                    logger.info(f"   {audio_type}: {text_length} characters, language: {detected_lang}")
-                else:
-                    error = result.get('error', 'Unknown error')
-                    logger.error(f"   {audio_type}: Failed - {error}")
-            
-        except Exception as e:
-            logger.error(f"❌ Error transcribing recordings for session {self.session_id}: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-    
-    def _update_session_info_with_transcripts(self, transcripts: dict):
-        """Update session_info.json with transcript information"""
-        try:
-            info_path = self.session_dir / "session_info.json"
-            
-            # Load existing session info
-            if info_path.exists():
-                with open(info_path, 'r', encoding='utf-8') as f:
-                    session_info = json.load(f)
-            else:
-                # Create basic session info if it doesn't exist
-                session_info = {
-                    "session_id": self.session_id,
-                    "caller_id": self.caller_id,
-                    "called_number": self.called_number,
-                    "start_time": self.start_time.isoformat(),
-                    "end_time": datetime.now(timezone.utc).isoformat(),
-                }
-            
-            # Add transcript information
-            session_info["transcripts"] = {}
-            for audio_type, result in transcripts.items():
-                session_info["transcripts"][audio_type] = {
-                    "success": result.get('success', False),
-                    "language": result.get('language', 'unknown'),
-                    "text_length": len(result.get('text', '')),
-                    "confidence": result.get('confidence'),
-                    "transcript_file": result.get('transcript_file'),
-                    "transcribed_at": datetime.now(timezone.utc).isoformat()
-                }
-                
-                if not result.get('success'):
-                    session_info["transcripts"][audio_type]["error"] = result.get('error')
-            
-            # Save updated session info
-            with open(info_path, 'w', encoding='utf-8') as f:
-                json.dump(session_info, f, indent=2, ensure_ascii=False)
-                
-            logger.info(f"💾 Updated session info with transcript data: {info_path}")
-            
-        except Exception as e:
-            logger.error(f"❌ Error updating session info with transcripts: {e}")
+    # Note: Transcription is now handled by the standalone transcribe_audio.py script
+    # It's triggered manually through the CRM interface or via the API endpoint
+    # The script handles updating session_info.json automatically
+    # See _background_transcribe_session() for the API implementation
     
     def _save_session_info(self):
         """Save session information to a JSON file"""
@@ -4643,26 +4546,39 @@ async def get_recordings():
                                         "path": str(audio_path)
                                     }
                             
-                            # Check if transcript files exist
+                            # Check if transcript files exist (scan directory for real-time updates)
                             transcript_files = {}
                             transcripts_info = session_info.get('transcripts', {})
-                            for audio_type, transcript_info in transcripts_info.items():
-                                transcript_filename = transcript_info.get('transcript_file')
-                                if transcript_filename:
-                                    transcript_path = session_dir / transcript_filename
-                                    if transcript_path.exists():
+                            
+                            # Check for actual .txt files in the session directory
+                            audio_types = ['incoming', 'outgoing', 'mixed']
+                            for audio_type in audio_types:
+                                # Look for .txt files matching the audio type
+                                txt_files = list(session_dir.glob(f"*{audio_type}*.txt"))
+                                # Filter to get actual transcript files
+                                txt_files = [f for f in txt_files if f.suffix == '.txt']
+                                
+                                if txt_files:
+                                    transcript_path = txt_files[0]
+                                    transcript_info = transcripts_info.get(audio_type, {})
+                                    
+                                    # Get file size
+                                    try:
+                                        with open(transcript_path, 'r', encoding='utf-8') as f:
+                                            content = f.read()
+                                            text_length = len(content)
+                                    except:
+                                        text_length = 0
+                                    
                                         transcript_files[audio_type] = {
-                                            "filename": transcript_filename,
+                                        "filename": transcript_path.name,
                                             "language": transcript_info.get('language', 'unknown'),
-                                            "text_length": transcript_info.get('text_length', 0),
+                                        "text_length": text_length,
                                             "confidence": transcript_info.get('confidence'),
                                             "transcribed_at": transcript_info.get('transcribed_at'),
-                                            "success": transcript_info.get('success', False),
+                                        "success": True,
                                             "path": str(transcript_path)
                                         }
-                                        
-                                        if not transcript_info.get('success'):
-                                            transcript_files[audio_type]["error"] = transcript_info.get('error')
                             
                             if audio_files:  # Only include if audio files exist
                                 recording_entry = {
@@ -4696,7 +4612,7 @@ async def get_recordings():
 
 @app.get("/api/transcripts/{session_id}")
 async def get_session_transcripts(session_id: str):
-    """Get transcripts for a specific session"""
+    """Get transcripts for a specific session - reads directly from files for real-time updates"""
     try:
         session_dir = Path(f"sessions/{session_id}")
         
@@ -4705,37 +4621,60 @@ async def get_session_transcripts(session_id: str):
         
         # Load session info
         session_info_path = session_dir / "session_info.json"
-        if not session_info_path.exists():
-            raise HTTPException(status_code=404, detail="Session info not found")
-        
+        session_info = {}
+        if session_info_path.exists():
         with open(session_info_path, 'r', encoding='utf-8') as f:
             session_info = json.load(f)
         
-        # Get transcript information
+        # Get transcript information from session_info if available
         transcripts_info = session_info.get('transcripts', {})
         transcripts = {}
         
-        for audio_type, transcript_info in transcripts_info.items():
-            transcript_filename = transcript_info.get('transcript_file')
-            if transcript_filename:
-                transcript_path = session_dir / transcript_filename
-                if transcript_path.exists():
+        # Check for actual transcript files directly (real-time check)
+        audio_types = ['incoming', 'outgoing', 'mixed']
+        for audio_type in audio_types:
+            # Look for .txt files matching the audio type
+            txt_files = list(session_dir.glob(f"*{audio_type}*.txt"))
+            
+            # Filter out non-transcript files (like transcript_*.json)
+            txt_files = [f for f in txt_files if f.suffix == '.txt' and 'transcript' not in f.stem or f.stem.startswith(audio_type)]
+            
+            if txt_files:
+                # Use the first matching file
+                transcript_path = txt_files[0]
+                
                     # Read transcript content
                     with open(transcript_path, 'r', encoding='utf-8') as f:
                         transcript_content = f.read()
+                
+                # Get metadata from session_info if available, otherwise use defaults
+                transcript_info = transcripts_info.get(audio_type, {})
+                
+                # Parse metadata from file if it exists in the standard format
+                lines = transcript_content.split('\n')
+                file_metadata = {}
+                if lines and lines[0].startswith('Audio File:'):
+                    # Parse the header
+                    for line in lines[:10]:  # Check first 10 lines for metadata
+                        if ':' in line and not line.startswith('-'):
+                            key, value = line.split(':', 1)
+                            file_metadata[key.strip()] = value.strip()
+                    # Find the separator line
+                    separator_idx = next((i for i, line in enumerate(lines) if line.startswith('---')), -1)
+                    if separator_idx >= 0 and separator_idx + 1 < len(lines):
+                        # Content starts after the separator
+                        transcript_content = '\n'.join(lines[separator_idx + 1:]).strip()
                     
                     transcripts[audio_type] = {
-                        "filename": transcript_filename,
-                        "language": transcript_info.get('language', 'unknown'),
-                        "text_length": transcript_info.get('text_length', 0),
+                    "filename": transcript_path.name,
+                    "language": transcript_info.get('language') or file_metadata.get('Language', 'unknown'),
+                    "text_length": len(transcript_content),
                         "confidence": transcript_info.get('confidence'),
-                        "transcribed_at": transcript_info.get('transcribed_at'),
-                        "success": transcript_info.get('success', False),
-                        "content": transcript_content
-                    }
-                    
-                    if not transcript_info.get('success'):
-                        transcripts[audio_type]["error"] = transcript_info.get('error')
+                    "transcribed_at": transcript_info.get('transcribed_at') or file_metadata.get('Transcribed'),
+                    "success": True,
+                    "content": transcript_content,
+                    "method": file_metadata.get('Method', transcript_info.get('method', 'unknown'))
+                }
         
         return {
             "status": "success",
@@ -4860,16 +4799,17 @@ async def get_specific_transcript(session_id: str, audio_type: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 async def _background_transcribe_session(session_dir: Path, caller_id: str):
-    """Background task function for transcribing a session"""
+    """Background task function for transcribing a session using the fast Gemini script"""
     try:
         logger.info(f"🎤 Background transcription started for {session_dir.name}")
+        logger.info(f"🚀 Using fast Gemini API transcription script")
         
         # Detect language from caller ID
         caller_country = detect_caller_country(caller_id)
         language_info = get_language_config(caller_country)
         language_hint = None
         
-        # Map language codes to Whisper-compatible codes
+        # Map language codes to supported codes
         lang_code = language_info.get('code', 'en')
         if lang_code.startswith('en'):
             language_hint = 'en'
@@ -4892,43 +4832,34 @@ async def _background_transcribe_session(session_dir: Path, caller_id: str):
         
         logger.info(f"Using language hint: {language_hint} (from {language_info.get('lang', 'Unknown')})")
         
-        # Transcribe all recordings
-        transcripts = audio_transcriber.transcribe_call_recordings(
-            session_dir, 
-            language_hint=language_hint
+        # Call the transcribe_audio.py script using subprocess
+        import subprocess
+        import sys
+        
+        cmd = [sys.executable, "transcribe_audio.py", str(session_dir), "--quiet"]
+        if language_hint:
+            cmd.extend(["--language", language_hint])
+        
+        logger.info(f"Running transcription command: {' '.join(cmd)}")
+        
+        # Run the script
+        process = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 minute timeout (should be more than enough with Gemini)
         )
         
-        # Update session info with transcript information
-        info_path = session_dir / "session_info.json"
-        
-        # Load existing session info
-        if info_path.exists():
-            with open(info_path, 'r', encoding='utf-8') as f:
-                session_info = json.load(f)
-        else:
-            session_info = {}
-        
-        # Add transcript information
-        session_info["transcripts"] = {}
-        for audio_type, result in transcripts.items():
-            session_info["transcripts"][audio_type] = {
-                "success": result.get('success', False),
-                "language": result.get('language', 'unknown'),
-                "text_length": len(result.get('text', '')),
-                "confidence": result.get('confidence'),
-                "transcript_file": result.get('transcript_file'),
-                "transcribed_at": datetime.now(timezone.utc).isoformat()
-            }
-            
-            if not result.get('success'):
-                session_info["transcripts"][audio_type]["error"] = result.get('error')
-        
-        # Save updated session info
-        with open(info_path, 'w', encoding='utf-8') as f:
-            json.dump(session_info, f, indent=2, ensure_ascii=False)
-        
+        if process.returncode == 0:
+            logger.info(f"✅ Transcription script completed successfully")
         logger.info(f"✅ Background transcription completed for {session_dir.name}")
+        else:
+            logger.error(f"❌ Transcription script failed with return code {process.returncode}")
+            logger.error(f"stderr: {process.stderr}")
+            raise Exception(f"Transcription script failed: {process.stderr}")
         
+    except subprocess.TimeoutExpired:
+        logger.error(f"❌ Transcription timed out for {session_dir.name}")
     except Exception as e:
         logger.error(f"❌ Error in background transcription for {session_dir.name}: {e}")
         import traceback
