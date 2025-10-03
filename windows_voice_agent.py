@@ -129,8 +129,8 @@ class AudioPreprocessor:
         self.is_speech_active = False
         
         # Aggressive noise gate for non-speech
-        self.noise_gate_threshold = 0.02  # Very aggressive threshold
-        self.speech_energy_multiplier = 3.0  # Speech should be 3x louder than noise
+        self.noise_gate_threshold = 0.01  # Less aggressive threshold for better speech detection
+        self.speech_energy_multiplier = 2.0  # Speech should be 2x louder than noise
         
         # Dynamic range compression
         self.compressor_threshold = 0.7
@@ -1957,8 +1957,6 @@ class RTPServer:
                     for session_id, rtp_session in self.sessions.items():
                         # Match by IP address only (port can be different for RTP vs SIP)
                         if rtp_session.remote_addr[0] == addr[0]:
-                            logger.info(f"🎵 Received RTP audio from {addr}: {len(audio_payload)} bytes, PT={payload_type}")
-                            
                             # Update the RTP session's actual RTP address if it changed
                             if rtp_session.remote_addr != addr:
                                 logger.info(f"📍 Updating RTP address from {rtp_session.remote_addr} to {addr}")
@@ -1969,8 +1967,12 @@ class RTPServer:
                             break
                     
                     if not session_found:
-                        # No session found for this address
-                        logger.warning(f"⚠️ Received RTP audio from unknown address {addr}: {len(audio_payload)} bytes")
+                        # No session found for this address - log only once per address
+                        if not hasattr(self, '_unknown_addresses'):
+                            self._unknown_addresses = set()
+                        if addr not in self._unknown_addresses:
+                            logger.warning(f"⚠️ Received RTP audio from unknown address {addr}")
+                            self._unknown_addresses.add(addr)
                 
             except Exception as e:
                 logger.error(f"Error in RTP listener: {e}")
@@ -2056,23 +2058,19 @@ class RTPSession:
             if self.call_recorder:
                 self.call_recorder.record_incoming_audio(pcm_data)
             
-            # Apply audio preprocessing with advanced VAD
+            # VAD DISABLED - Send ALL audio to Gemini for testing
+            # Apply basic audio preprocessing WITHOUT VAD filtering
             try:
-                processed_pcm = self.audio_preprocessor.process_audio(pcm_data)
+                # Use simpler preprocessing without aggressive VAD
+                processed_pcm = pcm_data  # Skip preprocessing entirely for now
                 
-                # Check if this is just silence/noise (all zeros from VAD)
-                if len(processed_pcm) > 0:
-                    audio_array = np.frombuffer(processed_pcm, dtype=np.int16)
-                    is_silence = np.all(audio_array == 0)
-                    
-                    if is_silence:
-                        # Don't send silence to Gemini - this saves bandwidth and prevents confusion
-                        logger.debug(f"🔇 Silence detected, not sending to Gemini")
-                        return
-                    
-                    logger.debug(f"🎤 Speech detected: {len(pcm_data)} → {len(processed_pcm)} bytes")
-                else:
-                    return
+                # Log occasionally to show audio is flowing
+                if not hasattr(self, '_audio_packet_count'):
+                    self._audio_packet_count = 0
+                    logger.info(f"🎤 ✅ VAD DISABLED - Sending ALL audio to Gemini (no filtering)")
+                self._audio_packet_count += 1
+                if self._audio_packet_count % 100 == 0:
+                    logger.info(f"📤 Sent {self._audio_packet_count} audio packets to Gemini")
                     
             except Exception as preprocess_error:
                 logger.warning(f"⚠️ Audio preprocessing failed, using original: {preprocess_error}")
@@ -2080,9 +2078,11 @@ class RTPSession:
             
             # Start asyncio thread if not already running
             if not self.input_processing:
+                logger.info(f"🚀 Starting asyncio thread for Gemini communication...")
                 self.input_processing = True
                 self.asyncio_thread = threading.Thread(target=self._run_asyncio_thread, daemon=True)
                 self.asyncio_thread.start()
+                logger.info(f"✅ Asyncio thread started successfully")
                 # Give it a moment to initialize
                 time.sleep(0.05)  # Reduced from 0.1s for faster startup
             
@@ -2130,9 +2130,12 @@ class RTPSession:
             logger.info("🎤 Voice session initialized - starting audio streaming")
             
             # Start continuous receiver task
+            logger.info("🎧 Creating continuous response receiver task...")
             receiver_task = asyncio.create_task(self._continuous_receive_responses())
+            logger.info("✅ Receiver task created - ready to receive Gemini responses")
             
             # Main loop: process audio from queue and send to Gemini with minimal latency
+            audio_chunks_sent = 0
             while self.input_processing:
                 try:
                     # Check for audio in queue (non-blocking with short timeout for responsiveness)
@@ -2142,12 +2145,19 @@ class RTPSession:
                         # Send audio to Gemini immediately
                         if self.voice_session.gemini_session:
                             await self._send_audio_to_gemini(audio_chunk)
+                            audio_chunks_sent += 1
+                            if audio_chunks_sent % 50 == 0:  # Log every 50 chunks
+                                logger.debug(f"📤 Sent {audio_chunks_sent} audio chunks to Gemini so far")
+                        else:
+                            logger.warning("⚠️ No Gemini session available to send audio")
                     except queue.Empty:
                         # No audio available, yield control very briefly
                         await asyncio.sleep(0.005)  # Reduced from 0.01s to 0.005s
                         
                 except Exception as e:
                     logger.error(f"Error in main audio loop: {e}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
                     await asyncio.sleep(0.05)  # Brief pause before retry (reduced from 0.1s)
             
             # Clean up receiver task
@@ -2189,6 +2199,7 @@ class RTPSession:
                 # Get response from Gemini - this is a continuous stream
                 turn = self.voice_session.gemini_session.receive()
                 
+                turn_had_content = False
                 async for response in turn:
                     if not self.input_processing:
                         break
@@ -2201,11 +2212,12 @@ class RTPSession:
                                     if hasattr(part, 'inline_data') and part.inline_data:
                                         if hasattr(part.inline_data, 'mime_type') and 'audio' in part.inline_data.mime_type:
                                             audio_data = part.inline_data.data
+                                            turn_had_content = True
                                             if isinstance(audio_data, str):
                                                 # Base64 encoded audio
                                                 try:
                                                     audio_bytes = base64.b64decode(audio_data)
-                                                    logger.info(f"📥 Received {len(audio_bytes)} bytes of audio from Gemini")
+                                                    logger.info(f"📥 ✅ GEMINI RESPONSE: Received {len(audio_bytes)} bytes of audio - playing to user...")
                                                     # Convert and send in smaller chunks
                                                     telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_bytes)
                                                     
@@ -2214,7 +2226,7 @@ class RTPSession:
                                                 except Exception as e:
                                                     logger.error(f"Error decoding base64 audio: {e}")
                                             elif isinstance(audio_data, bytes):
-                                                logger.info(f"📥 Received {len(audio_data)} bytes of audio from Gemini")
+                                                logger.info(f"📥 ✅ GEMINI RESPONSE: Received {len(audio_data)} bytes of audio - playing to user...")
                                                 # Convert and send in smaller chunks to avoid overwhelming the receiver
                                                 telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_data)
                                                 
@@ -2223,6 +2235,7 @@ class RTPSession:
                                     
                                     # Also handle text parts for logging
                                     if hasattr(part, 'text') and part.text:
+                                        turn_had_content = True
                                         self.voice_session.session_logger.log_transcript(
                                             "assistant_response", part.text.strip()
                                         )
@@ -2230,15 +2243,16 @@ class RTPSession:
                         
                         # Also check direct data field (older format)
                         elif hasattr(response, 'data') and response.data:
+                            turn_had_content = True
                             if isinstance(response.data, bytes):
-                                logger.info(f"📥 Received {len(response.data)} bytes of audio from Gemini (direct)")
+                                logger.info(f"📥 ✅ GEMINI RESPONSE (direct): {len(response.data)} bytes - playing to user...")
                                 telephony_audio = self.voice_session.convert_gemini_to_telephony(response.data)
                                 # Send immediately in small chunks for lowest latency
                                 self._send_audio_immediate(telephony_audio)
                             elif isinstance(response.data, str):
                                 try:
                                     audio_bytes = base64.b64decode(response.data)
-                                    logger.info(f"📥 Received {len(audio_bytes)} bytes of audio from Gemini (direct base64)")
+                                    logger.info(f"📥 ✅ GEMINI RESPONSE (base64): {len(audio_bytes)} bytes - playing to user...")
                                     telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_bytes)
                                     # Send immediately in small chunks for lowest latency
                                     self._send_audio_immediate(telephony_audio)
@@ -2247,6 +2261,7 @@ class RTPSession:
                         
                         # Handle text response
                         if hasattr(response, 'text') and response.text:
+                            turn_had_content = True
                             self.voice_session.session_logger.log_transcript(
                                 "assistant_response", response.text
                             )
@@ -2257,6 +2272,15 @@ class RTPSession:
                             logger.error(f"Error processing response item: {e}")
                         # Continue processing other responses
                         continue
+                
+                # After turn completes, log and prepare for next turn
+                if turn_had_content:
+                    logger.info("✅ Turn completed, ready for next user input")
+                else:
+                    logger.debug("Empty turn received, continuing to listen")
+                
+                # Small yield to prevent tight loop
+                await asyncio.sleep(0.001)
                         
             except asyncio.CancelledError:
                 # Clean shutdown
@@ -2271,6 +2295,8 @@ class RTPSession:
                         break  # Exit gracefully
                     else:
                         logger.error(f"Error receiving from Gemini: {e}")
+                        import traceback
+                        logger.error(f"Traceback: {traceback.format_exc()}")
                         await asyncio.sleep(0.1)  # Brief pause before retry
                 else:
                     break  # Exit if not processing anymore
