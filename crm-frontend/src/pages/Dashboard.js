@@ -242,46 +242,6 @@ function Dashboard() {
 
   return (
     <Box className="fade-in">
-      <Box
-        display="flex"
-        justifyContent="space-between"
-        alignItems="center"
-        mb={4}
-      >
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          <Typography variant="h4">📊</Typography>
-          <Typography
-            variant="h4"
-            sx={{
-              fontWeight: 700,
-              background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
-              WebkitBackgroundClip: "text",
-              WebkitTextFillColor: "transparent",
-              backgroundClip: "text",
-            }}
-          >
-            Dashboard
-          </Typography>
-        </Box>
-        <IconButton
-          onClick={loadDashboardData}
-          className="ios-button"
-          sx={{
-            background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
-            color: "white",
-            boxShadow: "0 4px 16px rgba(200, 92, 60, 0.3)",
-            "&:hover": {
-              background: "linear-gradient(135deg, #E07B5F 0%, #C85C3C 100%)",
-              transform: "rotate(180deg)",
-              boxShadow: "0 8px 24px rgba(200, 92, 60, 0.4)",
-            },
-            transition: "all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)",
-          }}
-        >
-          <RefreshIcon />
-        </IconButton>
-      </Box>
-
       {/* System Status */}
       <Paper
         className="glass-effect-colored ios-blur-container"
@@ -291,9 +251,34 @@ function Dashboard() {
           animation: "slideUp 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)",
         }}
       >
-        <Typography variant="h6" gutterBottom fontWeight={700} sx={{ mb: 2 }}>
-          System Status
-        </Typography>
+        <Box
+          display="flex"
+          justifyContent="space-between"
+          alignItems="center"
+          mb={2}
+        >
+          <Typography variant="h6" fontWeight={700}>
+            System Status
+          </Typography>
+          <IconButton
+            onClick={loadDashboardData}
+            className="ios-button"
+            size="small"
+            sx={{
+              background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+              color: "white",
+              boxShadow: "0 4px 16px rgba(200, 92, 60, 0.3)",
+              "&:hover": {
+                background: "linear-gradient(135deg, #E07B5F 0%, #C85C3C 100%)",
+                transform: "rotate(180deg)",
+                boxShadow: "0 8px 24px rgba(200, 92, 60, 0.4)",
+              },
+              transition: "all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)",
+            }}
+          >
+            <RefreshIcon />
+          </IconButton>
+        </Box>
         <Grid container spacing={2} alignItems="center">
           <Grid item xs={12} md={4}>
             <Box display="flex" alignItems="center">

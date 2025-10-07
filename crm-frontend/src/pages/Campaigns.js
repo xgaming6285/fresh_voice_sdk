@@ -168,60 +168,87 @@ function Campaigns() {
 
   return (
     <Box className="fade-in">
-      <Box
-        display="flex"
-        justifyContent="space-between"
-        alignItems="center"
-        mb={4}
-      >
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          <Typography variant="h4">🎯</Typography>
-          <Typography
-            variant="h4"
-            sx={{
-              fontWeight: 700,
-              background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
-              WebkitBackgroundClip: "text",
-              WebkitTextFillColor: "transparent",
-              backgroundClip: "text",
-            }}
-          >
-            Campaigns
-          </Typography>
-        </Box>
-        <Button
-          variant="contained"
-          startIcon={<AddIcon />}
-          onClick={handleOpenCreateDialog}
-          sx={{
-            background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
-            fontWeight: 600,
-            px: 3,
-            py: 1.5,
-            borderRadius: 2.5,
-            boxShadow: "0 4px 16px rgba(200, 92, 60, 0.3)",
-            "&:hover": {
-              background: "linear-gradient(135deg, #E07B5F 0%, #C85C3C 100%)",
-              boxShadow: "0 8px 24px rgba(200, 92, 60, 0.4)",
-              transform: "translateY(-2px)",
-            },
-          }}
-        >
-          Create Campaign
-        </Button>
-      </Box>
-
       {loading ? (
         <Box display="flex" justifyContent="center" p={4}>
           <LinearProgress sx={{ width: "50%" }} />
         </Box>
       ) : (
         <Grid container spacing={3}>
+          {/* Add Campaign Template Card */}
+          <Grid item xs={4} md={3} lg={2}>
+            <Card
+              onClick={handleOpenCreateDialog}
+              className="glass-effect ios-card"
+              sx={{
+                height: "100%",
+                minHeight: 120,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer",
+                border: "2px dashed rgba(200, 92, 60, 0.3)",
+                background: "rgba(200, 92, 60, 0.02)",
+                transition: "all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
+                "&:hover": {
+                  border: "2px dashed rgba(200, 92, 60, 0.6)",
+                  background: "rgba(200, 92, 60, 0.08)",
+                  transform: "translateY(-4px) scale(1.02)",
+                  boxShadow: "0 8px 24px rgba(200, 92, 60, 0.2)",
+                },
+              }}
+            >
+              <Box
+                sx={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  gap: 1,
+                }}
+              >
+                <Box
+                  sx={{
+                    width: 35,
+                    height: 35,
+                    borderRadius: "50%",
+                    background:
+                      "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    transition: "all 0.3s ease",
+                    "&:hover": {
+                      transform: "rotate(90deg) scale(1.1)",
+                    },
+                  }}
+                >
+                  <AddIcon sx={{ fontSize: 20, color: "white" }} />
+                </Box>
+                <Typography
+                  variant="body2"
+                  fontWeight={600}
+                  sx={{
+                    background:
+                      "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+                    WebkitBackgroundClip: "text",
+                    WebkitTextFillColor: "transparent",
+                    backgroundClip: "text",
+                    fontSize: "0.75rem",
+                  }}
+                >
+                  New Campaign
+                </Typography>
+              </Box>
+            </Card>
+          </Grid>
+
+          {/* Existing Campaigns */}
           {campaigns.map((campaign, index) => (
-            <Grid item xs={12} md={6} lg={4} key={campaign.id}>
+            <Grid item xs={4} md={3} lg={2} key={campaign.id}>
               <Card
                 className="glass-effect ios-card"
                 sx={{
+                  height: "100%",
+                  minHeight: 120,
                   animation: "springIn 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)",
                   animationDelay: `${index * 0.1}s`,
                   animationFillMode: "both",
@@ -232,23 +259,26 @@ function Campaigns() {
                   },
                 }}
               >
-                <CardContent>
+                <CardContent sx={{ p: 1.5 }}>
                   <Box
                     display="flex"
                     justifyContent="space-between"
                     alignItems="center"
-                    mb={2}
+                    mb={1}
                   >
                     <Typography
-                      variant="h6"
+                      variant="body2"
                       component="div"
                       fontWeight={700}
+                      noWrap
                       sx={{
                         background:
                           "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
                         WebkitBackgroundClip: "text",
                         WebkitTextFillColor: "transparent",
                         backgroundClip: "text",
+                        fontSize: "0.875rem",
+                        maxWidth: "70%",
                       }}
                     >
                       {campaign.name}
@@ -263,188 +293,103 @@ function Campaigns() {
                         backdropFilter: "blur(10px)",
                         transition:
                           "all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
+                        height: 18,
+                        fontSize: "0.65rem",
                       }}
                     />
                   </Box>
 
-                  {campaign.description && (
-                    <Typography variant="body2" color="text.secondary" mb={2}>
-                      {campaign.description}
-                    </Typography>
-                  )}
-
-                  <Box mb={2}>
+                  <Box mb={1}>
                     <Box
                       display="flex"
                       alignItems="center"
-                      mb={1}
+                      justifyContent="space-between"
                       sx={{
-                        p: 1.5,
-                        borderRadius: 2,
+                        p: 0.75,
+                        borderRadius: 1,
                         background: "rgba(248, 243, 239, 0.5)",
                         backdropFilter: "blur(10px)",
                       }}
                     >
                       <PeopleIcon
-                        fontSize="small"
-                        sx={{ mr: 1, color: "primary.main" }}
+                        sx={{ fontSize: 14, mr: 0.5, color: "primary.main" }}
                       />
-                      <Typography variant="body2" fontWeight={500}>
-                        {campaign.total_leads} leads
+                      <Typography variant="caption" fontWeight={500}>
+                        {campaign.total_leads}
                       </Typography>
-                    </Box>
-                    <Box
-                      display="flex"
-                      alignItems="center"
-                      mb={1}
-                      sx={{
-                        p: 1.5,
-                        borderRadius: 2,
-                        background: "rgba(248, 243, 239, 0.5)",
-                        backdropFilter: "blur(10px)",
-                      }}
-                    >
-                      <PhoneIcon
-                        fontSize="small"
-                        sx={{ mr: 1, color: "info.main" }}
-                      />
-                      <Typography variant="body2" fontWeight={500}>
-                        {campaign.leads_called} called
-                      </Typography>
-                    </Box>
-                    <Box display="flex" alignItems="center" gap={1}>
-                      <Box
-                        display="flex"
-                        alignItems="center"
-                        sx={{
-                          p: 1,
-                          px: 1.5,
-                          borderRadius: 2,
-                          background: "rgba(107, 154, 90, 0.1)",
-                          backdropFilter: "blur(10px)",
-                        }}
-                      >
-                        <CheckCircleIcon
-                          fontSize="small"
-                          color="success"
-                          sx={{ mr: 0.5 }}
-                        />
-                        <Typography variant="body2" fontWeight={500}>
-                          {campaign.leads_answered}
-                        </Typography>
-                      </Box>
-                      <Box
-                        display="flex"
-                        alignItems="center"
-                        sx={{
-                          p: 1,
-                          px: 1.5,
-                          borderRadius: 2,
-                          background: "rgba(199, 84, 80, 0.1)",
-                          backdropFilter: "blur(10px)",
-                        }}
-                      >
-                        <CancelIcon
-                          fontSize="small"
-                          color="error"
-                          sx={{ mr: 0.5 }}
-                        />
-                        <Typography variant="body2" fontWeight={500}>
-                          {campaign.leads_rejected}
-                        </Typography>
-                      </Box>
                     </Box>
                   </Box>
-
-                  <Typography variant="caption" color="text.secondary">
-                    Created:{" "}
-                    {new Date(campaign.created_at).toLocaleDateString()}
-                  </Typography>
                 </CardContent>
 
-                <CardActions sx={{ p: 2, pt: 0 }}>
+                <CardActions sx={{ p: 1, pt: 0, justifyContent: "center" }}>
                   {campaign.status === "draft" ||
                   campaign.status === "ready" ? (
-                    <Button
+                    <IconButton
                       size="small"
-                      startIcon={<PlayIcon />}
                       onClick={() => handleStartCampaign(campaign.id)}
                       disabled={campaign.total_leads === 0}
-                      className="ios-button"
                       sx={{
-                        fontWeight: 600,
                         color: "success.main",
                         "&:hover": {
                           backgroundColor: "rgba(107, 154, 90, 0.08)",
                         },
                       }}
                     >
-                      Start
-                    </Button>
+                      <PlayIcon sx={{ fontSize: 16 }} />
+                    </IconButton>
                   ) : campaign.status === "running" ? (
-                    <Button
+                    <IconButton
                       size="small"
-                      startIcon={<PauseIcon />}
                       onClick={() => handlePauseCampaign(campaign.id)}
-                      className="ios-button"
                       sx={{
-                        fontWeight: 600,
                         color: "warning.main",
                         "&:hover": {
                           backgroundColor: "rgba(217, 156, 94, 0.08)",
                         },
                       }}
                     >
-                      Pause
-                    </Button>
+                      <PauseIcon sx={{ fontSize: 16 }} />
+                    </IconButton>
                   ) : campaign.status === "paused" ? (
-                    <Button
+                    <IconButton
                       size="small"
-                      startIcon={<PlayIcon />}
                       onClick={() => handleStartCampaign(campaign.id)}
-                      className="ios-button"
                       sx={{
-                        fontWeight: 600,
                         color: "success.main",
                         "&:hover": {
                           backgroundColor: "rgba(107, 154, 90, 0.08)",
                         },
                       }}
                     >
-                      Resume
-                    </Button>
+                      <PlayIcon sx={{ fontSize: 16 }} />
+                    </IconButton>
                   ) : null}
 
-                  <Button
+                  <IconButton
                     size="small"
-                    startIcon={<EditIcon />}
                     onClick={() => handleOpenEditDialog(campaign)}
-                    className="ios-button"
                     sx={{
-                      fontWeight: 600,
+                      color: "primary.main",
                       "&:hover": {
                         backgroundColor: "rgba(139, 94, 60, 0.08)",
                       },
                     }}
                   >
-                    Edit
-                  </Button>
+                    <EditIcon sx={{ fontSize: 20 }} />
+                  </IconButton>
 
-                  <Button
+                  <IconButton
                     size="small"
                     onClick={() => navigate(`/campaigns/${campaign.id}`)}
-                    variant="text"
-                    className="ios-button"
                     sx={{
-                      fontWeight: 600,
                       color: "primary.main",
                       "&:hover": {
                         backgroundColor: "rgba(200, 92, 60, 0.08)",
                       },
                     }}
                   >
-                    Details →
-                  </Button>
+                    <PeopleIcon sx={{ fontSize: 20 }} />
+                  </IconButton>
                 </CardActions>
               </Card>
             </Grid>

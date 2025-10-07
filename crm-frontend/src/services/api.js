@@ -80,6 +80,7 @@ export const sessionAPI = {
 // Voice Agent APIs
 export const voiceAgentAPI = {
   health: () => api.get("/health"),
+  status: () => api.get("/health"), // Use health endpoint to check if voice agent is online
   config: () => api.get("/api/config"),
   activeSessions: () => api.get("/api/sessions"),
   recordings: () => api.get("/api/recordings"),

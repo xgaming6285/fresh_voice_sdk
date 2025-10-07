@@ -4,7 +4,6 @@ import {
   Box,
   Paper,
   Typography,
-  IconButton,
   Chip,
   FormControl,
   InputLabel,
@@ -18,7 +17,6 @@ import {
   CheckCircle as CheckCircleIcon,
   Cancel as CancelIcon,
   PlayCircle as PlayIcon,
-  Refresh as RefreshIcon,
   Headset as HeadsetIcon,
 } from "@mui/icons-material";
 import { sessionAPI, voiceAgentAPI } from "../services/api";
@@ -108,7 +106,8 @@ function Sessions() {
     {
       field: "started_at",
       headerName: "Date/Time",
-      width: 180,
+      flex: 1.2,
+      minWidth: 180,
       valueFormatter: (params) => {
         return new Date(params.value).toLocaleString();
       },
@@ -116,12 +115,14 @@ function Sessions() {
     {
       field: "called_number",
       headerName: "Phone Number",
-      width: 150,
+      flex: 1,
+      minWidth: 150,
     },
     {
       field: "status",
       headerName: "Status",
-      width: 130,
+      flex: 0.9,
+      minWidth: 130,
       renderCell: (params) => (
         <Chip
           icon={getStatusIcon(params.value)}
@@ -134,7 +135,8 @@ function Sessions() {
     {
       field: "duration",
       headerName: "Duration",
-      width: 100,
+      flex: 0.7,
+      minWidth: 100,
       valueFormatter: (params) => {
         if (!params.value) return "-";
         const minutes = Math.floor(params.value / 60);
@@ -145,7 +147,8 @@ function Sessions() {
     {
       field: "campaign_id",
       headerName: "Campaign",
-      width: 120,
+      flex: 0.8,
+      minWidth: 120,
       renderCell: (params) => {
         return params.value ? (
           <Button
@@ -165,7 +168,8 @@ function Sessions() {
     {
       field: "transcript_status",
       headerName: "Transcript",
-      width: 120,
+      flex: 0.8,
+      minWidth: 120,
       renderCell: (params) => {
         if (!params.value) return "-";
         return (
@@ -180,14 +184,29 @@ function Sessions() {
     {
       field: "actions",
       headerName: "Actions",
-      width: 120,
+      flex: 0.9,
+      minWidth: 140,
       sortable: false,
       renderCell: (params) => (
         <Button
           size="small"
-          variant="outlined"
+          variant="contained"
           startIcon={<HeadsetIcon />}
           onClick={() => navigate(`/sessions/${params.row.session_id}`)}
+          sx={{
+            borderRadius: "24px",
+            textTransform: "none",
+            fontWeight: 600,
+            background: "linear-gradient(135deg, #F5A890 0%, #E89B85 100%)",
+            color: "#8B4513",
+            boxShadow: "0 2px 8px rgba(245, 168, 144, 0.3)",
+            "&:hover": {
+              background: "linear-gradient(135deg, #FFBFA8 0%, #F5A890 100%)",
+              boxShadow: "0 4px 12px rgba(245, 168, 144, 0.4)",
+              transform: "translateY(-1px)",
+            },
+            transition: "all 0.2s ease-in-out",
+          }}
         >
           Review
         </Button>
@@ -199,7 +218,8 @@ function Sessions() {
     {
       field: "start_time",
       headerName: "Date/Time",
-      width: 180,
+      flex: 1.2,
+      minWidth: 180,
       valueFormatter: (params) => {
         return new Date(params.value).toLocaleString();
       },
@@ -207,17 +227,20 @@ function Sessions() {
     {
       field: "caller_id",
       headerName: "Caller",
-      width: 150,
+      flex: 1,
+      minWidth: 150,
     },
     {
       field: "called_number",
       headerName: "Called",
-      width: 150,
+      flex: 1,
+      minWidth: 150,
     },
     {
       field: "duration_seconds",
       headerName: "Duration",
-      width: 100,
+      flex: 0.7,
+      minWidth: 100,
       valueFormatter: (params) => {
         if (!params.value) return "-";
         const minutes = Math.floor(params.value / 60);
@@ -228,7 +251,8 @@ function Sessions() {
     {
       field: "has_transcripts",
       headerName: "Transcripts",
-      width: 120,
+      flex: 0.9,
+      minWidth: 120,
       renderCell: (params) => (
         <Chip
           label={params.value ? "Available" : "None"}
@@ -240,7 +264,8 @@ function Sessions() {
     {
       field: "audio_files",
       headerName: "Audio Files",
-      width: 200,
+      flex: 1.3,
+      minWidth: 140,
       renderCell: (params) => {
         const fileCount = Object.keys(params.value || {}).length;
         return `${fileCount} files`;
@@ -249,14 +274,29 @@ function Sessions() {
     {
       field: "actions",
       headerName: "Actions",
-      width: 120,
+      flex: 0.9,
+      minWidth: 140,
       sortable: false,
       renderCell: (params) => (
         <Button
           size="small"
-          variant="outlined"
+          variant="contained"
           startIcon={<PlayIcon />}
           onClick={() => navigate(`/sessions/${params.row.session_id}`)}
+          sx={{
+            borderRadius: "24px",
+            textTransform: "none",
+            fontWeight: 600,
+            background: "linear-gradient(135deg, #F5A890 0%, #E89B85 100%)",
+            color: "#8B4513",
+            boxShadow: "0 2px 8px rgba(245, 168, 144, 0.3)",
+            "&:hover": {
+              background: "linear-gradient(135deg, #FFBFA8 0%, #F5A890 100%)",
+              boxShadow: "0 4px 12px rgba(245, 168, 144, 0.4)",
+              transform: "translateY(-1px)",
+            },
+            transition: "all 0.2s ease-in-out",
+          }}
         >
           Review
         </Button>
@@ -266,78 +306,6 @@ function Sessions() {
 
   return (
     <Box className="fade-in">
-      <Box
-        display="flex"
-        justifyContent="space-between"
-        alignItems="center"
-        mb={4}
-      >
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          <Typography variant="h4">📞</Typography>
-          <Typography
-            variant="h4"
-            sx={{
-              fontWeight: 700,
-              background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
-              WebkitBackgroundClip: "text",
-              WebkitTextFillColor: "transparent",
-              backgroundClip: "text",
-            }}
-          >
-            Call Sessions
-          </Typography>
-        </Box>
-        <Box display="flex" alignItems="center" gap={2}>
-          <FormControl
-            size="small"
-            sx={{
-              minWidth: 150,
-              "& .MuiOutlinedInput-root": {
-                borderRadius: 2,
-                "&:hover fieldset": {
-                  borderColor: "primary.main",
-                },
-              },
-            }}
-          >
-            <InputLabel>Status Filter</InputLabel>
-            <Select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              label="Status Filter"
-            >
-              <MenuItem value="">All</MenuItem>
-              <MenuItem value="answered">Answered</MenuItem>
-              <MenuItem value="rejected">Rejected</MenuItem>
-              <MenuItem value="no_answer">No Answer</MenuItem>
-              <MenuItem value="failed">Failed</MenuItem>
-              <MenuItem value="in_call">In Call</MenuItem>
-            </Select>
-          </FormControl>
-          <IconButton
-            onClick={() => {
-              loadSessions();
-              loadRecordings();
-              loadActiveVoiceSessions();
-            }}
-            className="ios-button"
-            sx={{
-              background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
-              color: "white",
-              boxShadow: "0 4px 16px rgba(200, 92, 60, 0.3)",
-              "&:hover": {
-                background: "linear-gradient(135deg, #E07B5F 0%, #C85C3C 100%)",
-                transform: "rotate(180deg)",
-                boxShadow: "0 8px 24px rgba(200, 92, 60, 0.4)",
-              },
-              transition: "all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)",
-            }}
-          >
-            <RefreshIcon />
-          </IconButton>
-        </Box>
-      </Box>
-
       {/* Active Sessions */}
       {activeVoiceSessions.length > 0 && (
         <Paper
@@ -402,11 +370,46 @@ function Sessions() {
         }}
       >
         <Box p={3}>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
-            <Typography variant="h6">📊</Typography>
-            <Typography variant="h6" fontWeight={700}>
-              CRM Call Sessions
-            </Typography>
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              mb: 2,
+            }}
+          >
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+              <Typography variant="h6">📊</Typography>
+              <Typography variant="h6" fontWeight={700}>
+                CRM Call Sessions
+              </Typography>
+            </Box>
+            <FormControl
+              size="small"
+              sx={{
+                minWidth: 150,
+                "& .MuiOutlinedInput-root": {
+                  borderRadius: 2,
+                  "&:hover fieldset": {
+                    borderColor: "primary.main",
+                  },
+                },
+              }}
+            >
+              <InputLabel>Status Filter</InputLabel>
+              <Select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                label="Status Filter"
+              >
+                <MenuItem value="">All</MenuItem>
+                <MenuItem value="answered">Answered</MenuItem>
+                <MenuItem value="rejected">Rejected</MenuItem>
+                <MenuItem value="no_answer">No Answer</MenuItem>
+                <MenuItem value="failed">Failed</MenuItem>
+                <MenuItem value="in_call">In Call</MenuItem>
+              </Select>
+            </FormControl>
           </Box>
         </Box>
         <DataGrid

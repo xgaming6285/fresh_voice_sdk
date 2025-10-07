@@ -559,102 +559,6 @@ ftd,Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
 
   return (
     <Box className="fade-in">
-      <Box
-        display="flex"
-        justifyContent="space-between"
-        alignItems="center"
-        mb={4}
-      >
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          <Typography variant="h4">👥</Typography>
-          <Typography
-            variant="h4"
-            sx={{
-              fontWeight: 700,
-              background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
-              WebkitBackgroundClip: "text",
-              WebkitTextFillColor: "transparent",
-              backgroundClip: "text",
-            }}
-          >
-            Leads
-          </Typography>
-        </Box>
-        <Box sx={{ display: "flex", gap: 1 }}>
-          <Button
-            variant="outlined"
-            startIcon={<DownloadIcon />}
-            onClick={handleExportTemplate}
-            className="ios-button"
-            sx={{
-              borderColor: "divider",
-              color: "text.secondary",
-              fontWeight: 600,
-              backdropFilter: "blur(10px)",
-              background: "rgba(255, 255, 255, 0.5)",
-              "&:hover": {
-                borderColor: "primary.light",
-                backgroundColor: "rgba(200, 92, 60, 0.08)",
-                color: "primary.main",
-                "& .MuiSvgIcon-root": {
-                  transform: "translateY(2px)",
-                },
-              },
-              transition: "all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
-            }}
-          >
-            Template
-          </Button>
-          <Button
-            variant="outlined"
-            startIcon={<UploadIcon />}
-            onClick={() => setImportDialog(true)}
-            className="ios-button"
-            sx={{
-              borderColor: "info.light",
-              color: "info.main",
-              fontWeight: 600,
-              backdropFilter: "blur(10px)",
-              background: "rgba(92, 138, 166, 0.08)",
-              "&:hover": {
-                borderColor: "info.main",
-                backgroundColor: "rgba(92, 138, 166, 0.15)",
-                "& .MuiSvgIcon-root": {
-                  transform: "translateY(-2px)",
-                },
-              },
-              transition: "all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
-            }}
-          >
-            Import CSV
-          </Button>
-          <Button
-            variant="contained"
-            startIcon={<AddIcon />}
-            onClick={handleAddLead}
-            className="ios-button"
-            sx={{
-              background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
-              fontWeight: 600,
-              boxShadow: "0 4px 16px rgba(200, 92, 60, 0.3)",
-              px: 3,
-              "&:hover": {
-                background: "linear-gradient(135deg, #E07B5F 0%, #C85C3C 100%)",
-                boxShadow: "0 8px 24px rgba(200, 92, 60, 0.4)",
-                "& .MuiSvgIcon-root": {
-                  transform: "rotate(90deg)",
-                },
-              },
-              "& .MuiSvgIcon-root": {
-                transition: "transform 0.3s ease",
-              },
-            }}
-          >
-            Add Lead
-          </Button>
-        </Box>
-      </Box>
-
       <Paper
         className="glass-effect ios-blur-container"
         sx={{
@@ -674,6 +578,28 @@ ftd,Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
           },
         }}
       >
+        <Box
+          sx={{
+            position: "absolute",
+            top: 8,
+            right: 16,
+            zIndex: 10,
+          }}
+        >
+          <IconButton
+            onClick={handleAddLead}
+            sx={{
+              color: "#C85C3C",
+              "&:hover": {
+                backgroundColor: "rgba(200, 92, 60, 0.08)",
+                transform: "scale(1.1) rotate(90deg)",
+              },
+              transition: "all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
+            }}
+          >
+            <AddIcon />
+          </IconButton>
+        </Box>
         <DataGrid
           rows={leads}
           columns={columns}

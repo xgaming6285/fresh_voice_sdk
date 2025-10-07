@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
   AppBar,
@@ -24,14 +24,30 @@ import {
   Phone as PhoneIcon,
   Assessment as AssessmentIcon,
 } from "@mui/icons-material";
+import { voiceAgentAPI } from "../services/api";
 
 const drawerWidth = 240;
 
 const menuItems = [
-  { text: "Dashboard", icon: <DashboardIcon />, path: "/dashboard" },
-  { text: "Leads", icon: <PeopleIcon />, path: "/leads" },
-  { text: "Campaigns", icon: <CampaignIcon />, path: "/campaigns" },
-  { text: "Call Sessions", icon: <PhoneIcon />, path: "/sessions" },
+  {
+    text: "Dashboard",
+    icon: <DashboardIcon />,
+    path: "/dashboard",
+    emoji: "📊",
+  },
+  { text: "Leads", icon: <PeopleIcon />, path: "/leads", emoji: "👥" },
+  {
+    text: "Campaigns",
+    icon: <CampaignIcon />,
+    path: "/campaigns",
+    emoji: "🎯",
+  },
+  {
+    text: "Call Sessions",
+    icon: <PhoneIcon />,
+    path: "/sessions",
+    emoji: "📞",
+  },
 ];
 
 function Layout({ children }) {
@@ -39,6 +55,27 @@ function Layout({ children }) {
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [activeCalls, setActiveCalls] = useState(0);
+  const [voiceAgentOnline, setVoiceAgentOnline] = useState(false);
+
+  useEffect(() => {
+    // Check voice agent status
+    const checkVoiceAgentStatus = async () => {
+      try {
+        await voiceAgentAPI.status();
+        setVoiceAgentOnline(true);
+      } catch (error) {
+        setVoiceAgentOnline(false);
+      }
+    };
+
+    // Check status immediately
+    checkVoiceAgentStatus();
+
+    // Check status every 10 seconds
+    const interval = setInterval(checkVoiceAgentStatus, 10000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   const handleDrawerToggle = () => {
     setMobileOpen(!mobileOpen);
@@ -121,57 +158,6 @@ function Layout({ children }) {
           </ListItem>
         ))}
       </List>
-      <Divider sx={{ borderColor: "rgba(200, 92, 60, 0.1)" }} />
-      <Box
-        className="glass-effect-colored"
-        sx={{
-          p: 2,
-          m: 2,
-          borderRadius: 3,
-          animation: "springIn 0.8s cubic-bezier(0.34, 1.56, 0.64, 1)",
-          animationDelay: "0.5s",
-          animationFillMode: "both",
-        }}
-      >
-        <Typography variant="body2" color="text.secondary" fontWeight={600}>
-          Voice Agent Status
-        </Typography>
-        <Box sx={{ display: "flex", alignItems: "center", mt: 1 }}>
-          <Box
-            sx={{
-              width: 10,
-              height: 10,
-              borderRadius: "50%",
-              backgroundColor: "success.main",
-              mr: 1,
-              animation: "pulse 2s ease-in-out infinite",
-              boxShadow: "0 0 10px rgba(107, 154, 90, 0.6)",
-            }}
-          />
-          <Typography variant="body2" fontWeight={500}>
-            Online
-          </Typography>
-        </Box>
-        {activeCalls > 0 && (
-          <Box
-            sx={{
-              mt: 1,
-              p: 1,
-              borderRadius: 1.5,
-              backgroundColor: "error.light",
-              color: "white",
-              animation: "pulse 1.5s ease-in-out infinite",
-            }}
-          >
-            <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-              <Typography variant="body2">📞</Typography>
-              <Typography variant="body2" fontWeight={600}>
-                Active Calls: {activeCalls}
-              </Typography>
-            </Box>
-          </Box>
-        )}
-      </Box>
     </div>
   );
 
@@ -210,44 +196,50 @@ function Layout({ children }) {
           >
             <MenuIcon />
           </IconButton>
-          <Typography
-            variant="h6"
-            noWrap
-            component="div"
-            sx={{
-              flexGrow: 1,
-              fontWeight: 700,
-              letterSpacing: "-0.02em",
-            }}
+          <Box
+            sx={{ display: "flex", alignItems: "center", gap: 1, flexGrow: 1 }}
           >
-            {menuItems.find((item) => item.path === location.pathname)?.text ||
-              "Voice Agent CRM"}
-          </Typography>
-          <IconButton
-            color="inherit"
-            sx={{
-              "&:hover": {
-                backgroundColor: "rgba(255, 255, 255, 0.15)",
-                transform: "scale(1.1) rotate(10deg)",
-              },
-              transition: "all 0.3s ease",
-            }}
-          >
-            <Badge
-              badgeContent={activeCalls}
-              color="error"
+            <Typography variant="h4">
+              {menuItems.find((item) => item.path === location.pathname)
+                ?.emoji || "🎙️"}
+            </Typography>
+            <Typography
+              variant="h4"
+              noWrap
+              component="div"
               sx={{
-                "& .MuiBadge-badge": {
-                  animation:
-                    activeCalls > 0
-                      ? "pulse 1.5s ease-in-out infinite"
-                      : "none",
-                },
+                fontWeight: 700,
+                letterSpacing: "-0.02em",
               }}
             >
-              <PhoneIcon />
-            </Badge>
-          </IconButton>
+              {menuItems.find((item) => item.path === location.pathname)
+                ?.text || "Voice Agent CRM"}
+            </Typography>
+          </Box>
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              gap: 1,
+            }}
+          >
+            <Box
+              sx={{
+                width: 12,
+                height: 12,
+                borderRadius: "50%",
+                backgroundColor: voiceAgentOnline
+                  ? "success.main"
+                  : "error.main",
+                animation: voiceAgentOnline
+                  ? "pulse 2s ease-in-out infinite"
+                  : "none",
+                boxShadow: voiceAgentOnline
+                  ? "0 0 12px rgba(107, 154, 90, 0.8)"
+                  : "0 0 12px rgba(211, 47, 47, 0.8)",
+              }}
+            />
+          </Box>
         </Toolbar>
       </AppBar>
       <Box
