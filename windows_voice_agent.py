@@ -60,15 +60,15 @@ except Exception as e:
 
 # Try faster-whisper (Windows-friendly, no numba dependency) - only if Gemini not available
 if not GEMINI_API_AVAILABLE:
-try:
-    from faster_whisper import WhisperModel
-    FASTER_WHISPER_AVAILABLE = True
-    TRANSCRIPTION_METHOD = "faster_whisper"
-    logger.info("✅ faster-whisper library loaded successfully (recommended for Windows)")
-except ImportError:
-    logger.info("💡 faster-whisper not available, trying openai-whisper...")
-except Exception as e:
-    logger.warning(f"⚠️ faster-whisper failed to load: {e}")
+    try:
+        from faster_whisper import WhisperModel
+        FASTER_WHISPER_AVAILABLE = True
+        TRANSCRIPTION_METHOD = "faster_whisper"
+        logger.info("✅ faster-whisper library loaded successfully (recommended for Windows)")
+    except ImportError:
+        logger.info("💡 faster-whisper not available, trying openai-whisper...")
+    except Exception as e:
+        logger.warning(f"⚠️ faster-whisper failed to load: {e}")
 
 # Try original openai-whisper (local, better for Bulgarian)
 if not GEMINI_API_AVAILABLE and not FASTER_WHISPER_AVAILABLE:
@@ -4623,8 +4623,8 @@ async def get_session_transcripts(session_id: str):
         session_info_path = session_dir / "session_info.json"
         session_info = {}
         if session_info_path.exists():
-        with open(session_info_path, 'r', encoding='utf-8') as f:
-            session_info = json.load(f)
+            with open(session_info_path, 'r', encoding='utf-8') as f:
+                session_info = json.load(f)
         
         # Get transcript information from session_info if available
         transcripts_info = session_info.get('transcripts', {})
@@ -4643,9 +4643,9 @@ async def get_session_transcripts(session_id: str):
                 # Use the first matching file
                 transcript_path = txt_files[0]
                 
-                    # Read transcript content
-                    with open(transcript_path, 'r', encoding='utf-8') as f:
-                        transcript_content = f.read()
+                # Read transcript content
+                with open(transcript_path, 'r', encoding='utf-8') as f:
+                    transcript_content = f.read()
                 
                 # Get metadata from session_info if available, otherwise use defaults
                 transcript_info = transcripts_info.get(audio_type, {})
@@ -4803,42 +4803,14 @@ async def _background_transcribe_session(session_dir: Path, caller_id: str):
     try:
         logger.info(f"🎤 Background transcription started for {session_dir.name}")
         logger.info(f"🚀 Using fast Gemini API transcription script")
-        
-        # Detect language from caller ID
-        caller_country = detect_caller_country(caller_id)
-        language_info = get_language_config(caller_country)
-        language_hint = None
-        
-        # Map language codes to supported codes
-        lang_code = language_info.get('code', 'en')
-        if lang_code.startswith('en'):
-            language_hint = 'en'
-        elif lang_code.startswith('bg'):
-            language_hint = 'bg'
-        elif lang_code.startswith('ro'):
-            language_hint = 'ro'
-        elif lang_code.startswith('el'):
-            language_hint = 'el'
-        elif lang_code.startswith('de'):
-            language_hint = 'de'
-        elif lang_code.startswith('fr'):
-            language_hint = 'fr'
-        elif lang_code.startswith('es'):
-            language_hint = 'es'
-        elif lang_code.startswith('it'):
-            language_hint = 'it'
-        elif lang_code.startswith('ru'):
-            language_hint = 'ru'
-        
-        logger.info(f"Using language hint: {language_hint} (from {language_info.get('lang', 'Unknown')})")
+        logger.info(f"🌍 Using automatic language detection (no language hint)")
         
         # Call the transcribe_audio.py script using subprocess
         import subprocess
         import sys
         
+        # No language hint - let Gemini auto-detect the language(s)
         cmd = [sys.executable, "transcribe_audio.py", str(session_dir), "--quiet"]
-        if language_hint:
-            cmd.extend(["--language", language_hint])
         
         logger.info(f"Running transcription command: {' '.join(cmd)}")
         
@@ -4852,7 +4824,7 @@ async def _background_transcribe_session(session_dir: Path, caller_id: str):
         
         if process.returncode == 0:
             logger.info(f"✅ Transcription script completed successfully")
-        logger.info(f"✅ Background transcription completed for {session_dir.name}")
+            logger.info(f"✅ Background transcription completed for {session_dir.name}")
         else:
             logger.error(f"❌ Transcription script failed with return code {process.returncode}")
             logger.error(f"stderr: {process.stderr}")

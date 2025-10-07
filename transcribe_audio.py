@@ -19,6 +19,22 @@ import base64
 from pathlib import Path
 from datetime import datetime
 
+# Fix Windows console encoding issues
+if sys.platform == 'win32':
+    try:
+        # Try to set UTF-8 encoding for stdout/stderr
+        import codecs
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8')
+            sys.stderr.reconfigure(encoding='utf-8')
+        else:
+            # Fallback for older Python versions
+            sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+            sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
+    except Exception:
+        # If reconfiguration fails, continue without UTF-8 (emojis may not display)
+        pass
+
 # Load environment variables from .env file if it exists
 def load_env_file():
     """Load environment variables from .env file"""
