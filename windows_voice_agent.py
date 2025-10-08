@@ -4827,6 +4827,8 @@ async def _background_transcribe_session(session_dir: Path, caller_id: str):
             cmd,
             capture_output=True,
             text=True,
+            encoding='utf-8',  # Force UTF-8 encoding (Windows default is cp1252)
+            errors='replace',   # Replace invalid characters instead of crashing
             timeout=300  # 5 minute timeout (should be more than enough with Gemini)
         )
         

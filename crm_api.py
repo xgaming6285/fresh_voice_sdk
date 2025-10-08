@@ -902,7 +902,25 @@ async def get_call_session(session_id: str, current_user: User = Depends(get_cur
         ).first()
         
         if not call_session:
-            raise HTTPException(status_code=404, detail="Call session not found")
+            # Check if recording exists on disk but not in database (orphaned recording)
+            import os
+            from pathlib import Path
+            recording_dir = Path("sessions") / session_id
+            if recording_dir.exists():
+                logger.warning(f"Found orphaned recording for {session_id}, creating database entry")
+                # Create database entry for orphaned recording
+                call_session = CallSession(
+                    session_id=session_id,
+                    owner_id=current_user.id,  # Assign to current user
+                    status=CallStatus.COMPLETED,
+                    started_at=datetime.utcnow(),
+                    ended_at=datetime.utcnow()
+                )
+                session.add(call_session)
+                session.commit()
+                session.refresh(call_session)
+            else:
+                raise HTTPException(status_code=404, detail="Call session not found")
         
         # Check access rights
         if current_user.role == UserRole.AGENT:
