@@ -21,7 +21,7 @@ from crm_database import (
     Gender, CampaignStatus, CallStatus, UserRole,
     LeadManager, CampaignManager
 )
-from crm_auth import get_current_user, get_current_admin, user_to_dict
+from crm_auth import get_current_user, get_current_admin, check_subscription, user_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -229,7 +229,7 @@ def get_accessible_campaign_ids(user: User, session) -> List[int]:
 
 # Lead endpoints
 @crm_router.post("/leads", response_model=LeadResponse)
-async def create_lead(lead: LeadCreate, current_user: User = Depends(get_current_user)):
+async def create_lead(lead: LeadCreate, current_user: User = Depends(check_subscription)):
     """Create a new lead"""
     try:
         session = get_session()
@@ -315,7 +315,7 @@ async def get_lead(lead_id: int, current_user: User = Depends(get_current_user))
         session.close()
 
 @crm_router.put("/leads/{lead_id}", response_model=LeadResponse)
-async def update_lead(lead_id: int, lead_update: LeadUpdate, current_user: User = Depends(get_current_user)):
+async def update_lead(lead_id: int, lead_update: LeadUpdate, current_user: User = Depends(check_subscription)):
     """Update a lead"""
     try:
         session = get_session()
@@ -349,7 +349,7 @@ async def update_lead(lead_id: int, lead_update: LeadUpdate, current_user: User 
         session.close()
 
 @crm_router.delete("/leads/{lead_id}")
-async def delete_lead(lead_id: int, current_user: User = Depends(get_current_user)):
+async def delete_lead(lead_id: int, current_user: User = Depends(check_subscription)):
     """Delete a lead"""
     try:
         session = get_session()
@@ -376,7 +376,7 @@ async def delete_lead(lead_id: int, current_user: User = Depends(get_current_use
         session.close()
 
 @crm_router.post("/leads/import")
-async def import_leads(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
+async def import_leads(file: UploadFile = File(...), current_user: User = Depends(check_subscription)):
     """Import leads from CSV file"""
     try:
         if not file.filename.endswith('.csv'):
@@ -431,7 +431,7 @@ async def import_leads(file: UploadFile = File(...), current_user: User = Depend
 
 # Campaign endpoints
 @crm_router.post("/campaigns", response_model=CampaignResponse)
-async def create_campaign(campaign: CampaignCreate, current_user: User = Depends(get_current_user)):
+async def create_campaign(campaign: CampaignCreate, current_user: User = Depends(check_subscription)):
     """Create a new campaign"""
     try:
         session = get_session()
@@ -505,7 +505,7 @@ async def get_campaign(campaign_id: int, current_user: User = Depends(get_curren
         session.close()
 
 @crm_router.put("/campaigns/{campaign_id}", response_model=CampaignResponse)
-async def update_campaign(campaign_id: int, campaign_update: CampaignUpdate, current_user: User = Depends(get_current_user)):
+async def update_campaign(campaign_id: int, campaign_update: CampaignUpdate, current_user: User = Depends(check_subscription)):
     """Update a campaign"""
     try:
         session = get_session()
@@ -539,7 +539,7 @@ async def update_campaign(campaign_id: int, campaign_update: CampaignUpdate, cur
         session.close()
 
 @crm_router.post("/campaigns/{campaign_id}/leads")
-async def add_leads_to_campaign(campaign_id: int, request: AddLeadsToCampaign, current_user: User = Depends(get_current_user)):
+async def add_leads_to_campaign(campaign_id: int, request: AddLeadsToCampaign, current_user: User = Depends(check_subscription)):
     """Add leads to a campaign"""
     try:
         session = get_session()
@@ -705,7 +705,7 @@ async def get_campaign_leads(
         session.close()
 
 @crm_router.post("/campaigns/{campaign_id}/start", response_model=Dict[str, Any])
-async def start_campaign(campaign_id: int, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user)):
+async def start_campaign(campaign_id: int, background_tasks: BackgroundTasks, current_user: User = Depends(check_subscription)):
     """Start a campaign"""
     try:
         session = get_session()

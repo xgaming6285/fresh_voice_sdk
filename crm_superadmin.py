@@ -563,11 +563,21 @@ async def approve_payment_request(
         admin.max_agents = (admin.max_agents or 0) + payment_request.num_agents
         admin.updated_at = datetime.utcnow()
         
+        # Set subscription end date (30 days from now or extend existing)
+        from datetime import timedelta
+        if admin.subscription_end_date and admin.subscription_end_date > datetime.utcnow():
+            # Extend existing subscription
+            admin.subscription_end_date = admin.subscription_end_date + timedelta(days=30)
+        else:
+            # New or expired subscription
+            admin.subscription_end_date = datetime.utcnow() + timedelta(days=30)
+        
         session.commit()
         
         return {
-            "message": f"Payment approved. Admin now has {admin.max_agents} agent slots.",
-            "new_max_agents": admin.max_agents
+            "message": f"Payment approved. Admin now has {admin.max_agents} agent slots with subscription until {admin.subscription_end_date.strftime('%Y-%m-%d')}.",
+            "new_max_agents": admin.max_agents,
+            "subscription_end_date": admin.subscription_end_date.isoformat()
         }
     except HTTPException:
         raise

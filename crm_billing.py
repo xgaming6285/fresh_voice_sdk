@@ -30,6 +30,9 @@ class BillingInfo(BaseModel):
     available_slots: int
     price_per_agent: float
     payment_wallet: Optional[str]
+    is_subscription_active: bool
+    subscription_end_date: Optional[str]
+    days_remaining: Optional[int]
 
 class PaymentRequestCreate(BaseModel):
     num_agents: int = Field(gt=0, description="Number of agent slots to purchase")
@@ -70,12 +73,26 @@ async def get_billing_info(current_user: User = Depends(get_current_admin)):
         
         payment_wallet = wallet_setting.value if wallet_setting else None
         
+        # Check subscription status
+        is_active = current_user.is_subscription_active()
+        subscription_end = None
+        days_remaining = None
+        
+        if current_user.subscription_end_date:
+            subscription_end = current_user.subscription_end_date.isoformat()
+            if current_user.subscription_end_date > datetime.utcnow():
+                delta = current_user.subscription_end_date - datetime.utcnow()
+                days_remaining = delta.days
+        
         return BillingInfo(
             current_agents=current_agents,
             max_agents=current_user.max_agents or 0,
             available_slots=(current_user.max_agents or 0) - current_agents,
             price_per_agent=PRICE_PER_AGENT,
-            payment_wallet=payment_wallet
+            payment_wallet=payment_wallet,
+            is_subscription_active=is_active,
+            subscription_end_date=subscription_end,
+            days_remaining=days_remaining
         )
     except Exception as e:
         logger.error(f"Error getting billing info: {e}")

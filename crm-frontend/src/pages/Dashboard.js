@@ -9,7 +9,9 @@ import {
   CircularProgress,
   IconButton,
   Button,
+  Container,
 } from "@mui/material";
+import SubscriptionBanner from "../components/SubscriptionBanner";
 import {
   People as PeopleIcon,
   Campaign as CampaignIcon,
@@ -241,309 +243,317 @@ function Dashboard() {
   }
 
   return (
-    <Box className="fade-in">
-      {/* System Status */}
-      <Paper
-        className="glass-effect-colored ios-blur-container"
-        sx={{
-          p: 3,
-          mb: 4,
-          animation: "slideUp 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)",
-        }}
-      >
-        <Box
-          display="flex"
-          justifyContent="space-between"
-          alignItems="center"
-          mb={2}
+    <Container maxWidth="xl" sx={{ mt: 4, mb: 4 }}>
+      <SubscriptionBanner />
+      <Box className="fade-in">
+        {/* System Status */}
+        <Paper
+          className="glass-effect-colored ios-blur-container"
+          sx={{
+            p: 3,
+            mb: 4,
+            animation: "slideUp 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)",
+          }}
         >
-          <Typography variant="h6" fontWeight={700}>
-            System Status
-          </Typography>
-          <IconButton
-            onClick={loadDashboardData}
-            className="ios-button"
-            size="small"
-            sx={{
-              background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
-              color: "white",
-              boxShadow: "0 4px 16px rgba(200, 92, 60, 0.3)",
-              "&:hover": {
-                background: "linear-gradient(135deg, #E07B5F 0%, #C85C3C 100%)",
-                transform: "rotate(180deg)",
-                boxShadow: "0 8px 24px rgba(200, 92, 60, 0.4)",
-              },
-              transition: "all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)",
-            }}
+          <Box
+            display="flex"
+            justifyContent="space-between"
+            alignItems="center"
+            mb={2}
           >
-            <RefreshIcon />
-          </IconButton>
-        </Box>
-        <Grid container spacing={2} alignItems="center">
-          <Grid item xs={12} md={4}>
-            <Box display="flex" alignItems="center">
-              <Box
-                sx={{
-                  width: 12,
-                  height: 12,
-                  borderRadius: "50%",
-                  backgroundColor:
-                    systemHealth?.status === "healthy"
-                      ? "success.main"
-                      : "error.main",
-                  mr: 1,
-                  animation: "pulse 2s ease-in-out infinite",
-                  boxShadow:
-                    systemHealth?.status === "healthy"
-                      ? "0 0 15px rgba(107, 154, 90, 0.6)"
-                      : "0 0 15px rgba(199, 84, 80, 0.6)",
-                }}
-              />
-              <Typography fontWeight={600}>
-                Voice Agent:{" "}
+            <Typography variant="h6" fontWeight={700}>
+              System Status
+            </Typography>
+            <IconButton
+              onClick={loadDashboardData}
+              className="ios-button"
+              size="small"
+              sx={{
+                background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+                color: "white",
+                boxShadow: "0 4px 16px rgba(200, 92, 60, 0.3)",
+                "&:hover": {
+                  background:
+                    "linear-gradient(135deg, #E07B5F 0%, #C85C3C 100%)",
+                  transform: "rotate(180deg)",
+                  boxShadow: "0 8px 24px rgba(200, 92, 60, 0.4)",
+                },
+                transition: "all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)",
+              }}
+            >
+              <RefreshIcon />
+            </IconButton>
+          </Box>
+          <Grid container spacing={2} alignItems="center">
+            <Grid item xs={12} md={4}>
+              <Box display="flex" alignItems="center">
                 <Box
-                  component="span"
                   sx={{
-                    color:
+                    width: 12,
+                    height: 12,
+                    borderRadius: "50%",
+                    backgroundColor:
                       systemHealth?.status === "healthy"
                         ? "success.main"
                         : "error.main",
+                    mr: 1,
+                    animation: "pulse 2s ease-in-out infinite",
+                    boxShadow:
+                      systemHealth?.status === "healthy"
+                        ? "0 0 15px rgba(107, 154, 90, 0.6)"
+                        : "0 0 15px rgba(199, 84, 80, 0.6)",
+                  }}
+                />
+                <Typography fontWeight={600}>
+                  Voice Agent:{" "}
+                  <Box
+                    component="span"
+                    sx={{
+                      color:
+                        systemHealth?.status === "healthy"
+                          ? "success.main"
+                          : "error.main",
+                    }}
+                  >
+                    {systemHealth?.status === "healthy" ? "Online" : "Offline"}
+                  </Box>
+                </Typography>
+              </Box>
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                <Typography variant="body2">📞</Typography>
+                <Typography variant="body2" fontWeight={500}>
+                  Active Sessions: {systemHealth?.active_sessions || 0}
+                </Typography>
+              </Box>
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                <Typography variant="body2">📱</Typography>
+                <Typography variant="body2" fontWeight={500}>
+                  Phone: {systemHealth?.phone_number || "Not configured"}
+                </Typography>
+              </Box>
+            </Grid>
+          </Grid>
+        </Paper>
+
+        {/* Stats Cards */}
+        <Grid container spacing={3} mb={3}>
+          <Grid item xs={12} sm={6} md={3}>
+            <StatCard
+              title="Total Leads"
+              value={stats.totalLeads}
+              icon={<PeopleIcon color="primary" />}
+              color="primary"
+            />
+          </Grid>
+          <Grid item xs={12} sm={6} md={3}>
+            <StatCard
+              title="Active Campaigns"
+              value={stats.activeCampaigns}
+              icon={<CampaignIcon color="secondary" />}
+              color="secondary"
+            />
+          </Grid>
+          <Grid item xs={12} sm={6} md={3}>
+            <StatCard
+              title="Total Calls"
+              value={stats.totalCalls}
+              icon={<PhoneIcon color="info" />}
+              color="info"
+            />
+          </Grid>
+          <Grid item xs={12} sm={6} md={3}>
+            <StatCard
+              title="Success Rate"
+              value={
+                stats.totalCalls > 0
+                  ? `${Math.round(
+                      (stats.answeredCalls / stats.totalCalls) * 100
+                    )}%`
+                  : "0%"
+              }
+              icon={<CheckCircleIcon color="success" />}
+              color="success"
+            />
+          </Grid>
+        </Grid>
+
+        {/* Charts */}
+        <Grid container spacing={3} mb={4}>
+          <Grid item xs={12} md={8}>
+            <Paper
+              className="glass-effect ios-blur-container"
+              sx={{
+                p: 3,
+                animation: "springIn 0.7s cubic-bezier(0.34, 1.56, 0.64, 1)",
+                animationDelay: "0.1s",
+                animationFillMode: "both",
+              }}
+            >
+              <Box
+                sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}
+              >
+                <Typography variant="h6">📈</Typography>
+                <Typography variant="h6" fontWeight={700}>
+                  Call Trends (Last 7 Days)
+                </Typography>
+              </Box>
+              <Box height={300}>
+                <Line
+                  data={callTrendData}
+                  options={{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                      legend: {
+                        position: "top",
+                      },
+                    },
+                    scales: {
+                      y: {
+                        beginAtZero: true,
+                      },
+                    },
+                  }}
+                />
+              </Box>
+            </Paper>
+          </Grid>
+          <Grid item xs={12} md={4}>
+            <Paper
+              className="glass-effect ios-blur-container"
+              sx={{
+                p: 3,
+                animation: "springIn 0.7s cubic-bezier(0.34, 1.56, 0.64, 1)",
+                animationDelay: "0.2s",
+                animationFillMode: "both",
+              }}
+            >
+              <Box
+                sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}
+              >
+                <Typography variant="h6">🎯</Typography>
+                <Typography variant="h6" fontWeight={700}>
+                  Call Outcomes
+                </Typography>
+              </Box>
+              <Box
+                height={300}
+                display="flex"
+                justifyContent="center"
+                alignItems="center"
+              >
+                <Doughnut
+                  data={callSuccessData}
+                  options={{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                      legend: {
+                        position: "bottom",
+                      },
+                    },
+                  }}
+                />
+              </Box>
+            </Paper>
+          </Grid>
+        </Grid>
+
+        {/* Recent Sessions */}
+        <Paper
+          className="glass-effect ios-blur-container"
+          sx={{
+            p: 3,
+            animation: "slideUp 0.8s cubic-bezier(0.34, 1.56, 0.64, 1)",
+            animationDelay: "0.3s",
+            animationFillMode: "both",
+          }}
+        >
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
+            <Typography variant="h6">📞</Typography>
+            <Typography variant="h6" fontWeight={700}>
+              Recent Call Sessions
+            </Typography>
+          </Box>
+          {recentSessions.length > 0 ? (
+            <Box>
+              {recentSessions.map((session) => (
+                <Box
+                  key={session.id}
+                  sx={{
+                    p: 2,
+                    borderBottom: "1px solid",
+                    borderColor: "divider",
+                    "&:last-child": { borderBottom: 0 },
                   }}
                 >
-                  {systemHealth?.status === "healthy" ? "Online" : "Offline"}
-                </Box>
-              </Typography>
-            </Box>
-          </Grid>
-          <Grid item xs={12} md={4}>
-            <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-              <Typography variant="body2">📞</Typography>
-              <Typography variant="body2" fontWeight={500}>
-                Active Sessions: {systemHealth?.active_sessions || 0}
-              </Typography>
-            </Box>
-          </Grid>
-          <Grid item xs={12} md={4}>
-            <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-              <Typography variant="body2">📱</Typography>
-              <Typography variant="body2" fontWeight={500}>
-                Phone: {systemHealth?.phone_number || "Not configured"}
-              </Typography>
-            </Box>
-          </Grid>
-        </Grid>
-      </Paper>
-
-      {/* Stats Cards */}
-      <Grid container spacing={3} mb={3}>
-        <Grid item xs={12} sm={6} md={3}>
-          <StatCard
-            title="Total Leads"
-            value={stats.totalLeads}
-            icon={<PeopleIcon color="primary" />}
-            color="primary"
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <StatCard
-            title="Active Campaigns"
-            value={stats.activeCampaigns}
-            icon={<CampaignIcon color="secondary" />}
-            color="secondary"
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <StatCard
-            title="Total Calls"
-            value={stats.totalCalls}
-            icon={<PhoneIcon color="info" />}
-            color="info"
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <StatCard
-            title="Success Rate"
-            value={
-              stats.totalCalls > 0
-                ? `${Math.round(
-                    (stats.answeredCalls / stats.totalCalls) * 100
-                  )}%`
-                : "0%"
-            }
-            icon={<CheckCircleIcon color="success" />}
-            color="success"
-          />
-        </Grid>
-      </Grid>
-
-      {/* Charts */}
-      <Grid container spacing={3} mb={4}>
-        <Grid item xs={12} md={8}>
-          <Paper
-            className="glass-effect ios-blur-container"
-            sx={{
-              p: 3,
-              animation: "springIn 0.7s cubic-bezier(0.34, 1.56, 0.64, 1)",
-              animationDelay: "0.1s",
-              animationFillMode: "both",
-            }}
-          >
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}>
-              <Typography variant="h6">📈</Typography>
-              <Typography variant="h6" fontWeight={700}>
-                Call Trends (Last 7 Days)
-              </Typography>
-            </Box>
-            <Box height={300}>
-              <Line
-                data={callTrendData}
-                options={{
-                  responsive: true,
-                  maintainAspectRatio: false,
-                  plugins: {
-                    legend: {
-                      position: "top",
-                    },
-                  },
-                  scales: {
-                    y: {
-                      beginAtZero: true,
-                    },
-                  },
-                }}
-              />
-            </Box>
-          </Paper>
-        </Grid>
-        <Grid item xs={12} md={4}>
-          <Paper
-            className="glass-effect ios-blur-container"
-            sx={{
-              p: 3,
-              animation: "springIn 0.7s cubic-bezier(0.34, 1.56, 0.64, 1)",
-              animationDelay: "0.2s",
-              animationFillMode: "both",
-            }}
-          >
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}>
-              <Typography variant="h6">🎯</Typography>
-              <Typography variant="h6" fontWeight={700}>
-                Call Outcomes
-              </Typography>
-            </Box>
-            <Box
-              height={300}
-              display="flex"
-              justifyContent="center"
-              alignItems="center"
-            >
-              <Doughnut
-                data={callSuccessData}
-                options={{
-                  responsive: true,
-                  maintainAspectRatio: false,
-                  plugins: {
-                    legend: {
-                      position: "bottom",
-                    },
-                  },
-                }}
-              />
-            </Box>
-          </Paper>
-        </Grid>
-      </Grid>
-
-      {/* Recent Sessions */}
-      <Paper
-        className="glass-effect ios-blur-container"
-        sx={{
-          p: 3,
-          animation: "slideUp 0.8s cubic-bezier(0.34, 1.56, 0.64, 1)",
-          animationDelay: "0.3s",
-          animationFillMode: "both",
-        }}
-      >
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
-          <Typography variant="h6">📞</Typography>
-          <Typography variant="h6" fontWeight={700}>
-            Recent Call Sessions
-          </Typography>
-        </Box>
-        {recentSessions.length > 0 ? (
-          <Box>
-            {recentSessions.map((session) => (
-              <Box
-                key={session.id}
-                sx={{
-                  p: 2,
-                  borderBottom: "1px solid",
-                  borderColor: "divider",
-                  "&:last-child": { borderBottom: 0 },
-                }}
-              >
-                <Grid container alignItems="center" spacing={2}>
-                  <Grid item xs={12} md={3}>
-                    <Typography variant="body2" color="textSecondary">
-                      {new Date(session.started_at).toLocaleString()}
-                    </Typography>
-                  </Grid>
-                  <Grid item xs={12} md={3}>
-                    <Typography>{session.called_number}</Typography>
-                  </Grid>
-                  <Grid item xs={12} md={2}>
-                    <Box display="flex" alignItems="center">
-                      {session.status === "answered" ? (
-                        <CheckCircleIcon
-                          color="success"
-                          fontSize="small"
-                          sx={{ mr: 1 }}
-                        />
-                      ) : (
-                        <CancelIcon
-                          color="error"
-                          fontSize="small"
-                          sx={{ mr: 1 }}
-                        />
-                      )}
-                      <Typography variant="body2">
-                        {session.status.charAt(0).toUpperCase() +
-                          session.status.slice(1)}
+                  <Grid container alignItems="center" spacing={2}>
+                    <Grid item xs={12} md={3}>
+                      <Typography variant="body2" color="textSecondary">
+                        {new Date(session.started_at).toLocaleString()}
                       </Typography>
-                    </Box>
+                    </Grid>
+                    <Grid item xs={12} md={3}>
+                      <Typography>{session.called_number}</Typography>
+                    </Grid>
+                    <Grid item xs={12} md={2}>
+                      <Box display="flex" alignItems="center">
+                        {session.status === "answered" ? (
+                          <CheckCircleIcon
+                            color="success"
+                            fontSize="small"
+                            sx={{ mr: 1 }}
+                          />
+                        ) : (
+                          <CancelIcon
+                            color="error"
+                            fontSize="small"
+                            sx={{ mr: 1 }}
+                          />
+                        )}
+                        <Typography variant="body2">
+                          {session.status.charAt(0).toUpperCase() +
+                            session.status.slice(1)}
+                        </Typography>
+                      </Box>
+                    </Grid>
+                    <Grid item xs={12} md={2}>
+                      <Typography variant="body2">
+                        Duration:{" "}
+                        {session.duration ? `${session.duration}s` : "-"}
+                      </Typography>
+                    </Grid>
+                    <Grid item xs={12} md={2}>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        href={`/sessions/${session.session_id}`}
+                        className="ios-button"
+                        sx={{
+                          borderRadius: 10,
+                          fontWeight: 600,
+                          "&:hover": {
+                            backgroundColor: "rgba(200, 92, 60, 0.04)",
+                          },
+                        }}
+                      >
+                        View Details
+                      </Button>
+                    </Grid>
                   </Grid>
-                  <Grid item xs={12} md={2}>
-                    <Typography variant="body2">
-                      Duration:{" "}
-                      {session.duration ? `${session.duration}s` : "-"}
-                    </Typography>
-                  </Grid>
-                  <Grid item xs={12} md={2}>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      href={`/sessions/${session.session_id}`}
-                      className="ios-button"
-                      sx={{
-                        borderRadius: 10,
-                        fontWeight: 600,
-                        "&:hover": {
-                          backgroundColor: "rgba(200, 92, 60, 0.04)",
-                        },
-                      }}
-                    >
-                      View Details
-                    </Button>
-                  </Grid>
-                </Grid>
-              </Box>
-            ))}
-          </Box>
-        ) : (
-          <Typography color="textSecondary">No recent sessions</Typography>
-        )}
-      </Paper>
-    </Box>
+                </Box>
+              ))}
+            </Box>
+          ) : (
+            <Typography color="textSecondary">No recent sessions</Typography>
+          )}
+        </Paper>
+      </Box>
+    </Container>
   );
 }
 

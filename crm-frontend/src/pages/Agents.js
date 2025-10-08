@@ -17,6 +17,8 @@ import {
   Chip,
   Alert,
   CircularProgress,
+  Tooltip,
+  Container,
 } from "@mui/material";
 import {
   Add as AddIcon,
@@ -24,9 +26,10 @@ import {
   Delete as DeleteIcon,
   Refresh as RefreshIcon,
 } from "@mui/icons-material";
+import SubscriptionBanner from "../components/SubscriptionBanner";
 
 const Agents = () => {
-  const { user, isAdmin } = useAuth();
+  const { user, isAdmin, hasActiveSubscription } = useAuth();
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -149,7 +152,8 @@ const Agents = () => {
   }
 
   return (
-    <Box sx={{ p: 3 }}>
+    <Container maxWidth="xl" sx={{ mt: 4, mb: 4 }}>
+      <SubscriptionBanner />
       <Box sx={{ display: "flex", justifyContent: "space-between", mb: 3 }}>
         <Typography variant="h4">Manage Agents</Typography>
         <Box>
@@ -160,13 +164,24 @@ const Agents = () => {
           >
             Refresh
           </Button>
-          <Button
-            variant="contained"
-            startIcon={<AddIcon />}
-            onClick={() => handleOpenDialog()}
+          <Tooltip
+            title={
+              !hasActiveSubscription()
+                ? "Subscription required to add agents"
+                : "Add new agent"
+            }
           >
-            Add Agent
-          </Button>
+            <span>
+              <Button
+                variant="contained"
+                startIcon={<AddIcon />}
+                onClick={() => handleOpenDialog()}
+                disabled={!hasActiveSubscription()}
+              >
+                Add Agent
+              </Button>
+            </span>
+          </Tooltip>
         </Box>
       </Box>
 
@@ -336,7 +351,7 @@ const Agents = () => {
           </Button>
         </DialogActions>
       </Dialog>
-    </Box>
+    </Container>
   );
 };
 

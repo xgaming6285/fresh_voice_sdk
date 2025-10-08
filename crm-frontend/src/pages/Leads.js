@@ -40,8 +40,12 @@ import {
 import { useDropzone } from "react-dropzone";
 import { leadAPI, voiceAgentAPI } from "../services/api";
 import CustomCallDialog from "../components/CustomCallDialog";
+import SubscriptionBanner from "../components/SubscriptionBanner";
+import { useAuth } from "../contexts/AuthContext";
+import { Tooltip } from "@mui/material";
 
 function Leads() {
+  const { hasActiveSubscription } = useAuth();
   const [leads, setLeads] = useState([]);
   const [totalLeads, setTotalLeads] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -510,6 +514,7 @@ Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
 
   return (
     <Box className="fade-in">
+      <SubscriptionBanner />
       <Paper
         className="glass-effect ios-blur-container"
         sx={{
@@ -537,19 +542,33 @@ Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
             zIndex: 10,
           }}
         >
-          <IconButton
-            onClick={handleAddLead}
-            sx={{
-              color: "#C85C3C",
-              "&:hover": {
-                backgroundColor: "rgba(200, 92, 60, 0.08)",
-                transform: "scale(1.1) rotate(90deg)",
-              },
-              transition: "all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
-            }}
+          <Tooltip
+            title={
+              !hasActiveSubscription()
+                ? "Subscription required to add leads"
+                : "Add new lead"
+            }
           >
-            <AddIcon />
-          </IconButton>
+            <span>
+              <IconButton
+                onClick={handleAddLead}
+                disabled={!hasActiveSubscription()}
+                sx={{
+                  color: "#C85C3C",
+                  "&:hover": {
+                    backgroundColor: "rgba(200, 92, 60, 0.08)",
+                    transform: "scale(1.1) rotate(90deg)",
+                  },
+                  transition: "all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
+                  "&.Mui-disabled": {
+                    color: "rgba(200, 92, 60, 0.3)",
+                  },
+                }}
+              >
+                <AddIcon />
+              </IconButton>
+            </span>
+          </Tooltip>
         </Box>
         <DataGrid
           rows={leads}

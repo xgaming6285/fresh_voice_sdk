@@ -13,6 +13,7 @@ import {
   DialogActions,
   TextField,
   Alert,
+  AlertTitle,
   CircularProgress,
   Table,
   TableBody,
@@ -28,6 +29,7 @@ import {
   AccountBalance as WalletIcon,
   ShoppingCart as CartIcon,
   CheckCircle as CheckIcon,
+  Business as BusinessIcon,
   Pending as PendingIcon,
   Cancel as CancelIcon,
 } from "@mui/icons-material";
@@ -170,9 +172,69 @@ function Billing() {
         </Alert>
       )}
 
+      {/* Subscription Status Alert */}
+      {billingInfo && !billingInfo.is_subscription_active && (
+        <Alert severity="error" sx={{ mb: 3 }}>
+          <AlertTitle>🚫 Subscription Expired</AlertTitle>
+          Your subscription has expired. To continue using our software, please
+          purchase agent slots below and complete the payment.
+        </Alert>
+      )}
+      {billingInfo &&
+        billingInfo.is_subscription_active &&
+        billingInfo.days_remaining !== null &&
+        billingInfo.days_remaining <= 7 && (
+          <Alert severity="warning" sx={{ mb: 3 }}>
+            <AlertTitle>
+              ⚠️ Subscription Expiring in {billingInfo.days_remaining} Day
+              {billingInfo.days_remaining !== 1 ? "s" : ""}
+            </AlertTitle>
+            Your subscription will expire on{" "}
+            {new Date(billingInfo.subscription_end_date).toLocaleDateString()}.
+            Renew now to avoid service interruption.
+          </Alert>
+        )}
+
       {/* Billing Info Cards */}
       <Grid container spacing={3} mb={4}>
-        <Grid item xs={12} md={4}>
+        {/* Subscription Status Card */}
+        <Grid item xs={12} md={3}>
+          <Card>
+            <CardContent>
+              <Box display="flex" alignItems="center" mb={2}>
+                <BusinessIcon
+                  color={
+                    billingInfo?.is_subscription_active ? "success" : "error"
+                  }
+                  sx={{ mr: 1, fontSize: 32 }}
+                />
+                <Box>
+                  <Chip
+                    label={
+                      billingInfo?.is_subscription_active ? "ACTIVE" : "EXPIRED"
+                    }
+                    color={
+                      billingInfo?.is_subscription_active ? "success" : "error"
+                    }
+                    size="small"
+                  />
+                  <Typography variant="body2" color="text.secondary" mt={0.5}>
+                    Subscription Status
+                  </Typography>
+                  {billingInfo?.subscription_end_date && (
+                    <Typography variant="caption" color="text.secondary">
+                      {billingInfo.is_subscription_active
+                        ? `${billingInfo.days_remaining}d remaining`
+                        : "Expired"}
+                    </Typography>
+                  )}
+                </Box>
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12} md={3}>
           <Card>
             <CardContent>
               <Box display="flex" alignItems="center" mb={2}>
@@ -190,7 +252,7 @@ function Billing() {
           </Card>
         </Grid>
 
-        <Grid item xs={12} md={4}>
+        <Grid item xs={12} md={3}>
           <Card>
             <CardContent>
               <Box display="flex" alignItems="center" mb={2}>
@@ -208,7 +270,7 @@ function Billing() {
           </Card>
         </Grid>
 
-        <Grid item xs={12} md={4}>
+        <Grid item xs={12} md={3}>
           <Card>
             <CardContent>
               <Box display="flex" alignItems="center" mb={2}>

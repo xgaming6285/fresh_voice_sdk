@@ -141,6 +141,42 @@ async def get_current_superadmin(current_user: User = Depends(get_current_user))
         )
     return current_user
 
+# Dependency to check if user has active subscription
+async def check_subscription(current_user: User = Depends(get_current_user)) -> User:
+    """Check if user has active subscription (for write operations)"""
+    from crm_database import UserManager
+    
+    # Superadmin always passes
+    if current_user.role == UserRole.SUPERADMIN:
+        return current_user
+    
+    # For admins, check their own subscription
+    if current_user.role == UserRole.ADMIN:
+        if not current_user.is_subscription_active():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your subscription has expired. Please renew your subscription in the Billing page to continue using the service."
+            )
+        return current_user
+    
+    # For agents, check their admin's subscription
+    if current_user.role == UserRole.AGENT:
+        session = get_session()
+        try:
+            user_manager = UserManager(session)
+            admin = user_manager.get_user_by_id(current_user.created_by_id)
+            
+            if not admin or not admin.is_subscription_active():
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Your organization's subscription has expired. Please contact your administrator to renew the subscription."
+                )
+            return current_user
+        finally:
+            session.close()
+    
+    return current_user
+
 def user_to_dict(user: User) -> Dict[str, Any]:
     """Convert user object to dictionary"""
     return {
@@ -326,5 +362,5 @@ async def change_password(
         session.close()
 
 # Export
-__all__ = ['auth_router', 'get_current_user', 'get_current_admin', 'get_current_superadmin', 'user_to_dict']
+__all__ = ['auth_router', 'get_current_user', 'get_current_admin', 'get_current_superadmin', 'check_subscription', 'user_to_dict']
 

@@ -32,10 +32,12 @@ import {
 } from "@mui/icons-material";
 import { campaignAPI } from "../services/api";
 import { useAuth } from "../contexts/AuthContext";
+import SubscriptionBanner from "../components/SubscriptionBanner";
+import { Tooltip } from "@mui/material";
 
 function Campaigns() {
   const navigate = useNavigate();
-  const { isAdmin } = useAuth();
+  const { isAdmin, hasActiveSubscription } = useAuth();
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(false);
   const [openDialog, setOpenDialog] = useState(false);
@@ -171,6 +173,7 @@ function Campaigns() {
 
   return (
     <Box className="fade-in">
+      <SubscriptionBanner />
       {loading ? (
         <Box display="flex" justifyContent="center" p={4}>
           <LinearProgress sx={{ width: "50%" }} />
@@ -179,69 +182,82 @@ function Campaigns() {
         <Grid container spacing={3}>
           {/* Add Campaign Template Card */}
           <Grid item xs={4} md={3} lg={2}>
-            <Card
-              onClick={handleOpenCreateDialog}
-              className="glass-effect ios-card"
-              sx={{
-                height: "100%",
-                minHeight: 120,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                cursor: "pointer",
-                border: "2px dashed rgba(200, 92, 60, 0.3)",
-                background: "rgba(200, 92, 60, 0.02)",
-                transition: "all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
-                "&:hover": {
-                  border: "2px dashed rgba(200, 92, 60, 0.6)",
-                  background: "rgba(200, 92, 60, 0.08)",
-                  transform: "translateY(-4px) scale(1.02)",
-                  boxShadow: "0 8px 24px rgba(200, 92, 60, 0.2)",
-                },
-              }}
+            <Tooltip
+              title={
+                !hasActiveSubscription()
+                  ? "Subscription required to create campaigns"
+                  : "Create new campaign"
+              }
             >
-              <Box
+              <Card
+                onClick={
+                  hasActiveSubscription() ? handleOpenCreateDialog : undefined
+                }
+                className="glass-effect ios-card"
                 sx={{
+                  height: "100%",
+                  minHeight: 120,
                   display: "flex",
-                  flexDirection: "column",
                   alignItems: "center",
-                  gap: 1,
+                  justifyContent: "center",
+                  cursor: hasActiveSubscription() ? "pointer" : "not-allowed",
+                  border: "2px dashed rgba(200, 92, 60, 0.3)",
+                  background: "rgba(200, 92, 60, 0.02)",
+                  transition: "all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
+                  opacity: hasActiveSubscription() ? 1 : 0.5,
+                  "&:hover": hasActiveSubscription()
+                    ? {
+                        border: "2px dashed rgba(200, 92, 60, 0.6)",
+                        background: "rgba(200, 92, 60, 0.08)",
+                        transform: "translateY(-4px) scale(1.02)",
+                        boxShadow: "0 8px 24px rgba(200, 92, 60, 0.2)",
+                      }
+                    : {},
                 }}
               >
                 <Box
                   sx={{
-                    width: 35,
-                    height: 35,
-                    borderRadius: "50%",
-                    background:
-                      "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
                     display: "flex",
+                    flexDirection: "column",
                     alignItems: "center",
-                    justifyContent: "center",
-                    transition: "all 0.3s ease",
-                    "&:hover": {
-                      transform: "rotate(90deg) scale(1.1)",
-                    },
+                    gap: 1,
                   }}
                 >
-                  <AddIcon sx={{ fontSize: 20, color: "white" }} />
+                  <Box
+                    sx={{
+                      width: 35,
+                      height: 35,
+                      borderRadius: "50%",
+                      background:
+                        "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      transition: "all 0.3s ease",
+                      "&:hover": {
+                        transform: "rotate(90deg) scale(1.1)",
+                      },
+                    }}
+                  >
+                    <AddIcon sx={{ fontSize: 20, color: "white" }} />
+                  </Box>
+                  <Typography
+                    variant="body2"
+                    fontWeight={600}
+                    sx={{
+                      background:
+                        "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+                      WebkitBackgroundClip: "text",
+                      WebkitTextFillColor: "transparent",
+                      backgroundClip: "text",
+                      fontSize: "0.75rem",
+                    }}
+                  >
+                    New Campaign
+                  </Typography>
                 </Box>
-                <Typography
-                  variant="body2"
-                  fontWeight={600}
-                  sx={{
-                    background:
-                      "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
-                    WebkitBackgroundClip: "text",
-                    WebkitTextFillColor: "transparent",
-                    backgroundClip: "text",
-                    fontSize: "0.75rem",
-                  }}
-                >
-                  New Campaign
-                </Typography>
-              </Box>
-            </Card>
+              </Card>
+            </Tooltip>
           </Grid>
 
           {/* Existing Campaigns */}

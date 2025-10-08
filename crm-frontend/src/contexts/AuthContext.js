@@ -15,6 +15,7 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [token, setToken] = useState(localStorage.getItem("token"));
+  const [subscriptionStatus, setSubscriptionStatus] = useState(null);
 
   useEffect(() => {
     // Set token in API service
@@ -31,6 +32,19 @@ export const AuthProvider = ({ children }) => {
     try {
       const response = await api.get("/api/auth/me");
       setUser(response.data);
+
+      // Load subscription status for admins
+      if (response.data.role === "admin") {
+        try {
+          const billingRes = await api.get("/api/billing/info");
+          setSubscriptionStatus(billingRes.data);
+        } catch (err) {
+          console.error("Failed to load subscription status:", err);
+        }
+      } else if (response.data.role === "agent") {
+        // Agents inherit admin's subscription - we'll check on operations
+        setSubscriptionStatus({ is_subscription_active: true }); // Assume active until operation fails
+      }
     } catch (error) {
       console.error("Failed to load user:", error);
       // Token invalid, clear it
@@ -100,6 +114,14 @@ export const AuthProvider = ({ children }) => {
     return user?.role === "superadmin";
   };
 
+  const hasActiveSubscription = () => {
+    // Superadmin always has access
+    if (user?.role === "superadmin") return true;
+
+    // Check subscription status
+    return subscriptionStatus?.is_subscription_active ?? false;
+  };
+
   const value = {
     user,
     loading,
@@ -110,6 +132,8 @@ export const AuthProvider = ({ children }) => {
     isAdmin,
     isAgent,
     isSuperAdmin,
+    hasActiveSubscription,
+    subscriptionStatus,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -69,6 +69,9 @@ class User(Base):
     # Billing - max number of agents admin can create (for admins only)
     max_agents = Column(Integer, default=0)
     
+    # Subscription - when the admin's subscription ends (for admins only)
+    subscription_end_date = Column(DateTime, nullable=True)
+    
     # User details
     first_name = Column(String(100))
     last_name = Column(String(100))
@@ -103,6 +106,23 @@ class User(Base):
     def hash_password(password: str) -> str:
         """Hash password"""
         return pwd_context.hash(password)
+    
+    def is_subscription_active(self) -> bool:
+        """Check if user's subscription is active (for admins and their agents)"""
+        if self.role == UserRole.SUPERADMIN:
+            return True  # Superadmin always active
+        
+        if self.role == UserRole.AGENT:
+            # For agents, check their admin's subscription
+            return True  # Will be checked via their admin in the endpoint
+        
+        if self.role == UserRole.ADMIN:
+            # Admin must have subscription_end_date and it must be in the future
+            if not self.subscription_end_date:
+                return False
+            return self.subscription_end_date > datetime.utcnow()
+        
+        return False
 
 class PaymentRequestStatus(enum.Enum):
     PENDING = "pending"
