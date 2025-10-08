@@ -66,6 +66,9 @@ class User(Base):
     # Organization name (for admins - their client organization)
     organization = Column(String(200))
     
+    # Billing - max number of agents admin can create (for admins only)
+    max_agents = Column(Integer, default=0)
+    
     # User details
     first_name = Column(String(100))
     last_name = Column(String(100))
@@ -100,6 +103,47 @@ class User(Base):
     def hash_password(password: str) -> str:
         """Hash password"""
         return pwd_context.hash(password)
+
+class PaymentRequestStatus(enum.Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+class PaymentRequest(Base):
+    """Payment request model for admin agent slot purchases"""
+    __tablename__ = 'payment_requests'
+    
+    id = Column(Integer, primary_key=True)
+    admin_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    num_agents = Column(Integer, nullable=False)  # Number of agent slots requested
+    total_amount = Column(Float, nullable=False)  # Total amount in USD
+    status = Column(Enum(PaymentRequestStatus), default=PaymentRequestStatus.PENDING)
+    
+    # Payment details
+    payment_notes = Column(Text)  # Admin can add notes about payment
+    admin_notes = Column(Text)  # Superadmin notes about verification
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    approved_at = Column(DateTime)
+    approved_by_id = Column(Integer, ForeignKey('users.id'))
+    
+    # Relationships
+    admin = relationship("User", foreign_keys=[admin_id], backref="payment_requests")
+    approved_by = relationship("User", foreign_keys=[approved_by_id])
+
+class SystemSettings(Base):
+    """System-wide settings"""
+    __tablename__ = 'system_settings'
+    
+    id = Column(Integer, primary_key=True)
+    key = Column(String(100), unique=True, nullable=False)
+    value = Column(Text)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_by_id = Column(Integer, ForeignKey('users.id'))
+    
+    updated_by = relationship("User")
 
 class Lead(Base):
     """Lead/Contact model"""

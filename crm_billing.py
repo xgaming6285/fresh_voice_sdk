@@ -1,0 +1,181 @@
+# -*- coding: utf-8 -*-
+"""
+Billing and Payment Management API
+Endpoints for admins to manage billing and superadmin to handle payments
+"""
+
+from fastapi import APIRouter, HTTPException, Depends, status
+from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any
+from datetime import datetime
+import logging
+
+from crm_database import (
+    get_session, User, UserRole, PaymentRequest, PaymentRequestStatus, SystemSettings
+)
+from crm_auth import get_current_user, get_current_admin, get_current_superadmin
+
+logger = logging.getLogger(__name__)
+
+# Constants
+PRICE_PER_AGENT = 300.0  # USD per month
+
+# Create API router
+billing_router = APIRouter(prefix="/api/billing", tags=["Billing"])
+
+# Pydantic models
+class BillingInfo(BaseModel):
+    current_agents: int
+    max_agents: int
+    available_slots: int
+    price_per_agent: float
+    payment_wallet: Optional[str]
+
+class PaymentRequestCreate(BaseModel):
+    num_agents: int = Field(gt=0, description="Number of agent slots to purchase")
+    payment_notes: Optional[str] = None
+
+class PaymentRequestResponse(BaseModel):
+    id: int
+    admin_id: int
+    admin_username: str
+    admin_organization: Optional[str]
+    num_agents: int
+    total_amount: float
+    status: str
+    payment_notes: Optional[str]
+    admin_notes: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+    approved_at: Optional[datetime]
+
+# Admin Billing Endpoints
+
+@billing_router.get("/info", response_model=BillingInfo)
+async def get_billing_info(current_user: User = Depends(get_current_admin)):
+    """Get billing information for current admin"""
+    try:
+        session = get_session()
+        
+        # Count current agents
+        current_agents = session.query(User).filter(
+            User.created_by_id == current_user.id,
+            User.role == UserRole.AGENT
+        ).count()
+        
+        # Get payment wallet address
+        wallet_setting = session.query(SystemSettings).filter(
+            SystemSettings.key == "payment_wallet_address"
+        ).first()
+        
+        payment_wallet = wallet_setting.value if wallet_setting else None
+        
+        return BillingInfo(
+            current_agents=current_agents,
+            max_agents=current_user.max_agents or 0,
+            available_slots=(current_user.max_agents or 0) - current_agents,
+            price_per_agent=PRICE_PER_AGENT,
+            payment_wallet=payment_wallet
+        )
+    except Exception as e:
+        logger.error(f"Error getting billing info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+@billing_router.post("/request", response_model=PaymentRequestResponse)
+async def create_payment_request(
+    request_data: PaymentRequestCreate,
+    current_user: User = Depends(get_current_admin)
+):
+    """Create a payment request for additional agent slots"""
+    try:
+        session = get_session()
+        
+        # Check if there's already a pending request
+        pending_request = session.query(PaymentRequest).filter(
+            PaymentRequest.admin_id == current_user.id,
+            PaymentRequest.status == PaymentRequestStatus.PENDING
+        ).first()
+        
+        if pending_request:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You already have a pending payment request"
+            )
+        
+        # Calculate total amount
+        total_amount = request_data.num_agents * PRICE_PER_AGENT
+        
+        # Create payment request
+        payment_request = PaymentRequest(
+            admin_id=current_user.id,
+            num_agents=request_data.num_agents,
+            total_amount=total_amount,
+            payment_notes=request_data.payment_notes,
+            status=PaymentRequestStatus.PENDING
+        )
+        
+        session.add(payment_request)
+        session.commit()
+        session.refresh(payment_request)
+        
+        return PaymentRequestResponse(
+            id=payment_request.id,
+            admin_id=payment_request.admin_id,
+            admin_username=current_user.username,
+            admin_organization=current_user.organization,
+            num_agents=payment_request.num_agents,
+            total_amount=payment_request.total_amount,
+            status=payment_request.status.value,
+            payment_notes=payment_request.payment_notes,
+            admin_notes=payment_request.admin_notes,
+            created_at=payment_request.created_at,
+            updated_at=payment_request.updated_at,
+            approved_at=payment_request.approved_at
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error creating payment request: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+@billing_router.get("/requests", response_model=List[PaymentRequestResponse])
+async def get_my_payment_requests(current_user: User = Depends(get_current_admin)):
+    """Get all payment requests for current admin"""
+    try:
+        session = get_session()
+        
+        requests = session.query(PaymentRequest).filter(
+            PaymentRequest.admin_id == current_user.id
+        ).order_by(PaymentRequest.created_at.desc()).all()
+        
+        return [
+            PaymentRequestResponse(
+                id=req.id,
+                admin_id=req.admin_id,
+                admin_username=current_user.username,
+                admin_organization=current_user.organization,
+                num_agents=req.num_agents,
+                total_amount=req.total_amount,
+                status=req.status.value,
+                payment_notes=req.payment_notes,
+                admin_notes=req.admin_notes,
+                created_at=req.created_at,
+                updated_at=req.updated_at,
+                approved_at=req.approved_at
+            )
+            for req in requests
+        ]
+    except Exception as e:
+        logger.error(f"Error getting payment requests: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+# Export
+__all__ = ['billing_router', 'PRICE_PER_AGENT']
+

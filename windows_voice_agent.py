@@ -499,6 +499,7 @@ from crm_api import crm_router
 from crm_auth import auth_router
 from crm_user_management import user_router
 from crm_superadmin import superadmin_router
+from crm_billing import billing_router
 from crm_database import init_database, get_session, Lead, CallSession, CallStatus
 
 # Import Gemini greeting generator (the only supported method)
@@ -540,6 +541,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(user_router)
 app.include_router(superadmin_router)
+app.include_router(billing_router)
 app.include_router(crm_router)
 
 # Mount static files for serving audio recordings

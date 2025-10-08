@@ -87,6 +87,20 @@ async def create_agent(agent_data: AgentCreate, current_admin: User = Depends(ge
         session = get_session()
         user_manager = UserManager(session)
         
+        # Check agent slot limit
+        current_agents_count = session.query(User).filter(
+            User.created_by_id == current_admin.id,
+            User.role == UserRole.AGENT
+        ).count()
+        
+        max_agents = current_admin.max_agents or 0
+        
+        if current_agents_count >= max_agents:
+            raise HTTPException(
+                status_code=403,
+                detail=f"You have reached your maximum number of agents ({max_agents}). Please purchase more agent slots from the Billing page."
+            )
+        
         # Check if username already exists
         existing_user = user_manager.get_user_by_username(agent_data.username)
         if existing_user:

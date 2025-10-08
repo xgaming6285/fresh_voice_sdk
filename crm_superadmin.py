@@ -11,7 +11,8 @@ from datetime import datetime
 import logging
 
 from crm_database import (
-    get_session, User, UserRole, UserManager, Lead, Campaign
+    get_session, User, UserRole, UserManager, Lead, Campaign,
+    PaymentRequest, PaymentRequestStatus, SystemSettings
 )
 from crm_auth import get_current_superadmin, user_to_dict
 
@@ -447,6 +448,279 @@ async def reset_agent_password(
     except Exception as e:
         session.rollback()
         logger.error(f"Error resetting agent password: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+# Payment Management Endpoints
+
+class PaymentRequestWithAdmin(BaseModel):
+    id: int
+    admin_id: int
+    admin_username: str
+    admin_email: str
+    admin_organization: Optional[str]
+    current_agents: int
+    max_agents: int
+    num_agents: int
+    total_amount: float
+    status: str
+    payment_notes: Optional[str]
+    admin_notes: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+    approved_at: Optional[datetime]
+
+@superadmin_router.get("/payment-requests")
+async def get_all_payment_requests(current_user: User = Depends(get_current_superadmin)):
+    """Get all payment requests"""
+    try:
+        session = get_session()
+        
+        requests = session.query(PaymentRequest).order_by(
+            PaymentRequest.status,
+            PaymentRequest.created_at.desc()
+        ).all()
+        
+        result = []
+        for req in requests:
+            admin = session.query(User).filter(User.id == req.admin_id).first()
+            if not admin:
+                continue
+            
+            # Count current agents
+            current_agents = session.query(User).filter(
+                User.created_by_id == admin.id,
+                User.role == UserRole.AGENT
+            ).count()
+            
+            result.append({
+                "id": req.id,
+                "admin_id": req.admin_id,
+                "admin_username": admin.username,
+                "admin_email": admin.email,
+                "admin_organization": admin.organization,
+                "current_agents": current_agents,
+                "max_agents": admin.max_agents or 0,
+                "num_agents": req.num_agents,
+                "total_amount": req.total_amount,
+                "status": req.status.value,
+                "payment_notes": req.payment_notes,
+                "admin_notes": req.admin_notes,
+                "created_at": req.created_at,
+                "updated_at": req.updated_at,
+                "approved_at": req.approved_at
+            })
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error getting payment requests: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+@superadmin_router.post("/payment-requests/{request_id}/approve")
+async def approve_payment_request(
+    request_id: int,
+    approval_data: dict,
+    current_user: User = Depends(get_current_superadmin)
+):
+    """Approve a payment request and increase admin's max_agents"""
+    try:
+        session = get_session()
+        
+        payment_request = session.query(PaymentRequest).filter(
+            PaymentRequest.id == request_id
+        ).first()
+        
+        if not payment_request:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Payment request not found"
+            )
+        
+        if payment_request.status != PaymentRequestStatus.PENDING:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Payment request is already {payment_request.status.value}"
+            )
+        
+        # Get admin
+        admin = session.query(User).filter(User.id == payment_request.admin_id).first()
+        if not admin:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Admin not found"
+            )
+        
+        # Update payment request
+        payment_request.status = PaymentRequestStatus.APPROVED
+        payment_request.approved_at = datetime.utcnow()
+        payment_request.approved_by_id = current_user.id
+        payment_request.admin_notes = approval_data.get("admin_notes", "")
+        
+        # Increase max_agents for admin
+        admin.max_agents = (admin.max_agents or 0) + payment_request.num_agents
+        admin.updated_at = datetime.utcnow()
+        
+        session.commit()
+        
+        return {
+            "message": f"Payment approved. Admin now has {admin.max_agents} agent slots.",
+            "new_max_agents": admin.max_agents
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error approving payment request: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+@superadmin_router.post("/payment-requests/{request_id}/reject")
+async def reject_payment_request(
+    request_id: int,
+    rejection_data: dict,
+    current_user: User = Depends(get_current_superadmin)
+):
+    """Reject a payment request"""
+    try:
+        session = get_session()
+        
+        payment_request = session.query(PaymentRequest).filter(
+            PaymentRequest.id == request_id
+        ).first()
+        
+        if not payment_request:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Payment request not found"
+            )
+        
+        if payment_request.status != PaymentRequestStatus.PENDING:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Payment request is already {payment_request.status.value}"
+            )
+        
+        # Update payment request
+        payment_request.status = PaymentRequestStatus.REJECTED
+        payment_request.admin_notes = rejection_data.get("admin_notes", "")
+        payment_request.updated_at = datetime.utcnow()
+        
+        session.commit()
+        
+        return {
+            "message": "Payment request rejected"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error rejecting payment request: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+@superadmin_router.get("/settings/payment-wallet")
+async def get_payment_wallet(current_user: User = Depends(get_current_superadmin)):
+    """Get payment wallet address"""
+    try:
+        session = get_session()
+        
+        setting = session.query(SystemSettings).filter(
+            SystemSettings.key == "payment_wallet_address"
+        ).first()
+        
+        return {
+            "wallet_address": setting.value if setting else None
+        }
+    except Exception as e:
+        logger.error(f"Error getting payment wallet: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+@superadmin_router.post("/settings/payment-wallet")
+async def set_payment_wallet(
+    wallet_data: dict,
+    current_user: User = Depends(get_current_superadmin)
+):
+    """Set payment wallet address"""
+    try:
+        wallet_address = wallet_data.get("wallet_address", "").strip()
+        
+        session = get_session()
+        
+        setting = session.query(SystemSettings).filter(
+            SystemSettings.key == "payment_wallet_address"
+        ).first()
+        
+        if setting:
+            setting.value = wallet_address
+            setting.updated_at = datetime.utcnow()
+            setting.updated_by_id = current_user.id
+        else:
+            setting = SystemSettings(
+                key="payment_wallet_address",
+                value=wallet_address,
+                updated_by_id=current_user.id
+            )
+            session.add(setting)
+        
+        session.commit()
+        
+        return {
+            "message": "Payment wallet address updated",
+            "wallet_address": wallet_address
+        }
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error setting payment wallet: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+@superadmin_router.put("/admins/{admin_id}/max-agents")
+async def update_admin_max_agents(
+    admin_id: int,
+    data: dict,
+    current_user: User = Depends(get_current_superadmin)
+):
+    """Directly update admin's max_agents (manual adjustment)"""
+    try:
+        max_agents = data.get("max_agents")
+        if max_agents is None or max_agents < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="max_agents must be a non-negative number"
+            )
+        
+        session = get_session()
+        user_manager = UserManager(session)
+        
+        admin = user_manager.get_user_by_id(admin_id)
+        
+        if not admin or admin.role != UserRole.ADMIN:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Admin not found"
+            )
+        
+        admin.max_agents = max_agents
+        admin.updated_at = datetime.utcnow()
+        session.commit()
+        
+        return {
+            "message": f"Admin max_agents updated to {max_agents}",
+            "max_agents": max_agents
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error updating admin max_agents: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()

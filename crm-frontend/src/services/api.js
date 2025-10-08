@@ -159,9 +159,36 @@ export const superadminAPI = {
     api.post(`/api/superadmin/agents/${id}/reset-password`, {
       new_password: newPassword,
     }),
+  // Payment management
+  getPaymentRequests: () => api.get("/api/superadmin/payment-requests"),
+  approvePaymentRequest: (id, notes) =>
+    api.post(`/api/superadmin/payment-requests/${id}/approve`, {
+      admin_notes: notes,
+    }),
+  rejectPaymentRequest: (id, notes) =>
+    api.post(`/api/superadmin/payment-requests/${id}/reject`, {
+      admin_notes: notes,
+    }),
+  getPaymentWallet: () => api.get("/api/superadmin/settings/payment-wallet"),
+  setPaymentWallet: (walletAddress) =>
+    api.post("/api/superadmin/settings/payment-wallet", {
+      wallet_address: walletAddress,
+    }),
+  updateAdminMaxAgents: (adminId, maxAgents) =>
+    api.put(`/api/superadmin/admins/${adminId}/max-agents`, {
+      max_agents: maxAgents,
+    }),
 };
 
-// Add superadminAPI to the main api object for easier access
+// Billing APIs (Admin only)
+export const billingAPI = {
+  getInfo: () => api.get("/api/billing/info"),
+  createRequest: (data) => api.post("/api/billing/request", data),
+  getRequests: () => api.get("/api/billing/requests"),
+};
+
+// Add to main api object for easier access
 api.superadminAPI = superadminAPI;
+api.billingAPI = billingAPI;
 
 export default api;

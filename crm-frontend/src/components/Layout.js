@@ -31,6 +31,7 @@ import {
   AccountCircle,
   Logout as LogoutIcon,
   AdminPanelSettings as AdminPanelSettingsIcon,
+  AccountBalance as BillingIcon,
 } from "@mui/icons-material";
 import { voiceAgentAPI } from "../services/api";
 import { useAuth } from "../contexts/AuthContext";
@@ -82,7 +83,7 @@ function Layout({ children }) {
           },
         ]
       : []),
-    // Admin only menu item
+    // Admin only menu items
     ...(isAdmin()
       ? [
           {
@@ -90,6 +91,12 @@ function Layout({ children }) {
             icon: <GroupIcon />,
             path: "/agents",
             emoji: "👨‍💼",
+          },
+          {
+            text: "Billing",
+            icon: <BillingIcon />,
+            path: "/billing",
+            emoji: "💳",
           },
         ]
       : []),

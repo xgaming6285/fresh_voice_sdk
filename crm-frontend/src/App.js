@@ -22,6 +22,7 @@ import CampaignDetail from "./pages/CampaignDetail";
 import Sessions from "./pages/Sessions";
 import SessionDetail from "./pages/SessionDetail";
 import Agents from "./pages/Agents";
+import Billing from "./pages/Billing";
 import SuperAdmin from "./pages/SuperAdmin";
 
 const theme = createTheme({
@@ -420,6 +421,16 @@ function AppRoutes() {
           <ProtectedRoute>
             <Layout>
               <Agents />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/billing"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <Billing />
             </Layout>
           </ProtectedRoute>
         }

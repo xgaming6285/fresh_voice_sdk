@@ -37,6 +37,8 @@ import {
   Campaign as CampaignIcon,
   ContactPage as ContactPageIcon,
   VpnKey as VpnKeyIcon,
+  CheckCircle as CheckIcon,
+  Cancel as CancelIcon,
 } from "@mui/icons-material";
 import api from "../services/api";
 
@@ -45,6 +47,8 @@ function SuperAdmin() {
   const [stats, setStats] = useState(null);
   const [admins, setAdmins] = useState([]);
   const [agents, setAgents] = useState([]);
+  const [paymentRequests, setPaymentRequests] = useState([]);
+  const [walletAddress, setWalletAddress] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -66,6 +70,16 @@ function SuperAdmin() {
   const [resetPasswordTarget, setResetPasswordTarget] = useState(null); // { id, username, type: 'admin' | 'agent' }
   const [newPassword, setNewPassword] = useState("");
 
+  // Payment dialog state
+  const [openPaymentDialog, setOpenPaymentDialog] = useState(false);
+  const [selectedPaymentRequest, setSelectedPaymentRequest] = useState(null);
+  const [paymentAction, setPaymentAction] = useState(""); // 'approve' or 'reject'
+  const [paymentNotes, setPaymentNotes] = useState("");
+
+  // Wallet dialog state
+  const [openWalletDialog, setOpenWalletDialog] = useState(false);
+  const [newWalletAddress, setNewWalletAddress] = useState("");
+
   useEffect(() => {
     loadData();
   }, []);
@@ -75,15 +89,20 @@ function SuperAdmin() {
       setLoading(true);
       setError("");
 
-      const [statsRes, adminsRes, agentsRes] = await Promise.all([
-        api.superadminAPI.getStats(),
-        api.superadminAPI.getAdmins(),
-        api.superadminAPI.getAgents(),
-      ]);
+      const [statsRes, adminsRes, agentsRes, paymentsRes, walletRes] =
+        await Promise.all([
+          api.superadminAPI.getStats(),
+          api.superadminAPI.getAdmins(),
+          api.superadminAPI.getAgents(),
+          api.superadminAPI.getPaymentRequests(),
+          api.superadminAPI.getPaymentWallet(),
+        ]);
 
       setStats(statsRes.data);
       setAdmins(adminsRes.data);
       setAgents(agentsRes.data);
+      setPaymentRequests(paymentsRes.data);
+      setWalletAddress(walletRes.data.wallet_address || "");
     } catch (err) {
       console.error("Error loading data:", err);
       setError(err.response?.data?.detail || "Failed to load data");
@@ -224,6 +243,69 @@ function SuperAdmin() {
     }
   };
 
+  const handleOpenPaymentDialog = (request, action) => {
+    setSelectedPaymentRequest(request);
+    setPaymentAction(action);
+    setPaymentNotes("");
+    setOpenPaymentDialog(true);
+  };
+
+  const handleClosePaymentDialog = () => {
+    setOpenPaymentDialog(false);
+    setSelectedPaymentRequest(null);
+    setPaymentAction("");
+    setPaymentNotes("");
+  };
+
+  const handlePaymentAction = async () => {
+    try {
+      setError("");
+
+      if (paymentAction === "approve") {
+        await api.superadminAPI.approvePaymentRequest(
+          selectedPaymentRequest.id,
+          paymentNotes
+        );
+        setSuccess("Payment request approved!");
+      } else {
+        await api.superadminAPI.rejectPaymentRequest(
+          selectedPaymentRequest.id,
+          paymentNotes
+        );
+        setSuccess("Payment request rejected");
+      }
+
+      handleClosePaymentDialog();
+      loadData();
+    } catch (err) {
+      console.error("Error processing payment:", err);
+      setError(err.response?.data?.detail || "Failed to process payment");
+    }
+  };
+
+  const handleOpenWalletDialog = () => {
+    setNewWalletAddress(walletAddress);
+    setOpenWalletDialog(true);
+  };
+
+  const handleCloseWalletDialog = () => {
+    setOpenWalletDialog(false);
+  };
+
+  const handleSaveWallet = async () => {
+    try {
+      setError("");
+
+      await api.superadminAPI.setPaymentWallet(newWalletAddress);
+      setSuccess("Payment wallet address updated");
+      setWalletAddress(newWalletAddress);
+      handleCloseWalletDialog();
+    } catch (err) {
+      console.error("Error updating wallet:", err);
+      setError(err.response?.data?.detail || "Failed to update wallet");
+    }
+  };
+
   if (loading && !stats) {
     return (
       <Box
@@ -329,6 +411,7 @@ function SuperAdmin() {
         >
           <Tab label="Admins" />
           <Tab label="All Agents" />
+          <Tab label="Payments" />
         </Tabs>
       </Paper>
 
@@ -515,6 +598,166 @@ function SuperAdmin() {
         </Paper>
       )}
 
+      {/* Payments Tab */}
+      {activeTab === 2 && (
+        <>
+          {/* Wallet Address Card */}
+          <Card sx={{ mb: 3, bgcolor: "primary.light" }}>
+            <CardContent>
+              <Grid container spacing={2} alignItems="center">
+                <Grid item xs={12} md={8}>
+                  <Typography variant="h6" gutterBottom>
+                    💰 Payment Wallet Address
+                  </Typography>
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      wordBreak: "break-all",
+                      fontFamily: "monospace",
+                      bgcolor: "rgba(255,255,255,0.2)",
+                      p: 1,
+                      borderRadius: 1,
+                    }}
+                  >
+                    {walletAddress || "Not set"}
+                  </Typography>
+                </Grid>
+                <Grid item xs={12} md={4} textAlign="right">
+                  <Button
+                    variant="contained"
+                    onClick={handleOpenWalletDialog}
+                    sx={{
+                      bgcolor: "white",
+                      color: "primary.main",
+                      "&:hover": { bgcolor: "grey.100" },
+                    }}
+                  >
+                    {walletAddress ? "Update Wallet" : "Set Wallet"}
+                  </Button>
+                </Grid>
+              </Grid>
+            </CardContent>
+          </Card>
+
+          {/* Payment Requests Table */}
+          <Paper>
+            <Box p={2}>
+              <Typography variant="h6">Payment Requests</Typography>
+              <Typography variant="caption" color="text.secondary">
+                ${300}/month per agent
+              </Typography>
+            </Box>
+
+            <TableContainer>
+              <Table>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>ID</TableCell>
+                    <TableCell>Admin</TableCell>
+                    <TableCell>Organization</TableCell>
+                    <TableCell>Current/Max</TableCell>
+                    <TableCell>Requested</TableCell>
+                    <TableCell>Amount</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell>Date</TableCell>
+                    <TableCell align="right">Actions</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {paymentRequests.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={9} align="center">
+                        <Typography
+                          variant="body2"
+                          color="text.secondary"
+                          py={3}
+                        >
+                          No payment requests
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    paymentRequests.map((request) => (
+                      <TableRow key={request.id}>
+                        <TableCell>#{request.id}</TableCell>
+                        <TableCell>{request.admin_username}</TableCell>
+                        <TableCell>
+                          {request.admin_organization && (
+                            <Chip
+                              icon={<BusinessIcon />}
+                              label={request.admin_organization}
+                              size="small"
+                              variant="outlined"
+                            />
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {request.current_agents} / {request.max_agents}
+                        </TableCell>
+                        <TableCell>
+                          <Chip
+                            label={`+${request.num_agents}`}
+                            size="small"
+                            color="info"
+                          />
+                        </TableCell>
+                        <TableCell fontWeight={600}>
+                          ${request.total_amount}
+                        </TableCell>
+                        <TableCell>
+                          <Chip
+                            label={request.status.toUpperCase()}
+                            size="small"
+                            color={
+                              request.status === "approved"
+                                ? "success"
+                                : request.status === "pending"
+                                ? "warning"
+                                : "error"
+                            }
+                          />
+                        </TableCell>
+                        <TableCell>
+                          {new Date(request.created_at).toLocaleDateString()}
+                        </TableCell>
+                        <TableCell align="right">
+                          {request.status === "pending" && (
+                            <>
+                              <Tooltip title="Approve">
+                                <IconButton
+                                  size="small"
+                                  color="success"
+                                  onClick={() =>
+                                    handleOpenPaymentDialog(request, "approve")
+                                  }
+                                >
+                                  <CheckIcon />
+                                </IconButton>
+                              </Tooltip>
+                              <Tooltip title="Reject">
+                                <IconButton
+                                  size="small"
+                                  color="error"
+                                  onClick={() =>
+                                    handleOpenPaymentDialog(request, "reject")
+                                  }
+                                >
+                                  <CancelIcon />
+                                </IconButton>
+                              </Tooltip>
+                            </>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </Paper>
+        </>
+      )}
+
       {/* Create/Edit Admin Dialog */}
       <Dialog
         open={openDialog}
@@ -657,6 +900,108 @@ function SuperAdmin() {
             disabled={!newPassword || newPassword.length < 6}
           >
             Reset Password
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Payment Action Dialog */}
+      <Dialog
+        open={openPaymentDialog}
+        onClose={handleClosePaymentDialog}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>
+          {paymentAction === "approve" ? "Approve" : "Reject"} Payment Request #
+          {selectedPaymentRequest?.id}
+        </DialogTitle>
+        <DialogContent>
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 2, mt: 2 }}>
+            {selectedPaymentRequest && (
+              <Alert
+                severity={paymentAction === "approve" ? "success" : "warning"}
+              >
+                <Typography variant="body2" gutterBottom>
+                  <strong>Admin:</strong>{" "}
+                  {selectedPaymentRequest.admin_username} (
+                  {selectedPaymentRequest.admin_organization})
+                </Typography>
+                <Typography variant="body2" gutterBottom>
+                  <strong>Agent Slots:</strong> +
+                  {selectedPaymentRequest.num_agents}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Amount:</strong> $
+                  {selectedPaymentRequest.total_amount}
+                </Typography>
+              </Alert>
+            )}
+
+            {selectedPaymentRequest?.payment_notes && (
+              <Alert severity="info">
+                <Typography variant="caption" fontWeight={600}>
+                  Admin Notes:
+                </Typography>
+                <Typography variant="body2">
+                  {selectedPaymentRequest.payment_notes}
+                </Typography>
+              </Alert>
+            )}
+
+            <TextField
+              label="Notes (Optional)"
+              multiline
+              rows={3}
+              value={paymentNotes}
+              onChange={(e) => setPaymentNotes(e.target.value)}
+              fullWidth
+              helperText="Add any notes about this decision"
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleClosePaymentDialog}>Cancel</Button>
+          <Button
+            onClick={handlePaymentAction}
+            variant="contained"
+            color={paymentAction === "approve" ? "success" : "error"}
+          >
+            {paymentAction === "approve" ? "Approve Payment" : "Reject Payment"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Wallet Address Dialog */}
+      <Dialog
+        open={openWalletDialog}
+        onClose={handleCloseWalletDialog}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Set Payment Wallet Address</DialogTitle>
+        <DialogContent>
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 2, mt: 2 }}>
+            <Alert severity="info">
+              This wallet address will be shown to admins when they request
+              agent slots. They'll send payments to this address.
+            </Alert>
+
+            <TextField
+              label="Wallet Address/URL"
+              value={newWalletAddress}
+              onChange={(e) => setNewWalletAddress(e.target.value)}
+              fullWidth
+              required
+              helperText="Enter cryptocurrency wallet address or payment link"
+              multiline
+              rows={2}
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseWalletDialog}>Cancel</Button>
+          <Button onClick={handleSaveWallet} variant="contained">
+            Save Wallet Address
           </Button>
         </DialogActions>
       </Dialog>
