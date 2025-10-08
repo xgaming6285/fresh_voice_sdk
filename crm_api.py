@@ -822,13 +822,36 @@ async def get_call_sessions(
     campaign_id: Optional[int] = None,
     lead_id: Optional[int] = None,
     status: Optional[str] = None,
-    limit: int = Query(100, ge=1, le=1000)
+    limit: int = Query(100, ge=1, le=1000),
+    current_user: User = Depends(get_current_user)
 ):
-    """Get call sessions"""
+    """Get call sessions (filtered by user ownership)"""
     try:
         session = get_session()
         
-        query = session.query(CallSession)
+        # Get accessible call session IDs based on user role
+        # IMPORTANT: Always filter out sessions with NULL owner_id (orphaned sessions)
+        accessible_session_ids = []
+        if current_user.role == UserRole.SUPERADMIN:
+            # Superadmin sees all call sessions (except orphaned ones)
+            query = session.query(CallSession).filter(CallSession.owner_id.isnot(None))
+        elif current_user.role == UserRole.ADMIN:
+            # Admin sees their own sessions + their agents' sessions
+            from crm_database import UserManager
+            user_manager = UserManager(session)
+            agents = user_manager.get_agents_by_admin(current_user.id)
+            agent_ids = [agent.id for agent in agents]
+            accessible_user_ids = [current_user.id] + agent_ids
+            query = session.query(CallSession).filter(
+                CallSession.owner_id.in_(accessible_user_ids),
+                CallSession.owner_id.isnot(None)  # Extra safety: exclude NULL owner_id
+            )
+        else:  # AGENT
+            # Agent only sees their own sessions
+            query = session.query(CallSession).filter(
+                CallSession.owner_id == current_user.id,
+                CallSession.owner_id.isnot(None)  # Extra safety: exclude NULL owner_id
+            )
         
         if campaign_id:
             query = query.filter(CallSession.campaign_id == campaign_id)
@@ -870,7 +893,7 @@ async def get_call_sessions(
         session.close()
 
 @crm_router.get("/sessions/{session_id}", response_model=CallSessionResponse)
-async def get_call_session(session_id: str):
+async def get_call_session(session_id: str, current_user: User = Depends(get_current_user)):
     """Get a specific call session by voice agent session ID"""
     try:
         session = get_session()
@@ -880,6 +903,21 @@ async def get_call_session(session_id: str):
         
         if not call_session:
             raise HTTPException(status_code=404, detail="Call session not found")
+        
+        # Check access rights
+        if current_user.role == UserRole.AGENT:
+            # Agent can only see their own sessions
+            if call_session.owner_id != current_user.id:
+                raise HTTPException(status_code=403, detail="Access denied")
+        elif current_user.role == UserRole.ADMIN:
+            # Admin can see their own sessions + their agents' sessions
+            from crm_database import UserManager
+            user_manager = UserManager(session)
+            agents = user_manager.get_agents_by_admin(current_user.id)
+            accessible_user_ids = [current_user.id] + [agent.id for agent in agents]
+            if call_session.owner_id not in accessible_user_ids:
+                raise HTTPException(status_code=403, detail="Access denied")
+        # Superadmin can see all sessions
         
         return CallSessionResponse(
             id=call_session.id,
@@ -947,6 +985,7 @@ async def execute_campaign(campaign_id: int):
                 session_id=f"campaign_{campaign_id}_lead_{lead.id}_{int(datetime.utcnow().timestamp())}",
                 campaign_id=campaign_id,
                 lead_id=lead.id,
+                owner_id=current_user.id,  # Set owner to the user who started the campaign
                 caller_id="+359898995151",  # From config
                 called_number=lead.full_phone,
                 status=CallStatus.DIALING

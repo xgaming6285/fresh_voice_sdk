@@ -280,6 +280,7 @@ class CallSession(Base):
     session_id = Column(String(100), unique=True, nullable=False)  # Voice agent session ID
     campaign_id = Column(Integer, ForeignKey('campaigns.id'))
     lead_id = Column(Integer, ForeignKey('leads.id'))
+    owner_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)  # User who initiated the call
     
     # Call details
     caller_id = Column(String(50))  # Our number
@@ -315,6 +316,7 @@ class CallSession(Base):
     # Relationships
     campaign = relationship("Campaign", back_populates="call_sessions")
     lead = relationship("Lead", back_populates="call_sessions")
+    owner = relationship("User", foreign_keys=[owner_id])
 
 # Database setup functions
 def get_database_url():
