@@ -140,4 +140,28 @@ export const userAPI = {
   deleteAgent: (id) => api.delete(`/api/users/agents/${id}`),
 };
 
+// Superadmin APIs
+export const superadminAPI = {
+  getStats: () => api.get("/api/superadmin/stats"),
+  getAdmins: () => api.get("/api/superadmin/admins"),
+  getAdmin: (id) => api.get(`/api/superadmin/admins/${id}`),
+  createAdmin: (data) => api.post("/api/superadmin/admins", data),
+  updateAdmin: (id, data) => api.put(`/api/superadmin/admins/${id}`, data),
+  deleteAdmin: (id) => api.delete(`/api/superadmin/admins/${id}`),
+  resetAdminPassword: (id, newPassword) =>
+    api.post(`/api/superadmin/admins/${id}/reset-password`, {
+      new_password: newPassword,
+    }),
+  getAgents: () => api.get("/api/superadmin/agents"),
+  getAdminAgents: (adminId) =>
+    api.get(`/api/superadmin/admins/${adminId}/agents`),
+  resetAgentPassword: (id, newPassword) =>
+    api.post(`/api/superadmin/agents/${id}/reset-password`, {
+      new_password: newPassword,
+    }),
+};
+
+// Add superadminAPI to the main api object for easier access
+api.superadminAPI = superadminAPI;
+
 export default api;

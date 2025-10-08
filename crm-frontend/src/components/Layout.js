@@ -30,6 +30,7 @@ import {
   Group as GroupIcon,
   AccountCircle,
   Logout as LogoutIcon,
+  AdminPanelSettings as AdminPanelSettingsIcon,
 } from "@mui/icons-material";
 import { voiceAgentAPI } from "../services/api";
 import { useAuth } from "../contexts/AuthContext";
@@ -39,32 +40,48 @@ const drawerWidth = 240;
 function Layout({ children }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, logout, isAdmin } = useAuth();
+  const { user, logout, isAdmin, isSuperAdmin } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [activeCalls, setActiveCalls] = useState(0);
   const [voiceAgentOnline, setVoiceAgentOnline] = useState(false);
   const [anchorEl, setAnchorEl] = useState(null);
 
   const menuItems = [
-    {
-      text: "Dashboard",
-      icon: <DashboardIcon />,
-      path: "/dashboard",
-      emoji: "📊",
-    },
-    { text: "Leads", icon: <PeopleIcon />, path: "/leads", emoji: "👥" },
-    {
-      text: "Campaigns",
-      icon: <CampaignIcon />,
-      path: "/campaigns",
-      emoji: "🎯",
-    },
-    {
-      text: "Call Sessions",
-      icon: <PhoneIcon />,
-      path: "/sessions",
-      emoji: "📞",
-    },
+    // Superadmin only menu item
+    ...(isSuperAdmin()
+      ? [
+          {
+            text: "Super Admin",
+            icon: <AdminPanelSettingsIcon />,
+            path: "/superadmin",
+            emoji: "🔐",
+          },
+        ]
+      : []),
+    // Regular menu items (not for superadmin)
+    ...(!isSuperAdmin()
+      ? [
+          {
+            text: "Dashboard",
+            icon: <DashboardIcon />,
+            path: "/dashboard",
+            emoji: "📊",
+          },
+          { text: "Leads", icon: <PeopleIcon />, path: "/leads", emoji: "👥" },
+          {
+            text: "Campaigns",
+            icon: <CampaignIcon />,
+            path: "/campaigns",
+            emoji: "🎯",
+          },
+          {
+            text: "Call Sessions",
+            icon: <PhoneIcon />,
+            path: "/sessions",
+            emoji: "📞",
+          },
+        ]
+      : []),
     // Admin only menu item
     ...(isAdmin()
       ? [

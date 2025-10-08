@@ -19,6 +19,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Enums
 class UserRole(enum.Enum):
+    SUPERADMIN = "superadmin"
     ADMIN = "admin"
     AGENT = "agent"
 
@@ -59,7 +60,11 @@ class User(Base):
     role = Column(Enum(UserRole), nullable=False)
     
     # For agents: who created them (admin_id)
+    # For admins: who created them (superadmin_id)
     created_by_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    
+    # Organization name (for admins - their client organization)
+    organization = Column(String(200))
     
     # User details
     first_name = Column(String(100))

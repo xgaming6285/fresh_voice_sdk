@@ -96,6 +96,10 @@ export const AuthProvider = ({ children }) => {
     return user?.role === "agent";
   };
 
+  const isSuperAdmin = () => {
+    return user?.role === "superadmin";
+  };
+
   const value = {
     user,
     loading,
@@ -105,6 +109,7 @@ export const AuthProvider = ({ children }) => {
     logout,
     isAdmin,
     isAgent,
+    isSuperAdmin,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

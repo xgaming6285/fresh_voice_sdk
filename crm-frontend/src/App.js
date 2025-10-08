@@ -22,6 +22,7 @@ import CampaignDetail from "./pages/CampaignDetail";
 import Sessions from "./pages/Sessions";
 import SessionDetail from "./pages/SessionDetail";
 import Agents from "./pages/Agents";
+import SuperAdmin from "./pages/SuperAdmin";
 
 const theme = createTheme({
   palette: {
@@ -295,9 +296,16 @@ const ProtectedRoute = ({ children }) => {
   return children;
 };
 
-// Public Route Component (redirect to dashboard if already logged in)
+// Root Redirect Component (redirect based on user role)
+const RootRedirect = () => {
+  const { isSuperAdmin } = useAuth();
+  const redirectPath = isSuperAdmin() ? "/superadmin" : "/dashboard";
+  return <Navigate to={redirectPath} replace />;
+};
+
+// Public Route Component (redirect to dashboard/superadmin if already logged in)
 const PublicRoute = ({ children }) => {
-  const { user, loading } = useAuth();
+  const { user, loading, isSuperAdmin } = useAuth();
 
   if (loading) {
     return (
@@ -315,7 +323,9 @@ const PublicRoute = ({ children }) => {
   }
 
   if (user) {
-    return <Navigate to="/dashboard" replace />;
+    // Redirect superadmin to superadmin panel, others to dashboard
+    const redirectPath = isSuperAdmin() ? "/superadmin" : "/dashboard";
+    return <Navigate to={redirectPath} replace />;
   }
 
   return children;
@@ -342,15 +352,8 @@ function AppRoutes() {
         }
       />
 
-      {/* Protected Routes */}
-      <Route
-        path="/"
-        element={
-          <ProtectedRoute>
-            <Navigate to="/dashboard" />
-          </ProtectedRoute>
-        }
-      />
+      {/* Default Route - redirect to login */}
+      <Route path="/" element={<Navigate to="/login" replace />} />
       <Route
         path="/dashboard"
         element={
@@ -417,6 +420,16 @@ function AppRoutes() {
           <ProtectedRoute>
             <Layout>
               <Agents />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/superadmin"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <SuperAdmin />
             </Layout>
           </ProtectedRoute>
         }

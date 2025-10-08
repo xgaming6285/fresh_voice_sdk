@@ -55,6 +55,7 @@ class UserResponse(BaseModel):
     first_name: Optional[str]
     last_name: Optional[str]
     full_name: str
+    organization: Optional[str]
     created_at: datetime
     created_by_id: Optional[int]
 
@@ -130,6 +131,16 @@ async def get_current_admin(current_user: User = Depends(get_current_user)) -> U
         )
     return current_user
 
+# Dependency to check if user is superadmin
+async def get_current_superadmin(current_user: User = Depends(get_current_user)) -> User:
+    """Verify current user is a superadmin"""
+    if current_user.role != UserRole.SUPERADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Superadmin access required"
+        )
+    return current_user
+
 def user_to_dict(user: User) -> Dict[str, Any]:
     """Convert user object to dictionary"""
     return {
@@ -140,6 +151,7 @@ def user_to_dict(user: User) -> Dict[str, Any]:
         "first_name": user.first_name,
         "last_name": user.last_name,
         "full_name": user.full_name,
+        "organization": user.organization,
         "created_at": user.created_at.isoformat(),
         "created_by_id": user.created_by_id
     }
@@ -256,6 +268,7 @@ async def get_me(current_user: User = Depends(get_current_user)):
         first_name=current_user.first_name,
         last_name=current_user.last_name,
         full_name=current_user.full_name,
+        organization=current_user.organization,
         created_at=current_user.created_at,
         created_by_id=current_user.created_by_id
     )
@@ -268,6 +281,50 @@ async def verify_token(current_user: User = Depends(get_current_user)):
         "user": user_to_dict(current_user)
     }
 
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=6)
+
+@auth_router.post("/change-password")
+async def change_password(
+    password_data: PasswordChange,
+    current_user: User = Depends(get_current_user)
+):
+    """Change user password (not available for admins)"""
+    try:
+        # Admins cannot change their passwords
+        if current_user.role == UserRole.ADMIN:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admins cannot change their passwords. Contact superadmin for password reset."
+            )
+        
+        session = get_session()
+        
+        # Verify current password
+        if not current_user.verify_password(password_data.current_password):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is incorrect"
+            )
+        
+        # Update password
+        current_user.hashed_password = User.hash_password(password_data.new_password)
+        current_user.updated_at = datetime.utcnow()
+        session.commit()
+        
+        return {
+            "message": "Password changed successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error changing password: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
 # Export
-__all__ = ['auth_router', 'get_current_user', 'get_current_admin', 'user_to_dict']
+__all__ = ['auth_router', 'get_current_user', 'get_current_admin', 'get_current_superadmin', 'user_to_dict']
 
