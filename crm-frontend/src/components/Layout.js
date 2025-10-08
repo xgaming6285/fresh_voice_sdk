@@ -15,6 +15,10 @@ import {
   Toolbar,
   Typography,
   Badge,
+  Menu,
+  MenuItem,
+  Avatar,
+  Chip,
 } from "@mui/material";
 import {
   Menu as MenuIcon,
@@ -23,39 +27,56 @@ import {
   Campaign as CampaignIcon,
   Phone as PhoneIcon,
   Assessment as AssessmentIcon,
+  Group as GroupIcon,
+  AccountCircle,
+  Logout as LogoutIcon,
 } from "@mui/icons-material";
 import { voiceAgentAPI } from "../services/api";
+import { useAuth } from "../contexts/AuthContext";
 
 const drawerWidth = 240;
-
-const menuItems = [
-  {
-    text: "Dashboard",
-    icon: <DashboardIcon />,
-    path: "/dashboard",
-    emoji: "📊",
-  },
-  { text: "Leads", icon: <PeopleIcon />, path: "/leads", emoji: "👥" },
-  {
-    text: "Campaigns",
-    icon: <CampaignIcon />,
-    path: "/campaigns",
-    emoji: "🎯",
-  },
-  {
-    text: "Call Sessions",
-    icon: <PhoneIcon />,
-    path: "/sessions",
-    emoji: "📞",
-  },
-];
 
 function Layout({ children }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const { user, logout, isAdmin } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [activeCalls, setActiveCalls] = useState(0);
   const [voiceAgentOnline, setVoiceAgentOnline] = useState(false);
+  const [anchorEl, setAnchorEl] = useState(null);
+
+  const menuItems = [
+    {
+      text: "Dashboard",
+      icon: <DashboardIcon />,
+      path: "/dashboard",
+      emoji: "📊",
+    },
+    { text: "Leads", icon: <PeopleIcon />, path: "/leads", emoji: "👥" },
+    {
+      text: "Campaigns",
+      icon: <CampaignIcon />,
+      path: "/campaigns",
+      emoji: "🎯",
+    },
+    {
+      text: "Call Sessions",
+      icon: <PhoneIcon />,
+      path: "/sessions",
+      emoji: "📞",
+    },
+    // Admin only menu item
+    ...(isAdmin()
+      ? [
+          {
+            text: "Agents",
+            icon: <GroupIcon />,
+            path: "/agents",
+            emoji: "👨‍💼",
+          },
+        ]
+      : []),
+  ];
 
   useEffect(() => {
     // Check voice agent status
@@ -79,6 +100,20 @@ function Layout({ children }) {
 
   const handleDrawerToggle = () => {
     setMobileOpen(!mobileOpen);
+  };
+
+  const handleUserMenuOpen = (event) => {
+    setAnchorEl(event.currentTarget);
+  };
+
+  const handleUserMenuClose = () => {
+    setAnchorEl(null);
+  };
+
+  const handleLogout = () => {
+    handleUserMenuClose();
+    logout();
+    navigate("/login");
   };
 
   const drawer = (
@@ -220,7 +255,7 @@ function Layout({ children }) {
             sx={{
               display: "flex",
               alignItems: "center",
-              gap: 1,
+              gap: 2,
             }}
           >
             <Box
@@ -239,9 +274,68 @@ function Layout({ children }) {
                   : "0 0 12px rgba(211, 47, 47, 0.8)",
               }}
             />
+
+            {/* User Info */}
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+              <Chip
+                label={user?.role || "User"}
+                size="small"
+                sx={{
+                  bgcolor: "rgba(255, 255, 255, 0.2)",
+                  color: "white",
+                  fontWeight: 600,
+                  textTransform: "capitalize",
+                }}
+              />
+              <IconButton
+                onClick={handleUserMenuOpen}
+                sx={{
+                  color: "white",
+                  "&:hover": {
+                    backgroundColor: "rgba(255, 255, 255, 0.15)",
+                  },
+                }}
+              >
+                <AccountCircle />
+              </IconButton>
+            </Box>
           </Box>
         </Toolbar>
       </AppBar>
+
+      {/* User Menu */}
+      <Menu
+        anchorEl={anchorEl}
+        open={Boolean(anchorEl)}
+        onClose={handleUserMenuClose}
+        anchorOrigin={{
+          vertical: "bottom",
+          horizontal: "right",
+        }}
+        transformOrigin={{
+          vertical: "top",
+          horizontal: "right",
+        }}
+      >
+        <Box sx={{ px: 2, py: 1 }}>
+          <Typography variant="subtitle2" color="text.secondary">
+            Signed in as
+          </Typography>
+          <Typography variant="body1" fontWeight={600}>
+            {user?.full_name || user?.username}
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            {user?.email}
+          </Typography>
+        </Box>
+        <Divider />
+        <MenuItem onClick={handleLogout}>
+          <ListItemIcon>
+            <LogoutIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText>Logout</ListItemText>
+        </MenuItem>
+      </Menu>
       <Box
         component="nav"
         sx={{ width: { sm: drawerWidth }, flexShrink: { sm: 0 } }}

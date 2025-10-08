@@ -28,3 +28,7 @@ openai-whisper
 
 # Database for CRM
 sqlalchemy
+
+# Authentication
+pyjwt
+passlib[bcrypt]

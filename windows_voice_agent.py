@@ -496,7 +496,9 @@ from google import genai
 
 # Import CRM API
 from crm_api import crm_router
-from crm_database import init_database, get_session, Lead, CallSession
+from crm_auth import auth_router
+from crm_user_management import user_router
+from crm_database import init_database, get_session, Lead, CallSession, CallStatus
 
 # Import Gemini greeting generator (the only supported method)
 try:
@@ -534,6 +536,8 @@ app.add_middleware(
 )
 
 # Include CRM API routes
+app.include_router(auth_router)
+app.include_router(user_router)
 app.include_router(crm_router)
 
 # Mount static files for serving audio recordings
@@ -2714,14 +2718,14 @@ class WindowsSIPHandler:
             try:
                 crm_session = db.query(CallSession).filter(CallSession.session_id == session_id).first()
                 if crm_session:
-                    crm_session.status = "answered"
+                    crm_session.status = CallStatus.ANSWERED
                 else:
                     # Create new session for incoming calls
                     crm_session = CallSession(
                         session_id=session_id,
                         caller_id=caller_id,
                         called_number=config.get('phone_number', 'Unknown'),
-                        status="answered",
+                        status=CallStatus.ANSWERED,
                         started_at=datetime.utcnow(),
                         answered_at=datetime.utcnow()
                     )
@@ -4419,7 +4423,7 @@ async def make_outbound_call(call_request: dict):
                     called_number=phone_number,
                     lead_id=lead.id if lead else None,
                     campaign_id=None,  # Manual call
-                    status="dialing",
+                    status=CallStatus.DIALING,
                     started_at=datetime.utcnow()
                 )
                 db.add(new_session)

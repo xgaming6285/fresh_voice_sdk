@@ -4,7 +4,7 @@ CRM API Endpoints for Voice Agent
 Handles leads, campaigns, and call orchestration
 """
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, File, UploadFile
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, File, UploadFile, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
@@ -17,10 +17,11 @@ import logging
 from pathlib import Path
 
 from crm_database import (
-    get_session, Lead, Campaign, CampaignLead, CallSession,
-    LeadType, Gender, CampaignStatus, CallStatus,
+    get_session, Lead, Campaign, CampaignLead, CallSession, User,
+    Gender, CampaignStatus, CallStatus, UserRole,
     LeadManager, CampaignManager
 )
+from crm_auth import get_current_user, get_current_admin, user_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,6 @@ crm_router = APIRouter(prefix="/api/crm", tags=["CRM"])
 
 # Pydantic models for API
 class LeadCreate(BaseModel):
-    lead_type: str = Field(default="cold")
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     email: Optional[str] = None
@@ -42,7 +42,6 @@ class LeadCreate(BaseModel):
     custom_data: Optional[Dict[str, Any]] = None
 
 class LeadUpdate(BaseModel):
-    lead_type: Optional[str] = None
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     email: Optional[str] = None
@@ -56,7 +55,8 @@ class LeadUpdate(BaseModel):
 
 class LeadResponse(BaseModel):
     id: int
-    lead_type: str
+    owner_id: int
+    owner_name: str  # Name of agent who created this lead
     first_name: Optional[str]
     last_name: Optional[str]
     email: Optional[str]
@@ -90,6 +90,8 @@ class CampaignUpdate(BaseModel):
 
 class CampaignResponse(BaseModel):
     id: int
+    owner_id: int
+    owner_name: str  # Name of agent who created this campaign
     name: str
     description: Optional[str]
     status: str
@@ -112,7 +114,6 @@ class AddLeadsToCampaign(BaseModel):
 
 class LeadFilter(BaseModel):
     countries: Optional[List[str]] = None
-    lead_types: Optional[List[str]] = None
     min_call_count: Optional[int] = None
     max_call_count: Optional[int] = None
     never_called: Optional[bool] = None
@@ -139,9 +140,96 @@ class CallSessionResponse(BaseModel):
     follow_up_required: bool
     follow_up_notes: Optional[str]
 
+# Helper functions
+def build_lead_response(lead: Lead, session) -> LeadResponse:
+    """Build LeadResponse from Lead object"""
+    owner = session.query(User).get(lead.owner_id)
+    owner_name = owner.full_name if owner else "Unknown"
+    
+    return LeadResponse(
+        id=lead.id,
+        owner_id=lead.owner_id,
+        owner_name=owner_name,
+        first_name=lead.first_name,
+        last_name=lead.last_name,
+        email=lead.email,
+        phone=lead.phone,
+        country=lead.country,
+        country_code=lead.country_code,
+        gender=lead.gender.value if lead.gender else "unknown",
+        address=lead.address,
+        created_at=lead.created_at,
+        updated_at=lead.updated_at,
+        last_called_at=lead.last_called_at,
+        call_count=lead.call_count,
+        notes=lead.notes,
+        full_phone=lead.full_phone,
+        full_name=lead.full_name
+    )
+
+def build_campaign_response(campaign: Campaign, session) -> CampaignResponse:
+    """Build CampaignResponse from Campaign object"""
+    owner = session.query(User).get(campaign.owner_id)
+    owner_name = owner.full_name if owner else "Unknown"
+    
+    return CampaignResponse(
+        id=campaign.id,
+        owner_id=campaign.owner_id,
+        owner_name=owner_name,
+        name=campaign.name,
+        description=campaign.description,
+        status=campaign.status.value,
+        bot_config=campaign.bot_config or {},
+        dialing_config=campaign.dialing_config or {},
+        schedule_config=campaign.schedule_config or {},
+        total_leads=campaign.total_leads,
+        leads_called=campaign.leads_called,
+        leads_answered=campaign.leads_answered,
+        leads_rejected=campaign.leads_rejected,
+        leads_failed=campaign.leads_failed,
+        created_at=campaign.created_at,
+        updated_at=campaign.updated_at,
+        started_at=campaign.started_at,
+        completed_at=campaign.completed_at
+    )
+
+def get_accessible_lead_ids(user: User, session) -> List[int]:
+    """Get IDs of all leads accessible to user (their own + their agents' if admin)"""
+    if user.role == UserRole.ADMIN:
+        # Admin can see their own leads and their agents' leads
+        # Query agents directly from session instead of using lazy-loaded relationship
+        from crm_database import UserManager
+        user_manager = UserManager(session)
+        agents = user_manager.get_agents_by_admin(user.id)
+        agent_ids = [agent.id for agent in agents]
+        accessible_ids = [user.id] + agent_ids
+        leads = session.query(Lead.id).filter(Lead.owner_id.in_(accessible_ids)).all()
+        return [lead.id for lead in leads]
+    else:
+        # Agent can only see their own leads
+        leads = session.query(Lead.id).filter(Lead.owner_id == user.id).all()
+        return [lead.id for lead in leads]
+
+def get_accessible_campaign_ids(user: User, session) -> List[int]:
+    """Get IDs of all campaigns accessible to user (their own + their agents' if admin)"""
+    if user.role == UserRole.ADMIN:
+        # Admin can see their own campaigns and their agents' campaigns
+        # Query agents directly from session instead of using lazy-loaded relationship
+        from crm_database import UserManager
+        user_manager = UserManager(session)
+        agents = user_manager.get_agents_by_admin(user.id)
+        agent_ids = [agent.id for agent in agents]
+        accessible_ids = [user.id] + agent_ids
+        campaigns = session.query(Campaign.id).filter(Campaign.owner_id.in_(accessible_ids)).all()
+        return [campaign.id for campaign in campaigns]
+    else:
+        # Agent can only see their own campaigns
+        campaigns = session.query(Campaign.id).filter(Campaign.owner_id == user.id).all()
+        return [campaign.id for campaign in campaigns]
+
 # Lead endpoints
 @crm_router.post("/leads", response_model=LeadResponse)
-async def create_lead(lead: LeadCreate):
+async def create_lead(lead: LeadCreate, current_user: User = Depends(get_current_user)):
     """Create a new lead"""
     try:
         session = get_session()
@@ -149,30 +237,12 @@ async def create_lead(lead: LeadCreate):
         
         # Convert string enums to proper enum values
         lead_data = lead.dict()
-        lead_data['lead_type'] = LeadType(lead_data['lead_type'])
+        lead_data['owner_id'] = current_user.id
         lead_data['gender'] = Gender(lead_data.get('gender', 'unknown'))
         
         db_lead = lead_manager.create_lead(lead_data)
         
-        return LeadResponse(
-            id=db_lead.id,
-            lead_type=db_lead.lead_type.value,
-            first_name=db_lead.first_name,
-            last_name=db_lead.last_name,
-            email=db_lead.email,
-            phone=db_lead.phone,
-            country=db_lead.country,
-            country_code=db_lead.country_code,
-            gender=db_lead.gender.value,
-            address=db_lead.address,
-            created_at=db_lead.created_at,
-            updated_at=db_lead.updated_at,
-            last_called_at=db_lead.last_called_at,
-            call_count=db_lead.call_count,
-            notes=db_lead.notes,
-            full_phone=db_lead.full_phone,
-            full_name=db_lead.full_name
-        )
+        return build_lead_response(db_lead, session)
     except Exception as e:
         logger.error(f"Error creating lead: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -184,46 +254,28 @@ async def get_leads(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=1000),
     country: Optional[str] = None,
-    lead_type: Optional[str] = None
+    current_user: User = Depends(get_current_user)
 ):
     """Get paginated list of leads"""
     try:
         session = get_session()
-        lead_manager = LeadManager(session)
         
+        # Build query with ownership filter
+        query = session.query(Lead)
+        
+        # Filter by accessible leads (user's own + their agents' if admin)
+        accessible_lead_ids = get_accessible_lead_ids(current_user, session)
+        query = query.filter(Lead.id.in_(accessible_lead_ids))
+        
+        if country:
+            query = query.filter(Lead.country == country)
+        
+        total = query.count()
         offset = (page - 1) * per_page
         
-        # Convert lead_type string to enum if provided
-        lead_type_enum = LeadType(lead_type) if lead_type else None
+        leads = query.limit(per_page).offset(offset).all()
         
-        leads, total = lead_manager.get_leads_by_criteria(
-            country=country,
-            lead_type=lead_type_enum,
-            limit=per_page,
-            offset=offset
-        )
-        
-        leads_response = []
-        for lead in leads:
-            leads_response.append(LeadResponse(
-                id=lead.id,
-                lead_type=lead.lead_type.value,
-                first_name=lead.first_name,
-                last_name=lead.last_name,
-                email=lead.email,
-                phone=lead.phone,
-                country=lead.country,
-                country_code=lead.country_code,
-                gender=lead.gender.value,
-                address=lead.address,
-                created_at=lead.created_at,
-                updated_at=lead.updated_at,
-                last_called_at=lead.last_called_at,
-                call_count=lead.call_count,
-                notes=lead.notes,
-                full_phone=lead.full_phone,
-                full_name=lead.full_name
-            ))
+        leads_response = [build_lead_response(lead, session) for lead in leads]
         
         return {
             "leads": leads_response,
@@ -239,7 +291,7 @@ async def get_leads(
         session.close()
 
 @crm_router.get("/leads/{lead_id}", response_model=LeadResponse)
-async def get_lead(lead_id: int):
+async def get_lead(lead_id: int, current_user: User = Depends(get_current_user)):
     """Get a specific lead"""
     try:
         session = get_session()
@@ -248,25 +300,12 @@ async def get_lead(lead_id: int):
         if not lead:
             raise HTTPException(status_code=404, detail="Lead not found")
         
-        return LeadResponse(
-            id=lead.id,
-            lead_type=lead.lead_type.value,
-            first_name=lead.first_name,
-            last_name=lead.last_name,
-            email=lead.email,
-            phone=lead.phone,
-            country=lead.country,
-            country_code=lead.country_code,
-            gender=lead.gender.value,
-            address=lead.address,
-            created_at=lead.created_at,
-            updated_at=lead.updated_at,
-            last_called_at=lead.last_called_at,
-            call_count=lead.call_count,
-            notes=lead.notes,
-            full_phone=lead.full_phone,
-            full_name=lead.full_name
-        )
+        # Check access permission
+        accessible_lead_ids = get_accessible_lead_ids(current_user, session)
+        if lead.id not in accessible_lead_ids:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        return build_lead_response(lead, session)
     except HTTPException:
         raise
     except Exception as e:
@@ -276,7 +315,7 @@ async def get_lead(lead_id: int):
         session.close()
 
 @crm_router.put("/leads/{lead_id}", response_model=LeadResponse)
-async def update_lead(lead_id: int, lead_update: LeadUpdate):
+async def update_lead(lead_id: int, lead_update: LeadUpdate, current_user: User = Depends(get_current_user)):
     """Update a lead"""
     try:
         session = get_session()
@@ -285,37 +324,22 @@ async def update_lead(lead_id: int, lead_update: LeadUpdate):
         if not lead:
             raise HTTPException(status_code=404, detail="Lead not found")
         
+        # Check access permission
+        accessible_lead_ids = get_accessible_lead_ids(current_user, session)
+        if lead.id not in accessible_lead_ids:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
         # Update fields
         update_data = lead_update.dict(exclude_unset=True)
         for field, value in update_data.items():
             if value is not None:
-                if field == 'lead_type':
-                    value = LeadType(value)
-                elif field == 'gender':
+                if field == 'gender':
                     value = Gender(value)
                 setattr(lead, field, value)
         
         session.commit()
         
-        return LeadResponse(
-            id=lead.id,
-            lead_type=lead.lead_type.value,
-            first_name=lead.first_name,
-            last_name=lead.last_name,
-            email=lead.email,
-            phone=lead.phone,
-            country=lead.country,
-            country_code=lead.country_code,
-            gender=lead.gender.value,
-            address=lead.address,
-            created_at=lead.created_at,
-            updated_at=lead.updated_at,
-            last_called_at=lead.last_called_at,
-            call_count=lead.call_count,
-            notes=lead.notes,
-            full_phone=lead.full_phone,
-            full_name=lead.full_name
-        )
+        return build_lead_response(lead, session)
     except HTTPException:
         raise
     except Exception as e:
@@ -325,7 +349,7 @@ async def update_lead(lead_id: int, lead_update: LeadUpdate):
         session.close()
 
 @crm_router.delete("/leads/{lead_id}")
-async def delete_lead(lead_id: int):
+async def delete_lead(lead_id: int, current_user: User = Depends(get_current_user)):
     """Delete a lead"""
     try:
         session = get_session()
@@ -333,6 +357,11 @@ async def delete_lead(lead_id: int):
         
         if not lead:
             raise HTTPException(status_code=404, detail="Lead not found")
+        
+        # Check access permission
+        accessible_lead_ids = get_accessible_lead_ids(current_user, session)
+        if lead.id not in accessible_lead_ids:
+            raise HTTPException(status_code=403, detail="Access denied")
         
         session.delete(lead)
         session.commit()
@@ -347,7 +376,7 @@ async def delete_lead(lead_id: int):
         session.close()
 
 @crm_router.post("/leads/import")
-async def import_leads(file: UploadFile = File(...)):
+async def import_leads(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
     """Import leads from CSV file"""
     try:
         if not file.filename.endswith('.csv'):
@@ -366,7 +395,7 @@ async def import_leads(file: UploadFile = File(...)):
         for row in csv_reader:
             # Map CSV columns to lead fields
             lead_data = {
-                'lead_type': LeadType(row.get('lead_type', 'cold').lower()),
+                'owner_id': current_user.id,
                 'first_name': row.get('first_name', '').strip(),
                 'last_name': row.get('last_name', '').strip(),
                 'email': row.get('email', '').strip(),
@@ -402,13 +431,14 @@ async def import_leads(file: UploadFile = File(...)):
 
 # Campaign endpoints
 @crm_router.post("/campaigns", response_model=CampaignResponse)
-async def create_campaign(campaign: CampaignCreate):
+async def create_campaign(campaign: CampaignCreate, current_user: User = Depends(get_current_user)):
     """Create a new campaign"""
     try:
         session = get_session()
         campaign_manager = CampaignManager(session)
         
         db_campaign = campaign_manager.create_campaign(
+            owner_id=current_user.id,
             name=campaign.name,
             description=campaign.description,
             bot_config=campaign.bot_config
@@ -421,24 +451,7 @@ async def create_campaign(campaign: CampaignCreate):
             db_campaign.schedule_config = campaign.schedule_config
         session.commit()
         
-        return CampaignResponse(
-            id=db_campaign.id,
-            name=db_campaign.name,
-            description=db_campaign.description,
-            status=db_campaign.status.value,
-            bot_config=db_campaign.bot_config or {},
-            dialing_config=db_campaign.dialing_config or {},
-            schedule_config=db_campaign.schedule_config or {},
-            total_leads=db_campaign.total_leads,
-            leads_called=db_campaign.leads_called,
-            leads_answered=db_campaign.leads_answered,
-            leads_rejected=db_campaign.leads_rejected,
-            leads_failed=db_campaign.leads_failed,
-            created_at=db_campaign.created_at,
-            updated_at=db_campaign.updated_at,
-            started_at=db_campaign.started_at,
-            completed_at=db_campaign.completed_at
-        )
+        return build_campaign_response(db_campaign, session)
     except Exception as e:
         logger.error(f"Error creating campaign: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -446,37 +459,21 @@ async def create_campaign(campaign: CampaignCreate):
         session.close()
 
 @crm_router.get("/campaigns", response_model=List[CampaignResponse])
-async def get_campaigns(status: Optional[str] = None):
+async def get_campaigns(status: Optional[str] = None, current_user: User = Depends(get_current_user)):
     """Get list of campaigns"""
     try:
         session = get_session()
         
-        query = session.query(Campaign)
+        # Filter by accessible campaigns
+        accessible_campaign_ids = get_accessible_campaign_ids(current_user, session)
+        query = session.query(Campaign).filter(Campaign.id.in_(accessible_campaign_ids))
+        
         if status:
             query = query.filter(Campaign.status == CampaignStatus(status))
         
         campaigns = query.order_by(Campaign.created_at.desc()).all()
         
-        return [
-            CampaignResponse(
-                id=c.id,
-                name=c.name,
-                description=c.description,
-                status=c.status.value,
-                bot_config=c.bot_config or {},
-                dialing_config=c.dialing_config or {},
-                schedule_config=c.schedule_config or {},
-                total_leads=c.total_leads,
-                leads_called=c.leads_called,
-                leads_answered=c.leads_answered,
-                leads_rejected=c.leads_rejected,
-                leads_failed=c.leads_failed,
-                created_at=c.created_at,
-                updated_at=c.updated_at,
-                started_at=c.started_at,
-                completed_at=c.completed_at
-            ) for c in campaigns
-        ]
+        return [build_campaign_response(c, session) for c in campaigns]
     except Exception as e:
         logger.error(f"Error getting campaigns: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -484,7 +481,7 @@ async def get_campaigns(status: Optional[str] = None):
         session.close()
 
 @crm_router.get("/campaigns/{campaign_id}", response_model=CampaignResponse)
-async def get_campaign(campaign_id: int):
+async def get_campaign(campaign_id: int, current_user: User = Depends(get_current_user)):
     """Get a specific campaign"""
     try:
         session = get_session()
@@ -493,24 +490,12 @@ async def get_campaign(campaign_id: int):
         if not campaign:
             raise HTTPException(status_code=404, detail="Campaign not found")
         
-        return CampaignResponse(
-            id=campaign.id,
-            name=campaign.name,
-            description=campaign.description,
-            status=campaign.status.value,
-            bot_config=campaign.bot_config or {},
-            dialing_config=campaign.dialing_config or {},
-            schedule_config=campaign.schedule_config or {},
-            total_leads=campaign.total_leads,
-            leads_called=campaign.leads_called,
-            leads_answered=campaign.leads_answered,
-            leads_rejected=campaign.leads_rejected,
-            leads_failed=campaign.leads_failed,
-            created_at=campaign.created_at,
-            updated_at=campaign.updated_at,
-            started_at=campaign.started_at,
-            completed_at=campaign.completed_at
-        )
+        # Check access permission
+        accessible_campaign_ids = get_accessible_campaign_ids(current_user, session)
+        if campaign.id not in accessible_campaign_ids:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        return build_campaign_response(campaign, session)
     except HTTPException:
         raise
     except Exception as e:
@@ -520,7 +505,7 @@ async def get_campaign(campaign_id: int):
         session.close()
 
 @crm_router.put("/campaigns/{campaign_id}", response_model=CampaignResponse)
-async def update_campaign(campaign_id: int, campaign_update: CampaignUpdate):
+async def update_campaign(campaign_id: int, campaign_update: CampaignUpdate, current_user: User = Depends(get_current_user)):
     """Update a campaign"""
     try:
         session = get_session()
@@ -528,6 +513,11 @@ async def update_campaign(campaign_id: int, campaign_update: CampaignUpdate):
         
         if not campaign:
             raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        # Check access permission
+        accessible_campaign_ids = get_accessible_campaign_ids(current_user, session)
+        if campaign.id not in accessible_campaign_ids:
+            raise HTTPException(status_code=403, detail="Access denied")
         
         # Update fields
         update_data = campaign_update.dict(exclude_unset=True)
@@ -539,24 +529,7 @@ async def update_campaign(campaign_id: int, campaign_update: CampaignUpdate):
         
         session.commit()
         
-        return CampaignResponse(
-            id=campaign.id,
-            name=campaign.name,
-            description=campaign.description,
-            status=campaign.status.value,
-            bot_config=campaign.bot_config or {},
-            dialing_config=campaign.dialing_config or {},
-            schedule_config=campaign.schedule_config or {},
-            total_leads=campaign.total_leads,
-            leads_called=campaign.leads_called,
-            leads_answered=campaign.leads_answered,
-            leads_rejected=campaign.leads_rejected,
-            leads_failed=campaign.leads_failed,
-            created_at=campaign.created_at,
-            updated_at=campaign.updated_at,
-            started_at=campaign.started_at,
-            completed_at=campaign.completed_at
-        )
+        return build_campaign_response(campaign, session)
     except HTTPException:
         raise
     except Exception as e:
@@ -566,16 +539,26 @@ async def update_campaign(campaign_id: int, campaign_update: CampaignUpdate):
         session.close()
 
 @crm_router.post("/campaigns/{campaign_id}/leads")
-async def add_leads_to_campaign(campaign_id: int, request: AddLeadsToCampaign):
+async def add_leads_to_campaign(campaign_id: int, request: AddLeadsToCampaign, current_user: User = Depends(get_current_user)):
     """Add leads to a campaign"""
     try:
         session = get_session()
         campaign_manager = CampaignManager(session)
         
-        # Verify campaign exists
+        # Verify campaign exists and check access
         campaign = session.query(Campaign).get(campaign_id)
         if not campaign:
             raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        accessible_campaign_ids = get_accessible_campaign_ids(current_user, session)
+        if campaign.id not in accessible_campaign_ids:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Verify all leads are accessible
+        accessible_lead_ids = get_accessible_lead_ids(current_user, session)
+        for lead_id in request.lead_ids:
+            if lead_id not in accessible_lead_ids:
+                raise HTTPException(status_code=403, detail=f"Access denied to lead {lead_id}")
         
         # Add leads
         added_count = campaign_manager.add_leads_to_campaign(
@@ -598,19 +581,26 @@ async def add_leads_to_campaign(campaign_id: int, request: AddLeadsToCampaign):
         session.close()
 
 @crm_router.post("/campaigns/{campaign_id}/leads/filter")
-async def add_filtered_leads_to_campaign(campaign_id: int, filter: LeadFilter):
+async def add_filtered_leads_to_campaign(campaign_id: int, filter: LeadFilter, current_user: User = Depends(get_current_user)):
     """Add leads to campaign based on filter criteria"""
     try:
         session = get_session()
         
-        # Build query
-        query = session.query(Lead)
+        # Verify campaign exists and check access
+        campaign = session.query(Campaign).get(campaign_id)
+        if not campaign:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        accessible_campaign_ids = get_accessible_campaign_ids(current_user, session)
+        if campaign.id not in accessible_campaign_ids:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Build query with ownership filter
+        accessible_lead_ids = get_accessible_lead_ids(current_user, session)
+        query = session.query(Lead).filter(Lead.id.in_(accessible_lead_ids))
         
         if filter.countries:
             query = query.filter(Lead.country.in_(filter.countries))
-        if filter.lead_types:
-            lead_type_enums = [LeadType(lt) for lt in filter.lead_types]
-            query = query.filter(Lead.lead_type.in_(lead_type_enums))
         if filter.min_call_count is not None:
             query = query.filter(Lead.call_count >= filter.min_call_count)
         if filter.max_call_count is not None:
@@ -653,11 +643,21 @@ async def get_campaign_leads(
     campaign_id: int,
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=1000),
-    status: Optional[str] = None
+    status: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
 ):
     """Get leads in a campaign"""
     try:
         session = get_session()
+        
+        # Verify campaign exists and check access
+        campaign = session.query(Campaign).get(campaign_id)
+        if not campaign:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        accessible_campaign_ids = get_accessible_campaign_ids(current_user, session)
+        if campaign.id not in accessible_campaign_ids:
+            raise HTTPException(status_code=403, detail="Access denied")
         
         query = session.query(CampaignLead).filter(
             CampaignLead.campaign_id == campaign_id
@@ -705,7 +705,7 @@ async def get_campaign_leads(
         session.close()
 
 @crm_router.post("/campaigns/{campaign_id}/start", response_model=Dict[str, Any])
-async def start_campaign(campaign_id: int, background_tasks: BackgroundTasks):
+async def start_campaign(campaign_id: int, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user)):
     """Start a campaign"""
     try:
         session = get_session()
@@ -713,6 +713,11 @@ async def start_campaign(campaign_id: int, background_tasks: BackgroundTasks):
         
         if not campaign:
             raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        # Check access permission
+        accessible_campaign_ids = get_accessible_campaign_ids(current_user, session)
+        if campaign.id not in accessible_campaign_ids:
+            raise HTTPException(status_code=403, detail="Access denied")
         
         if campaign.status not in [CampaignStatus.DRAFT, CampaignStatus.READY, CampaignStatus.PAUSED]:
             raise HTTPException(
@@ -751,7 +756,7 @@ async def start_campaign(campaign_id: int, background_tasks: BackgroundTasks):
         session.close()
 
 @crm_router.post("/campaigns/{campaign_id}/pause")
-async def pause_campaign(campaign_id: int):
+async def pause_campaign(campaign_id: int, current_user: User = Depends(get_current_user)):
     """Pause a running campaign"""
     try:
         session = get_session()
@@ -759,6 +764,11 @@ async def pause_campaign(campaign_id: int):
         
         if not campaign:
             raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        # Check access permission
+        accessible_campaign_ids = get_accessible_campaign_ids(current_user, session)
+        if campaign.id not in accessible_campaign_ids:
+            raise HTTPException(status_code=403, detail="Access denied")
         
         if campaign.status != CampaignStatus.RUNNING:
             raise HTTPException(
@@ -779,7 +789,7 @@ async def pause_campaign(campaign_id: int):
         session.close()
 
 @crm_router.post("/campaigns/{campaign_id}/stop")
-async def stop_campaign(campaign_id: int):
+async def stop_campaign(campaign_id: int, current_user: User = Depends(get_current_user)):
     """Stop a campaign"""
     try:
         session = get_session()
@@ -787,6 +797,11 @@ async def stop_campaign(campaign_id: int):
         
         if not campaign:
             raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        # Check access permission
+        accessible_campaign_ids = get_accessible_campaign_ids(current_user, session)
+        if campaign.id not in accessible_campaign_ids:
+            raise HTTPException(status_code=403, detail="Access denied")
         
         campaign.status = CampaignStatus.CANCELLED
         campaign.completed_at = datetime.utcnow()

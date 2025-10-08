@@ -9,14 +9,19 @@ import { ThemeProvider, createTheme } from "@mui/material/styles";
 import CssBaseline from "@mui/material/CssBaseline";
 import { LocalizationProvider } from "@mui/x-date-pickers";
 import { AdapterDateFns } from "@mui/x-date-pickers/AdapterDateFns";
+import { CircularProgress, Box } from "@mui/material";
 
+import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import Layout from "./components/Layout";
+import Login from "./pages/Login";
+import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import Leads from "./pages/Leads";
 import Campaigns from "./pages/Campaigns";
 import CampaignDetail from "./pages/CampaignDetail";
 import Sessions from "./pages/Sessions";
 import SessionDetail from "./pages/SessionDetail";
+import Agents from "./pages/Agents";
 
 const theme = createTheme({
   palette: {
@@ -264,24 +269,172 @@ const theme = createTheme({
   },
 });
 
+// Protected Route Component
+const ProtectedRoute = ({ children }) => {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <Box
+        sx={{
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          height: "100vh",
+        }}
+      >
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return children;
+};
+
+// Public Route Component (redirect to dashboard if already logged in)
+const PublicRoute = ({ children }) => {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <Box
+        sx={{
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          height: "100vh",
+        }}
+      >
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  if (user) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  return children;
+};
+
+function AppRoutes() {
+  return (
+    <Routes>
+      {/* Public Routes */}
+      <Route
+        path="/login"
+        element={
+          <PublicRoute>
+            <Login />
+          </PublicRoute>
+        }
+      />
+      <Route
+        path="/register"
+        element={
+          <PublicRoute>
+            <Register />
+          </PublicRoute>
+        }
+      />
+
+      {/* Protected Routes */}
+      <Route
+        path="/"
+        element={
+          <ProtectedRoute>
+            <Navigate to="/dashboard" />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/dashboard"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <Dashboard />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/leads"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <Leads />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/campaigns"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <Campaigns />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/campaigns/:id"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <CampaignDetail />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/sessions"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <Sessions />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/sessions/:id"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <SessionDetail />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/agents"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <Agents />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+    </Routes>
+  );
+}
+
 function App() {
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <LocalizationProvider dateAdapter={AdapterDateFns}>
-        <Router>
-          <Layout>
-            <Routes>
-              <Route path="/" element={<Navigate to="/dashboard" />} />
-              <Route path="/dashboard" element={<Dashboard />} />
-              <Route path="/leads" element={<Leads />} />
-              <Route path="/campaigns" element={<Campaigns />} />
-              <Route path="/campaigns/:id" element={<CampaignDetail />} />
-              <Route path="/sessions" element={<Sessions />} />
-              <Route path="/sessions/:id" element={<SessionDetail />} />
-            </Routes>
-          </Layout>
-        </Router>
+        <AuthProvider>
+          <Router>
+            <AppRoutes />
+          </Router>
+        </AuthProvider>
       </LocalizationProvider>
     </ThemeProvider>
   );

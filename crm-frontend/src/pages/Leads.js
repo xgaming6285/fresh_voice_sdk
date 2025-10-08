@@ -59,7 +59,6 @@ function Leads() {
   const [selectedLead, setSelectedLead] = useState(null);
 
   const [formData, setFormData] = useState({
-    lead_type: "cold",
     first_name: "",
     last_name: "",
     email: "",
@@ -95,7 +94,6 @@ function Leads() {
   const handleAddLead = () => {
     setEditingLead(null);
     setFormData({
-      lead_type: "cold",
       first_name: "",
       last_name: "",
       email: "",
@@ -112,7 +110,6 @@ function Leads() {
   const handleEditLead = (lead) => {
     setEditingLead(lead);
     setFormData({
-      lead_type: lead.lead_type,
       first_name: lead.first_name || "",
       last_name: lead.last_name || "",
       email: lead.email || "",
@@ -224,66 +221,28 @@ function Leads() {
       ),
     },
     {
-      field: "lead_type",
-      headerName: "Type",
-      flex: 0.8,
+      field: "owner_name",
+      headerName: "Added By",
+      flex: 1,
       minWidth: 110,
-      renderCell: (params) => {
-        const getTypeIcon = () => {
-          switch (params.value) {
-            case "ftd":
-              return <TrendingUpIcon sx={{ fontSize: 16 }} />;
-            case "live":
-              return <PhoneIcon sx={{ fontSize: 16 }} />;
-            case "cold":
-              return <PersonIcon sx={{ fontSize: 16 }} />;
-            default:
-              return <FlagIcon sx={{ fontSize: 16 }} />;
-          }
-        };
-
-        return (
-          <Chip
-            icon={getTypeIcon()}
-            label={params.value.toUpperCase()}
-            size="small"
-            sx={{
-              fontWeight: 700,
-              letterSpacing: "-0.01em",
-              backdropFilter: "blur(10px)",
-              border: "1px solid",
-              borderColor:
-                params.value === "ftd"
-                  ? "success.light"
-                  : params.value === "live"
-                  ? "primary.light"
-                  : params.value === "cold"
-                  ? "grey.300"
-                  : "secondary.light",
-              "& .MuiChip-icon": {
-                color:
-                  params.value === "ftd"
-                    ? "success.main"
-                    : params.value === "live"
-                    ? "primary.main"
-                    : params.value === "cold"
-                    ? "grey.600"
-                    : "secondary.main",
-              },
-            }}
-            color={
-              params.value === "ftd"
-                ? "success"
-                : params.value === "live"
-                ? "primary"
-                : params.value === "cold"
-                ? "default"
-                : "secondary"
-            }
-            variant="outlined"
-          />
-        );
-      },
+      renderCell: (params) => (
+        <Chip
+          icon={<PersonIcon sx={{ fontSize: 16 }} />}
+          label={params.value || "Unknown"}
+          size="small"
+          sx={{
+            fontWeight: 600,
+            backdropFilter: "blur(10px)",
+            border: "1px solid",
+            borderColor: "primary.light",
+            "& .MuiChip-icon": {
+              color: "primary.main",
+            },
+          }}
+          color="primary"
+          variant="outlined"
+        />
+      ),
     },
     {
       field: "full_name",
@@ -320,14 +279,6 @@ function Leads() {
               <Typography variant="body2" fontWeight={600}>
                 {params.value || "—"}
               </Typography>
-              {params.row.lead_type === "ftd" && (
-                <Typography
-                  variant="caption"
-                  sx={{ color: "success.main", fontWeight: 500 }}
-                >
-                  First Time Deposit
-                </Typography>
-              )}
             </Box>
           </Box>
         );
@@ -544,9 +495,9 @@ function Leads() {
   ];
 
   const handleExportTemplate = () => {
-    const csvContent = `lead_type,first_name,last_name,email,phone,country,prefix,gender,address
-cold,John,Doe,john.doe@example.com,555-1234,USA,+1,male,123 Main St
-ftd,Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
+    const csvContent = `first_name,last_name,email,phone,country,prefix,gender,address
+John,Doe,john.doe@example.com,555-1234,USA,+1,male,123 Main St
+Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
 
     const blob = new Blob([csvContent], { type: "text/csv" });
     const url = window.URL.createObjectURL(blob);
@@ -697,21 +648,6 @@ ftd,Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
         <DialogTitle>{editingLead ? "Edit Lead" : "Add New Lead"}</DialogTitle>
         <DialogContent>
           <Box sx={{ pt: 2 }}>
-            <FormControl fullWidth margin="normal">
-              <InputLabel>Lead Type</InputLabel>
-              <Select
-                value={formData.lead_type}
-                onChange={(e) =>
-                  setFormData({ ...formData, lead_type: e.target.value })
-                }
-                label="Lead Type"
-              >
-                <MenuItem value="cold">Cold</MenuItem>
-                <MenuItem value="ftd">FTD</MenuItem>
-                <MenuItem value="filler">Filler</MenuItem>
-                <MenuItem value="live">Live</MenuItem>
-              </Select>
-            </FormControl>
             <TextField
               fullWidth
               margin="normal"
@@ -844,8 +780,8 @@ ftd,Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
               Drag and drop a CSV file here, or click to select
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-              CSV should include: lead_type, first_name, last_name, email,
-              phone, country, prefix, gender, address
+              CSV should include: first_name, last_name, email, phone, country,
+              prefix, gender, address
             </Typography>
           </Box>
         </DialogContent>

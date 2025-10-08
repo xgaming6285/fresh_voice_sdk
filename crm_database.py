@@ -8,17 +8,19 @@ from sqlalchemy import create_engine, Column, Integer, String, DateTime, Float, 
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 from datetime import datetime
+from passlib.context import CryptContext
 import enum
 import os
 
 Base = declarative_base()
 
+# Password hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
 # Enums
-class LeadType(enum.Enum):
-    FTD = "ftd"  # First Time Deposit
-    COLD = "cold"
-    FILLER = "filler"
-    LIVE = "live"
+class UserRole(enum.Enum):
+    ADMIN = "admin"
+    AGENT = "agent"
 
 class Gender(enum.Enum):
     MALE = "male"
@@ -46,12 +48,60 @@ class CallStatus(enum.Enum):
     FAILED = "failed"
     COMPLETED = "completed"
 
+class User(Base):
+    """User model for authentication and authorization"""
+    __tablename__ = 'users'
+    
+    id = Column(Integer, primary_key=True)
+    username = Column(String(100), unique=True, nullable=False, index=True)
+    email = Column(String(200), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(200), nullable=False)
+    role = Column(Enum(UserRole), nullable=False)
+    
+    # For agents: who created them (admin_id)
+    created_by_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    
+    # User details
+    first_name = Column(String(100))
+    last_name = Column(String(100))
+    is_active = Column(Boolean, default=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_login = Column(DateTime)
+    
+    # Relationships
+    # Agents created by this admin
+    agents = relationship("User", back_populates="created_by", remote_side=[id])
+    # Admin who created this agent
+    created_by = relationship("User", back_populates="agents", remote_side=[created_by_id])
+    
+    # Leads and campaigns owned by this user
+    leads = relationship("Lead", back_populates="owner", cascade="all, delete-orphan")
+    campaigns = relationship("Campaign", back_populates="owner", cascade="all, delete-orphan")
+    
+    @property
+    def full_name(self):
+        """Get full name"""
+        parts = [p for p in [self.first_name, self.last_name] if p]
+        return " ".join(parts) if parts else self.username
+    
+    def verify_password(self, password: str) -> bool:
+        """Verify password"""
+        return pwd_context.verify(password, self.hashed_password)
+    
+    @staticmethod
+    def hash_password(password: str) -> str:
+        """Hash password"""
+        return pwd_context.hash(password)
+
 class Lead(Base):
     """Lead/Contact model"""
     __tablename__ = 'leads'
     
     id = Column(Integer, primary_key=True)
-    lead_type = Column(Enum(LeadType), nullable=False, default=LeadType.COLD)
+    owner_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
     first_name = Column(String(100))
     last_name = Column(String(100))
     email = Column(String(200))
@@ -73,6 +123,7 @@ class Lead(Base):
     import_batch_id = Column(String(100))  # Track which import batch this lead came from
     
     # Relationships
+    owner = relationship("User", back_populates="leads")
     campaign_leads = relationship("CampaignLead", back_populates="lead", cascade="all, delete-orphan")
     call_sessions = relationship("CallSession", back_populates="lead", cascade="all, delete-orphan")
     
@@ -92,6 +143,7 @@ class Campaign(Base):
     __tablename__ = 'campaigns'
     
     id = Column(Integer, primary_key=True)
+    owner_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
     name = Column(String(200), nullable=False)
     description = Column(Text)
     status = Column(Enum(CampaignStatus), default=CampaignStatus.DRAFT)
@@ -115,6 +167,7 @@ class Campaign(Base):
     completed_at = Column(DateTime)
     
     # Relationships
+    owner = relationship("User", back_populates="campaigns")
     campaign_leads = relationship("CampaignLead", back_populates="campaign", cascade="all, delete-orphan")
     call_sessions = relationship("CallSession", back_populates="campaign", cascade="all, delete-orphan")
 
@@ -240,14 +293,14 @@ class LeadManager:
         self.session.commit()
         return len(leads)
     
-    def get_leads_by_criteria(self, country=None, lead_type=None, limit=None, offset=0):
+    def get_leads_by_criteria(self, owner_id=None, country=None, limit=None, offset=0):
         """Get leads by various criteria"""
         query = self.session.query(Lead)
         
+        if owner_id:
+            query = query.filter(Lead.owner_id == owner_id)
         if country:
             query = query.filter(Lead.country == country)
-        if lead_type:
-            query = query.filter(Lead.lead_type == lead_type)
         
         total = query.count()
         
@@ -262,9 +315,10 @@ class CampaignManager:
     def __init__(self, session):
         self.session = session
     
-    def create_campaign(self, name, description=None, bot_config=None):
+    def create_campaign(self, owner_id, name, description=None, bot_config=None):
         """Create a new campaign"""
         campaign = Campaign(
+            owner_id=owner_id,
             name=name,
             description=description,
             bot_config=bot_config or {},
@@ -345,6 +399,67 @@ class CampaignManager:
                 campaign.leads_failed += 1
             
             self.session.commit()
+
+class UserManager:
+    """Manager class for user operations"""
+    
+    def __init__(self, session):
+        self.session = session
+    
+    def create_user(self, username, email, password, role, created_by_id=None, first_name=None, last_name=None):
+        """Create a new user"""
+        user = User(
+            username=username,
+            email=email,
+            hashed_password=User.hash_password(password),
+            role=role,
+            created_by_id=created_by_id,
+            first_name=first_name,
+            last_name=last_name
+        )
+        self.session.add(user)
+        self.session.commit()
+        return user
+    
+    def get_user_by_username(self, username):
+        """Get user by username"""
+        return self.session.query(User).filter(User.username == username).first()
+    
+    def get_user_by_email(self, email):
+        """Get user by email"""
+        return self.session.query(User).filter(User.email == email).first()
+    
+    def get_user_by_id(self, user_id):
+        """Get user by ID"""
+        return self.session.query(User).filter(User.id == user_id).first()
+    
+    def get_agents_by_admin(self, admin_id):
+        """Get all agents created by an admin"""
+        return self.session.query(User).filter(
+            User.created_by_id == admin_id,
+            User.role == UserRole.AGENT
+        ).all()
+    
+    def update_user(self, user_id, **kwargs):
+        """Update user fields"""
+        user = self.session.query(User).filter(User.id == user_id).first()
+        if user:
+            for key, value in kwargs.items():
+                if key == 'password':
+                    user.hashed_password = User.hash_password(value)
+                elif hasattr(user, key):
+                    setattr(user, key, value)
+            self.session.commit()
+        return user
+    
+    def delete_user(self, user_id):
+        """Delete a user"""
+        user = self.session.query(User).filter(User.id == user_id).first()
+        if user:
+            self.session.delete(user)
+            self.session.commit()
+            return True
+        return False
 
 if __name__ == "__main__":
     # Initialize database

@@ -1,0 +1,9 @@
+{
+  "short_name": "Voice CRM",
+  "name": "Voice Agent CRM",
+  "icons": [],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#C85C3C",
+  "background_color": "#F8F3EF"
+}

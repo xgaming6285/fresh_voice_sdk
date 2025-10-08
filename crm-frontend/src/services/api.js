@@ -9,13 +9,29 @@ const api = axios.create({
   },
 });
 
-// Request interceptor for auth (if needed in future)
+// Token management
+let authToken = localStorage.getItem("token");
+
+api.setAuthToken = (token) => {
+  authToken = token;
+  if (token) {
+    api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+  } else {
+    delete api.defaults.headers.common["Authorization"];
+  }
+};
+
+// Set initial token if exists
+if (authToken) {
+  api.setAuthToken(authToken);
+}
+
+// Request interceptor for auth
 api.interceptors.request.use(
   (config) => {
-    // Add auth token if available
-    const token = localStorage.getItem("authToken");
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
+    // Token is already set in defaults, but double-check
+    if (authToken && !config.headers.Authorization) {
+      config.headers.Authorization = `Bearer ${authToken}`;
     }
     return config;
   },
@@ -30,8 +46,13 @@ api.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       // Handle unauthorized
-      localStorage.removeItem("authToken");
-      window.location.href = "/login";
+      localStorage.removeItem("token");
+      authToken = null;
+      delete api.defaults.headers.common["Authorization"];
+      // Only redirect if not already on login page
+      if (!window.location.pathname.includes("/login")) {
+        window.location.href = "/login";
+      }
     }
     return Promise.reject(error);
   }
@@ -99,6 +120,24 @@ export const voiceAgentAPI = {
     }
     return api.post("/api/make_call", payload);
   },
+};
+
+// Authentication APIs
+export const authAPI = {
+  login: (username, password) =>
+    api.post("/api/auth/login", { username, password }),
+  register: (userData) => api.post("/api/auth/register", userData),
+  getMe: () => api.get("/api/auth/me"),
+  verifyToken: () => api.post("/api/auth/verify-token"),
+};
+
+// User Management APIs (Admin only)
+export const userAPI = {
+  getAgents: () => api.get("/api/users/agents"),
+  getAgent: (id) => api.get(`/api/users/agents/${id}`),
+  createAgent: (data) => api.post("/api/users/agents", data),
+  updateAgent: (id, data) => api.put(`/api/users/agents/${id}`, data),
+  deleteAgent: (id) => api.delete(`/api/users/agents/${id}`),
 };
 
 export default api;
