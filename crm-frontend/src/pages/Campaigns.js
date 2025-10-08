@@ -28,11 +28,14 @@ import {
   Phone as PhoneIcon,
   CheckCircle as CheckCircleIcon,
   Cancel as CancelIcon,
+  Person as PersonIcon,
 } from "@mui/icons-material";
 import { campaignAPI } from "../services/api";
+import { useAuth } from "../contexts/AuthContext";
 
 function Campaigns() {
   const navigate = useNavigate();
+  const { isAdmin } = useAuth();
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(false);
   const [openDialog, setOpenDialog] = useState(false);
@@ -298,6 +301,27 @@ function Campaigns() {
                       }}
                     />
                   </Box>
+
+                  {/* Show owner name for admins */}
+                  {isAdmin() && campaign.owner_name && (
+                    <Box mb={1}>
+                      <Chip
+                        icon={<PersonIcon sx={{ fontSize: 12 }} />}
+                        label={campaign.owner_name}
+                        size="small"
+                        sx={{
+                          height: 20,
+                          fontSize: "0.65rem",
+                          fontWeight: 600,
+                          bgcolor: "rgba(200, 92, 60, 0.08)",
+                          color: "primary.main",
+                          "& .MuiChip-icon": {
+                            color: "primary.main",
+                          },
+                        }}
+                      />
+                    </Box>
+                  )}
 
                   <Box mb={1}>
                     <Box
