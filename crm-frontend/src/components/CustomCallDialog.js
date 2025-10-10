@@ -30,6 +30,9 @@ import {
   Language as LanguageIcon,
 } from "@mui/icons-material";
 
+// API base URL - matches the backend port
+const API_BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:8001";
+
 const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
   const [callConfig, setCallConfig] = useState({
     company_name: "QuantumAI",
@@ -56,7 +59,7 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
       // Step 1: Generate custom greeting
       console.log("Generating custom greeting...");
       const greetingResponse = await fetch(
-        "http://localhost:8000/api/generate_greeting",
+        `${API_BASE_URL}/api/generate_greeting`,
         {
           method: "POST",
           headers: {

@@ -28,6 +28,9 @@ import {
 } from "@mui/icons-material";
 import { sessionAPI, voiceAgentAPI } from "../services/api";
 
+// API base URL - matches the backend port
+const API_BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:8001";
+
 function TabPanel({ children, value, index, ...other }) {
   return (
     <div
@@ -111,7 +114,7 @@ function SessionDetail() {
     if (audioFile?.path) {
       // In a real app, you'd implement audio playback here
       // For now, we'll open the file in a new window
-      window.open(`http://localhost:8000/static/${audioFile.path}`, "_blank");
+      window.open(`${API_BASE_URL}/static/${audioFile.path}`, "_blank");
     }
   };
 
@@ -120,7 +123,7 @@ function SessionDetail() {
     if (audioFile?.path) {
       // Create download link
       const link = document.createElement("a");
-      link.href = `http://localhost:8000/static/${audioFile.path}`;
+      link.href = `${API_BASE_URL}/static/${audioFile.path}`;
       link.download = audioFile.filename;
       link.click();
     }

@@ -14,6 +14,7 @@
   "gateway_ip": "192.168.50.1",
   "outbound_trunk": "gsm2",
   "inbound_trunk": "voice-agent",
+  "outbound_port_prefix": "9",
   "sip_settings": {
     "user_agent": "VoiceAgent/1.0",
     "register_timeout": 300,

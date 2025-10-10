@@ -37,6 +37,7 @@ import pyaudio
 import requests
 from scipy.signal import resample
 import numpy as np
+import webrtcvad
 
 # Multi-tier transcription system with Windows-compatible fallbacks
 TRANSCRIPTION_METHOD = None
@@ -1051,6 +1052,61 @@ def create_voice_config(language_info: Dict[str, Any], custom_config: Dict[str, 
 DEFAULT_VOICE_CONFIG = create_voice_config(get_language_config('BG'))
 MODEL = "models/gemini-2.0-flash-live-001"
 
+class RealTimeVAD:
+    """
+    A real-time, low-latency Voice Activity Detector using Google's WebRTC VAD.
+    It buffers audio and yields speech segments, providing a small trailing silence
+    for more natural-sounding speech segments.
+    """
+    def __init__(self, aggressiveness=3, sample_rate=8000):
+        self.vad = webrtcvad.Vad(aggressiveness)
+        self.sample_rate = sample_rate
+        # The VAD works with specific frame durations: 10, 20, or 30 ms.
+        self.frame_duration_ms = 30  # 30ms is a good balance
+        self.frame_size = int(self.sample_rate * (self.frame_duration_ms / 1000.0) * 2) # 2 bytes per sample (16-bit)
+        self.buffer = b""
+        
+        # State for speech padding to avoid cutting off words
+        self.padding_frames_after_speech = 5  # Add ~150ms of silence after speech
+        self.ring_buffer = [False] * self.padding_frames_after_speech
+        self.frames_since_speech = 0
+        
+        logger.info(f"🎤 RealTimeVAD initialized: Aggressiveness={aggressiveness}, Frame Size={self.frame_size} bytes")
+
+    def process_audio(self, pcm_data: bytes) -> bytes:
+        """
+        Processes an incoming chunk of PCM audio.
+        Returns bytes containing only detected speech, or empty bytes if only silence was detected.
+        """
+        self.buffer += pcm_data
+        voiced_frames = b""
+
+        while len(self.buffer) >= self.frame_size:
+            frame = self.buffer[:self.frame_size]
+            self.buffer = self.buffer[self.frame_size:]
+
+            try:
+                is_speech = self.vad.is_speech(frame, self.sample_rate)
+                self.ring_buffer.pop(0)
+                self.ring_buffer.append(is_speech)
+
+                # If speech is detected, reset the silence counter
+                if is_speech:
+                    self.frames_since_speech = 0
+                else:
+                    self.frames_since_speech += 1
+
+                # Send audio if there was recent speech (the "hangover" period)
+                if any(self.ring_buffer) or self.frames_since_speech < self.padding_frames_after_speech:
+                    voiced_frames += frame
+            
+            except Exception as e:
+                # This can happen if a frame is not the correct size, though our loop should prevent it.
+                logger.warning(f"VAD processing error: {e}")
+                continue # Skip corrupted frame
+        
+        return voiced_frames
+
 class AudioTranscriber:
     """Handles audio transcription using multiple methods with Windows-compatible fallbacks"""
     
@@ -2058,9 +2114,9 @@ class RTPSession:
         # Crossfade buffer for smooth transitions
         self.last_audio_tail = b""  # Last 10ms of previous chunk
         
-        # Initialize audio preprocessor for incoming audio
-        self.audio_preprocessor = AudioPreprocessor(sample_rate=8000)
-        logger.info(f"🎵 Audio preprocessor initialized for session {session_id} - noise filtering enabled")
+        # Initialize real-time VAD for incoming audio
+        self.vad_processor = RealTimeVAD(aggressiveness=3)
+        logger.info(f"🎵 Real-time VAD processor initialized for session {session_id} - low latency filtering enabled")
         
         # Start output processing thread immediately for greeting playback
         self.output_thread = threading.Thread(target=self._process_output_queue, daemon=True)
@@ -2071,39 +2127,37 @@ class RTPSession:
         # Keep processing flag for backward compatibility with other parts of the code
         self.processing = self.output_processing
         
+    def _clear_output_queue(self):
+        """Empties the output audio queue to handle user interruptions."""
+        if not self.output_queue.empty():
+            logger.info("🎤 Interruption detected! Clearing pending bot speech.")
+            with self.output_queue.mutex:
+                self.output_queue.queue.clear()
+        
     def process_incoming_audio(self, audio_data: bytes, payload_type: int, timestamp: int):
-        """Process incoming RTP audio packet with advanced VAD - only send speech to Gemini"""
+        """Process incoming RTP audio packet with a real-time VAD for low latency."""
         try:
+            # On any incoming user audio, clear the bot's pending speech to handle interruptions instantly.
+            self._clear_output_queue()
+
             # Convert payload based on type
             if payload_type == 0:  # PCMU/μ-law
                 pcm_data = self.ulaw_to_pcm(audio_data)
             elif payload_type == 8:  # PCMA/A-law  
                 pcm_data = self.alaw_to_pcm(audio_data)
             else:
-                # Assume it's already PCM
                 pcm_data = audio_data
             
-            # Record the ORIGINAL audio (before preprocessing) for authentic recordings
+            # Record the original unfiltered audio
             if self.call_recorder:
                 self.call_recorder.record_incoming_audio(pcm_data)
             
-            # VAD DISABLED - Send ALL audio to Gemini for testing
-            # Apply basic audio preprocessing WITHOUT VAD filtering
-            try:
-                # Use simpler preprocessing without aggressive VAD
-                processed_pcm = pcm_data  # Skip preprocessing entirely for now
-                
-                # Log occasionally to show audio is flowing
-                if not hasattr(self, '_audio_packet_count'):
-                    self._audio_packet_count = 0
-                    logger.info(f"🎤 ✅ VAD DISABLED - Sending ALL audio to Gemini (no filtering)")
-                self._audio_packet_count += 1
-                if self._audio_packet_count % 100 == 0:
-                    logger.info(f"📤 Sent {self._audio_packet_count} audio packets to Gemini")
-                    
-            except Exception as preprocess_error:
-                logger.warning(f"⚠️ Audio preprocessing failed, using original: {preprocess_error}")
-                processed_pcm = pcm_data
+            # Process audio through the fast VAD
+            processed_pcm = self.vad_processor.process_audio(pcm_data)
+
+            # If VAD filtered out everything (silence/noise), stop here.
+            if not processed_pcm:
+                return
             
             # Start asyncio thread if not already running
             if not self.input_processing:
@@ -2111,21 +2165,17 @@ class RTPSession:
                 self.input_processing = True
                 self.asyncio_thread = threading.Thread(target=self._run_asyncio_thread, daemon=True)
                 self.asyncio_thread.start()
-                logger.info(f"✅ Asyncio thread started successfully")
-                # Give it a moment to initialize
-                time.sleep(0.05)  # Reduced from 0.1s for faster startup
+                time.sleep(0.05)
             
             # Add to buffer and send when we have enough for efficient transmission
             with self.buffer_lock:
                 self.audio_buffer += processed_pcm
                 
                 # Send in 40ms chunks for optimal balance between latency and efficiency
-                min_chunk = 640  # 40ms at 8kHz = 320 samples * 2 bytes = 640 bytes
+                min_chunk = 640
                 if len(self.audio_buffer) >= min_chunk:
                     chunk_to_send = self.audio_buffer
-                    self.audio_buffer = b""  # Clear buffer
-                    
-                    # Queue audio for the asyncio thread to send
+                    self.audio_buffer = b""
                     self.audio_input_queue.put(chunk_to_send)
                     
         except Exception as e:
@@ -3123,8 +3173,18 @@ Content-Length: {len(sdp_content)}
                 logger.error("💡 Wait for extension registration to complete")
                 return None
             
-            logger.info(f"📞 Initiating outbound call to {phone_number} as Extension 200")
-            logger.info(f"📞 Call will be routed through Gate VoIP → {self.config.get('outbound_trunk', 'gsm2')} trunk")
+            # Apply outbound port prefix if configured (for GSM gateways with multiple SIM ports)
+            port_prefix = self.config.get('outbound_port_prefix', '')
+            if port_prefix:
+                # Remove "+" from phone number and add prefix for routing through specific SIM port
+                clean_number = phone_number.lstrip('+')
+                dial_number = f"{port_prefix}{clean_number}"
+                logger.info(f"📞 Initiating outbound call to {phone_number} (dialing {dial_number}) as Extension 200")
+                logger.info(f"📞 Using SIM port {port_prefix}, routing through Gate VoIP → {self.config.get('outbound_trunk', 'gsm2')} trunk")
+            else:
+                dial_number = phone_number
+                logger.info(f"📞 Initiating outbound call to {phone_number} as Extension 200")
+                logger.info(f"📞 Call will be routed through Gate VoIP → {self.config.get('outbound_trunk', 'gsm2')} trunk")
             
             session_id = str(uuid.uuid4())
             username = self.config.get('username', '200')
@@ -3143,12 +3203,12 @@ a=fmtp:101 0-15
 a=sendrecv
 a=ptime:20"""
             
-            # Create INVITE as Extension 200
-            invite_message = f"""INVITE sip:{phone_number}@{self.gate_ip} SIP/2.0
+            # Create INVITE as Extension 200 (using dial_number with port prefix)
+            invite_message = f"""INVITE sip:{dial_number}@{self.gate_ip} SIP/2.0
 Via: SIP/2.0/UDP {self.local_ip}:{self.sip_port};branch=z9hG4bK{session_id[:8]};rport
 Max-Forwards: 70
 From: <sip:{username}@{self.gate_ip}>;tag={session_id[:8]}
-To: <sip:{phone_number}@{self.gate_ip}>
+To: <sip:{dial_number}@{self.gate_ip}>
 Call-ID: {session_id}
 CSeq: 1 INVITE
 Contact: <sip:{username}@{self.local_ip}:{self.sip_port}>
@@ -3162,7 +3222,7 @@ Content-Length: {len(sdp_content)}
             
             # Store INVITE information for potential authentication challenge
             self.pending_invites[session_id] = {
-                'phone_number': phone_number,
+                'phone_number': dial_number,  # Store the dial_number with prefix for authenticated retries
                 'session_id': session_id,
                 'username': username,
                 'sdp_content': sdp_content,
@@ -4957,7 +5017,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Windows VoIP Voice Agent")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
-    parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
+    parser.add_argument("--port", type=int, default=8001, help="Port to bind to")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
     
     args = parser.parse_args()
