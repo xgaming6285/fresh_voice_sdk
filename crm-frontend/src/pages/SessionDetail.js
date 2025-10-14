@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   Box,
@@ -14,7 +14,12 @@ import {
   CardContent,
   LinearProgress,
   Alert,
-  Divider,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  TextField,
+  MenuItem,
 } from "@mui/material";
 import {
   ArrowBack as ArrowBackIcon,
@@ -48,16 +53,15 @@ function SessionDetail() {
   const [session, setSession] = useState(null);
   const [recording, setRecording] = useState(null);
   const [transcripts, setTranscripts] = useState({});
+  const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tabValue, setTabValue] = useState(0);
-  const [transcriptLoading, setTranscriptLoading] = useState(false);
   const [retranscribing, setRetranscribing] = useState(false);
+  const [generatingSummary, setGeneratingSummary] = useState(false);
+  const [languageDialogOpen, setLanguageDialogOpen] = useState(false);
+  const [selectedLanguage, setSelectedLanguage] = useState("English");
 
-  useEffect(() => {
-    loadSessionData();
-  }, [id]);
-
-  const loadSessionData = async () => {
+  const loadSessionData = useCallback(async () => {
     setLoading(true);
     try {
       // Try to load from CRM database first
@@ -84,12 +88,24 @@ function SessionDetail() {
       } catch (error) {
         console.log("No transcripts available");
       }
+
+      // Load summary
+      try {
+        const summaryResponse = await voiceAgentAPI.getSummary(id);
+        setSummary(summaryResponse.data.summary);
+      } catch (error) {
+        console.log("No summary available");
+      }
     } catch (error) {
       console.error("Error loading session data:", error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [id]);
+
+  useEffect(() => {
+    loadSessionData();
+  }, [loadSessionData]);
 
   const handleRetranscribe = async () => {
     setRetranscribing(true);
@@ -103,6 +119,30 @@ function SessionDetail() {
     } catch (error) {
       console.error("Error retranscribing:", error);
       setRetranscribing(false);
+    }
+  };
+
+  const handleOpenLanguageDialog = () => {
+    setLanguageDialogOpen(true);
+  };
+
+  const handleCloseLanguageDialog = () => {
+    setLanguageDialogOpen(false);
+  };
+
+  const handleGenerateSummary = async () => {
+    setLanguageDialogOpen(false);
+    setGeneratingSummary(true);
+    try {
+      await voiceAgentAPI.generateSummary(id, selectedLanguage);
+      // Wait a bit for summary generation to complete
+      setTimeout(() => {
+        loadSessionData();
+        setGeneratingSummary(false);
+      }, 5000);
+    } catch (error) {
+      console.error("Error generating summary:", error);
+      setGeneratingSummary(false);
     }
   };
 
@@ -345,11 +385,7 @@ function SessionDetail() {
             Call Transcripts
           </Typography>
 
-          {transcriptLoading ? (
-            <Box display="flex" justifyContent="center" p={4}>
-              <LinearProgress sx={{ width: "50%" }} />
-            </Box>
-          ) : Object.keys(transcripts).length > 0 ? (
+          {Object.keys(transcripts).length > 0 ? (
             <Box>
               {Object.entries(transcripts).map(([type, transcript]) => (
                 <Box key={type} mb={3}>
@@ -487,38 +523,69 @@ function SessionDetail() {
                 color="text.secondary"
                 gutterBottom
               >
-                AI Analysis
+                AI Summary
               </Typography>
-              {sessionData.sentiment_score !== null &&
-              sessionData.sentiment_score !== undefined ? (
+              {summary ? (
                 <Box>
-                  <Typography variant="body2">
-                    <strong>Sentiment Score:</strong>{" "}
-                    {sessionData.sentiment_score.toFixed(2)}
+                  <Chip
+                    label={summary.status.toUpperCase()}
+                    size="small"
+                    color={
+                      summary.status === "interested" ? "success" : "default"
+                    }
+                    sx={{ mb: 1 }}
+                  />
+                  <Typography variant="body2" sx={{ mt: 1 }}>
+                    <strong>Summary:</strong>
                   </Typography>
-                  <Typography variant="body2">
-                    <strong>Interest Level:</strong>{" "}
-                    {sessionData.interest_level || "N/A"}/10
-                  </Typography>
-                  <Typography variant="body2">
-                    <strong>Follow-up Required:</strong>{" "}
-                    {sessionData.follow_up_required ? "Yes" : "No"}
-                  </Typography>
-                  {sessionData.follow_up_notes && (
-                    <Box mt={1}>
-                      <Typography variant="body2">
-                        <strong>Follow-up Notes:</strong>
-                      </Typography>
-                      <Typography variant="body2">
-                        {sessionData.follow_up_notes}
-                      </Typography>
-                    </Box>
-                  )}
+                  <Paper
+                    sx={{
+                      p: 1.5,
+                      mt: 0.5,
+                      backgroundColor: "grey.50",
+                      maxHeight: 200,
+                      overflow: "auto",
+                    }}
+                  >
+                    <Typography variant="body2">{summary.summary}</Typography>
+                  </Paper>
+                  <Button
+                    size="small"
+                    onClick={handleOpenLanguageDialog}
+                    disabled={generatingSummary}
+                    sx={{ mt: 1 }}
+                  >
+                    {generatingSummary
+                      ? "Regenerating..."
+                      : "Regenerate Summary"}
+                  </Button>
                 </Box>
               ) : (
-                <Alert severity="info">
-                  AI analysis not available for this session
-                </Alert>
+                <Box>
+                  <Alert severity="info" sx={{ mb: 1 }}>
+                    No AI summary available for this session
+                  </Alert>
+                  <Button
+                    variant="contained"
+                    size="small"
+                    onClick={handleOpenLanguageDialog}
+                    disabled={
+                      generatingSummary || Object.keys(transcripts).length === 0
+                    }
+                  >
+                    {generatingSummary ? "Generating..." : "Generate Summary"}
+                  </Button>
+                  {Object.keys(transcripts).length === 0 && (
+                    <Typography
+                      variant="caption"
+                      display="block"
+                      sx={{ mt: 1 }}
+                      color="text.secondary"
+                    >
+                      Transcripts are required to generate a summary
+                    </Typography>
+                  )}
+                </Box>
               )}
             </Grid>
           </Grid>
@@ -543,6 +610,58 @@ function SessionDetail() {
           )}
         </TabPanel>
       </Paper>
+
+      {/* Language Selection Dialog */}
+      <Dialog
+        open={languageDialogOpen}
+        onClose={handleCloseLanguageDialog}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Select Summary Language</DialogTitle>
+        <DialogContent>
+          <TextField
+            select
+            label="Language"
+            value={selectedLanguage}
+            onChange={(e) => setSelectedLanguage(e.target.value)}
+            fullWidth
+            margin="normal"
+            helperText="Choose the language for the AI-generated summary"
+          >
+            <MenuItem value="English">English</MenuItem>
+            <MenuItem value="Bulgarian">Bulgarian (Български)</MenuItem>
+            <MenuItem value="Spanish">Spanish (Español)</MenuItem>
+            <MenuItem value="French">French (Français)</MenuItem>
+            <MenuItem value="German">German (Deutsch)</MenuItem>
+            <MenuItem value="Italian">Italian (Italiano)</MenuItem>
+            <MenuItem value="Portuguese">Portuguese (Português)</MenuItem>
+            <MenuItem value="Russian">Russian (Русский)</MenuItem>
+            <MenuItem value="Chinese">Chinese (中文)</MenuItem>
+            <MenuItem value="Japanese">Japanese (日本語)</MenuItem>
+            <MenuItem value="Korean">Korean (한국어)</MenuItem>
+            <MenuItem value="Arabic">Arabic (العربية)</MenuItem>
+            <MenuItem value="Hindi">Hindi (हिन्दी)</MenuItem>
+            <MenuItem value="Turkish">Turkish (Türkçe)</MenuItem>
+            <MenuItem value="Polish">Polish (Polski)</MenuItem>
+            <MenuItem value="Dutch">Dutch (Nederlands)</MenuItem>
+            <MenuItem value="Swedish">Swedish (Svenska)</MenuItem>
+            <MenuItem value="Norwegian">Norwegian (Norsk)</MenuItem>
+            <MenuItem value="Danish">Danish (Dansk)</MenuItem>
+            <MenuItem value="Finnish">Finnish (Suomi)</MenuItem>
+          </TextField>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseLanguageDialog}>Cancel</Button>
+          <Button
+            onClick={handleGenerateSummary}
+            variant="contained"
+            disabled={generatingSummary}
+          >
+            Generate
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

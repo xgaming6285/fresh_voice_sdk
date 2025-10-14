@@ -28,6 +28,7 @@ from scipy import signal
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 import uvicorn
 
 # Configure logging first
@@ -551,6 +552,10 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     sip_handler.stop()
+
+# Pydantic models for request bodies
+class GenerateSummaryRequest(BaseModel):
+    language: str = "English"
 
 app = FastAPI(title="Windows VoIP Voice Agent", version="1.0.0", lifespan=lifespan)
 
@@ -4792,6 +4797,78 @@ async def retranscribe_session(session_id: str, background_tasks: BackgroundTask
         logger.error(f"Error starting retranscription for session {session_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/transcripts/{session_id}/generate_summary")
+async def generate_summary(session_id: str, request: GenerateSummaryRequest, background_tasks: BackgroundTasks):
+    """Generate AI summary for a specific session using transcript files"""
+    try:
+        session_dir = Path(f"sessions/{session_id}")
+        
+        if not session_dir.exists():
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        # Check if transcript files exist (both new format *_transcript.txt and old format with timestamps)
+        transcript_files = []
+        for pattern in ["*_transcript.txt", "incoming_*.txt", "outgoing_*.txt", "mixed_*.txt"]:
+            files = list(session_dir.glob(pattern))
+            # Filter to only include .txt files (exclude .wav files)
+            transcript_files.extend([f for f in files if f.suffix == '.txt'])
+        
+        if not transcript_files:
+            raise HTTPException(status_code=404, detail="No transcript files found. Please transcribe the session first.")
+        
+        # Add background task for summary generation with language parameter
+        background_tasks.add_task(
+            _background_generate_summary,
+            session_dir,
+            transcript_files,
+            request.language
+        )
+        
+        return {
+            "status": "success",
+            "message": f"Summary generation started for session {session_id}",
+            "session_id": session_id,
+            "transcript_files_found": len(transcript_files),
+            "language": request.language
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting summary generation for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/transcripts/{session_id}/summary")
+async def get_session_summary(session_id: str):
+    """Get AI summary for a specific session"""
+    try:
+        session_dir = Path(f"sessions/{session_id}")
+        
+        if not session_dir.exists():
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        # Look for summary file
+        summary_path = session_dir / "analysis_result.json"
+        
+        if not summary_path.exists():
+            raise HTTPException(status_code=404, detail="Summary not found. Please generate a summary first.")
+        
+        # Read summary content
+        with open(summary_path, 'r', encoding='utf-8') as f:
+            summary_data = json.load(f)
+        
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "summary": summary_data
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting summary for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/transcripts/{session_id}/{audio_type}")
 async def get_specific_transcript(session_id: str, audio_type: str):
     """Get transcript content for specific audio type (incoming, outgoing, mixed)"""
@@ -4882,6 +4959,71 @@ async def _background_transcribe_session(session_dir: Path, caller_id: str):
         logger.error(f"❌ Transcription timed out for {session_dir.name}")
     except Exception as e:
         logger.error(f"❌ Error in background transcription for {session_dir.name}: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+
+async def _background_generate_summary(session_dir: Path, transcript_files: list, language: str = "English"):
+    """Background task function for generating AI summary using the file_summarizer.py script"""
+    try:
+        logger.info(f"📊 Background summary generation started for {session_dir.name}")
+        logger.info(f"📝 Found {len(transcript_files)} transcript files")
+        logger.info(f"🌐 Summary language: {language}")
+        
+        # Call the file_summarizer.py script using subprocess
+        import subprocess
+        import sys
+        import shutil
+        
+        # Build command with transcript file paths and language parameter
+        transcript_paths = [str(f) for f in transcript_files]
+        cmd = [sys.executable, "summary/file_summarizer.py", "--language", language] + transcript_paths
+        
+        logger.info(f"Running summary command: {' '.join(cmd)}")
+        
+        # Run the script
+        process = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=120  # 2 minute timeout
+        )
+        
+        if process.returncode == 0:
+            logger.info(f"✅ Summary script completed successfully")
+            logger.info(f"Script output: {process.stdout}")
+            
+            # Move the generated analysis_result.json to the session directory
+            # The script saves it in the current working directory (root)
+            source_file = Path("analysis_result.json")
+            dest_file = session_dir / "analysis_result.json"
+            
+            if source_file.exists():
+                # If destination exists, remove it first to ensure replacement
+                if dest_file.exists():
+                    logger.info(f"🗑️ Removing old summary at {dest_file}")
+                    dest_file.unlink()
+                
+                # Move (not copy) the file to the session directory
+                shutil.move(str(source_file), str(dest_file))
+                logger.info(f"✅ Summary moved to {dest_file}")
+            else:
+                logger.error(f"❌ Summary file not found at {source_file}")
+                logger.error(f"Working directory: {Path.cwd()}")
+                logger.error(f"Files in root: {list(Path('.').glob('*.json'))}")
+            
+            logger.info(f"✅ Background summary generation completed for {session_dir.name}")
+        else:
+            logger.error(f"❌ Summary script failed with return code {process.returncode}")
+            logger.error(f"stdout: {process.stdout}")
+            logger.error(f"stderr: {process.stderr}")
+            raise Exception(f"Summary script failed: {process.stderr}")
+        
+    except subprocess.TimeoutExpired:
+        logger.error(f"❌ Summary generation timed out for {session_dir.name}")
+    except Exception as e:
+        logger.error(f"❌ Error in background summary generation for {session_dir.name}: {e}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
 

@@ -28,11 +28,13 @@ function Sessions() {
   const [loading, setLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState("");
   const [activeVoiceSessions, setActiveVoiceSessions] = useState([]);
+  const [summaries, setSummaries] = useState({});
 
   useEffect(() => {
     loadSessions();
     loadRecordings();
     loadActiveVoiceSessions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusFilter]);
 
   const loadSessions = async () => {
@@ -40,7 +42,11 @@ function Sessions() {
     try {
       const params = statusFilter ? { status: statusFilter } : {};
       const response = await sessionAPI.getAll(params);
-      setSessions(response.data);
+      const sessionsData = response.data;
+      setSessions(sessionsData);
+
+      // Load summaries for CRM sessions
+      loadSummariesForSessions(sessionsData);
     } catch (error) {
       console.error("Error loading sessions:", error);
     } finally {
@@ -51,10 +57,59 @@ function Sessions() {
   const loadRecordings = async () => {
     try {
       const response = await voiceAgentAPI.recordings();
-      setRecordings(response.data.recordings);
+      const recordingsData = response.data.recordings;
+      setRecordings(recordingsData);
+
+      // Load summaries for each recording
+      loadSummaries(recordingsData);
     } catch (error) {
       console.error("Error loading recordings:", error);
     }
+  };
+
+  const loadSummariesForSessions = async (sessionsData) => {
+    const summariesData = {};
+
+    // Load summaries for each CRM session in parallel
+    await Promise.all(
+      sessionsData.map(async (session) => {
+        if (!session.session_id) return;
+        try {
+          const summaryResponse = await voiceAgentAPI.getSummary(
+            session.session_id
+          );
+          summariesData[session.session_id] = summaryResponse.data.summary;
+        } catch (error) {
+          // Summary not available for this session
+          summariesData[session.session_id] = null;
+        }
+      })
+    );
+
+    // Merge with existing summaries
+    setSummaries((prev) => ({ ...prev, ...summariesData }));
+  };
+
+  const loadSummaries = async (recordingsData) => {
+    const summariesData = {};
+
+    // Load summaries for each recording in parallel
+    await Promise.all(
+      recordingsData.map(async (recording) => {
+        try {
+          const summaryResponse = await voiceAgentAPI.getSummary(
+            recording.session_id
+          );
+          summariesData[recording.session_id] = summaryResponse.data.summary;
+        } catch (error) {
+          // Summary not available for this session
+          summariesData[recording.session_id] = null;
+        }
+      })
+    );
+
+    // Merge with existing summaries
+    setSummaries((prev) => ({ ...prev, ...summariesData }));
   };
 
   const loadActiveVoiceSessions = async () => {
@@ -166,17 +221,19 @@ function Sessions() {
       },
     },
     {
-      field: "transcript_status",
-      headerName: "Transcript",
-      flex: 0.8,
+      field: "interest_status",
+      headerName: "Interest Status",
+      flex: 0.9,
       minWidth: 120,
       renderCell: (params) => {
-        if (!params.value) return "-";
+        // Display summary interest status for CRM sessions
+        const summary = summaries[params.row.session_id];
+        if (!summary) return "-";
         return (
           <Chip
-            label={params.value}
+            label={summary.status.toUpperCase()}
             size="small"
-            color={params.value === "completed" ? "success" : "default"}
+            color={summary.status === "interested" ? "success" : "default"}
           />
         );
       },
@@ -249,17 +306,21 @@ function Sessions() {
       },
     },
     {
-      field: "has_transcripts",
-      headerName: "Transcripts",
+      field: "interest_status",
+      headerName: "Interest Status",
       flex: 0.9,
       minWidth: 120,
-      renderCell: (params) => (
-        <Chip
-          label={params.value ? "Available" : "None"}
-          size="small"
-          color={params.value ? "success" : "default"}
-        />
-      ),
+      renderCell: (params) => {
+        const summary = summaries[params.row.session_id];
+        if (!summary) return "-";
+        return (
+          <Chip
+            label={summary.status.toUpperCase()}
+            size="small"
+            color={summary.status === "interested" ? "success" : "default"}
+          />
+        );
+      },
     },
     {
       field: "audio_files",

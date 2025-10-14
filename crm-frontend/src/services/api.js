@@ -110,6 +110,9 @@ export const voiceAgentAPI = {
     api.get(`/api/transcripts/${sessionId}/${audioType}`),
   retranscribe: (sessionId) =>
     api.post(`/api/transcripts/${sessionId}/retranscribe`),
+  generateSummary: (sessionId, language = "English") =>
+    api.post(`/api/transcripts/${sessionId}/generate_summary`, { language }),
+  getSummary: (sessionId) => api.get(`/api/transcripts/${sessionId}/summary`),
   makeCall: (phoneNumber, callConfig = null, greetingFile = null) => {
     const payload = { phone_number: phoneNumber };
     if (callConfig) {
