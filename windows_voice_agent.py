@@ -21,10 +21,11 @@ import re
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
+from contextlib import asynccontextmanager
 import queue
 from scipy import signal
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket
+from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import uvicorn
@@ -32,6 +33,9 @@ import uvicorn
 # Configure logging first
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Suppress repetitive Google Generative AI warnings about inline_data (we intentionally use audio)
+logging.getLogger('google_genai.types').setLevel(logging.ERROR)
 
 import pyaudio
 import requests
@@ -496,11 +500,11 @@ from google import genai
 
 # Import CRM API
 from crm_api import crm_router
-from crm_auth import auth_router
+from crm_auth import auth_router, get_current_user, check_subscription
 from crm_user_management import user_router
 from crm_superadmin import superadmin_router
 from crm_billing import billing_router
-from crm_database import init_database, get_session, Lead, CallSession, CallStatus
+from crm_database import init_database, get_session, Lead, CallSession, CallStatus, User, UserRole
 
 # Import Gemini greeting generator (the only supported method)
 try:
@@ -527,7 +531,28 @@ def load_config():
 
 config = load_config()
 
-app = FastAPI(title="Windows VoIP Voice Agent", version="1.0.0")
+# Forward declaration - will be initialized after app creation
+sip_handler = None
+
+# Lifespan context manager for startup and shutdown
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    init_database()
+    logger.info("CRM database initialized")
+    
+    sip_handler.start_sip_listener()
+    logger.info("Windows VoIP Voice Agent started")
+    logger.info(f"Phone number: {config['phone_number']}")
+    logger.info(f"Local IP: {config['local_ip']}")
+    logger.info(f"Gate VoIP: {config['host']}")
+    
+    yield
+    
+    # Shutdown
+    sip_handler.stop()
+
+app = FastAPI(title="Windows VoIP Voice Agent", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -835,6 +860,25 @@ def detect_caller_country(phone_number: str) -> str:
     
     # Clean the phone number - keep + and digits only
     clean_number = re.sub(r'[^0-9+]', '', phone_number)
+    
+    # Remove SIM gate prefix (single digit 9 at the start when followed by country code)
+    # This handles cases like "9359..." where 9 is the gate port, not part of the actual number
+    # Note: We need to be careful not to strip legitimate country codes like 91 (India)
+    if clean_number.startswith('9') and len(clean_number) > 10:
+        # Check if removing the 9 would give us a recognizable country code
+        without_prefix = clean_number[1:]
+        # Check if the number without '9' matches any known country prefix
+        has_valid_prefix = False
+        for country_prefix in PHONE_COUNTRY_MAP.keys():
+            # Remove the '+' from the prefix for comparison
+            numeric_prefix = country_prefix.replace('+', '')
+            if without_prefix.startswith(numeric_prefix):
+                has_valid_prefix = True
+                break
+        
+        if has_valid_prefix:
+            logger.debug(f"📍 Detected SIM gate prefix '9' - stripping it: {clean_number} → {without_prefix}")
+            clean_number = without_prefix
     
     # Handle different number formats
     # If it starts with 00, replace with +
@@ -2093,13 +2137,10 @@ class RTPSession:
                 # Use simpler preprocessing without aggressive VAD
                 processed_pcm = pcm_data  # Skip preprocessing entirely for now
                 
-                # Log occasionally to show audio is flowing
+                # Log once to show audio is flowing
                 if not hasattr(self, '_audio_packet_count'):
                     self._audio_packet_count = 0
-                    logger.info(f"🎤 ✅ VAD DISABLED - Sending ALL audio to Gemini (no filtering)")
-                self._audio_packet_count += 1
-                if self._audio_packet_count % 100 == 0:
-                    logger.info(f"📤 Sent {self._audio_packet_count} audio packets to Gemini")
+                    logger.info(f"🎤 VAD DISABLED - Sending ALL audio to Gemini")
                     
             except Exception as preprocess_error:
                 logger.warning(f"⚠️ Audio preprocessing failed, using original: {preprocess_error}")
@@ -2107,11 +2148,9 @@ class RTPSession:
             
             # Start asyncio thread if not already running
             if not self.input_processing:
-                logger.info(f"🚀 Starting asyncio thread for Gemini communication...")
                 self.input_processing = True
                 self.asyncio_thread = threading.Thread(target=self._run_asyncio_thread, daemon=True)
                 self.asyncio_thread.start()
-                logger.info(f"✅ Asyncio thread started successfully")
                 # Give it a moment to initialize
                 time.sleep(0.05)  # Reduced from 0.1s for faster startup
             
@@ -2159,9 +2198,7 @@ class RTPSession:
             logger.info("🎤 Voice session initialized - starting audio streaming")
             
             # Start continuous receiver task
-            logger.info("🎧 Creating continuous response receiver task...")
             receiver_task = asyncio.create_task(self._continuous_receive_responses())
-            logger.info("✅ Receiver task created - ready to receive Gemini responses")
             
             # Main loop: process audio from queue and send to Gemini with minimal latency
             audio_chunks_sent = 0
@@ -2175,8 +2212,6 @@ class RTPSession:
                         if self.voice_session.gemini_session:
                             await self._send_audio_to_gemini(audio_chunk)
                             audio_chunks_sent += 1
-                            if audio_chunks_sent % 50 == 0:  # Log every 50 chunks
-                                logger.debug(f"📤 Sent {audio_chunks_sent} audio chunks to Gemini so far")
                         else:
                             logger.warning("⚠️ No Gemini session available to send audio")
                     except queue.Empty:
@@ -2210,7 +2245,6 @@ class RTPSession:
                 
             # Convert telephony audio to Gemini format
             processed_audio = self.voice_session.convert_telephony_to_gemini(audio_chunk)
-            logger.info(f"🎙️ Sending audio chunk to Gemini: {len(audio_chunk)} bytes → {len(processed_audio)} bytes")
             
             # Send audio to Gemini
             await self.voice_session.gemini_session.send(
@@ -2246,7 +2280,6 @@ class RTPSession:
                                                 # Base64 encoded audio
                                                 try:
                                                     audio_bytes = base64.b64decode(audio_data)
-                                                    logger.info(f"📥 ✅ GEMINI RESPONSE: Received {len(audio_bytes)} bytes of audio - playing to user...")
                                                     # Convert and send in smaller chunks
                                                     telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_bytes)
                                                     
@@ -2255,7 +2288,6 @@ class RTPSession:
                                                 except Exception as e:
                                                     logger.error(f"Error decoding base64 audio: {e}")
                                             elif isinstance(audio_data, bytes):
-                                                logger.info(f"📥 ✅ GEMINI RESPONSE: Received {len(audio_data)} bytes of audio - playing to user...")
                                                 # Convert and send in smaller chunks to avoid overwhelming the receiver
                                                 telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_data)
                                                 
@@ -2274,14 +2306,12 @@ class RTPSession:
                         elif hasattr(response, 'data') and response.data:
                             turn_had_content = True
                             if isinstance(response.data, bytes):
-                                logger.info(f"📥 ✅ GEMINI RESPONSE (direct): {len(response.data)} bytes - playing to user...")
                                 telephony_audio = self.voice_session.convert_gemini_to_telephony(response.data)
                                 # Send immediately in small chunks for lowest latency
                                 self._send_audio_immediate(telephony_audio)
                             elif isinstance(response.data, str):
                                 try:
                                     audio_bytes = base64.b64decode(response.data)
-                                    logger.info(f"📥 ✅ GEMINI RESPONSE (base64): {len(audio_bytes)} bytes - playing to user...")
                                     telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_bytes)
                                     # Send immediately in small chunks for lowest latency
                                     self._send_audio_immediate(telephony_audio)
@@ -2302,10 +2332,8 @@ class RTPSession:
                         # Continue processing other responses
                         continue
                 
-                # After turn completes, log and prepare for next turn
-                if turn_had_content:
-                    logger.info("✅ Turn completed, ready for next user input")
-                else:
+                # After turn completes, prepare for next turn
+                if not turn_had_content:
                     logger.debug("Empty turn received, continuing to listen")
                 
                 # Small yield to prevent tight loop
@@ -2558,6 +2586,29 @@ class RTPSession:
             return audioop.lin2ulaw(pcm_data, 2)
     
 
+def get_default_owner_id() -> int:
+    """Get the default owner ID for incoming calls (first admin user)"""
+    db = get_session()
+    try:
+        # Try to get first admin user
+        admin_user = db.query(User).filter(User.role == UserRole.ADMIN).first()
+        if admin_user:
+            return admin_user.id
+        
+        # If no admin, try to get superadmin
+        superadmin_user = db.query(User).filter(User.role == UserRole.SUPERADMIN).first()
+        if superadmin_user:
+            return superadmin_user.id
+        
+        # If no users at all, return 1 as fallback (should not happen in production)
+        logger.warning("⚠️  No admin or superadmin user found for incoming call, using default owner_id=1")
+        return 1
+    except Exception as e:
+        logger.error(f"Error getting default owner: {e}")
+        return 1  # Fallback
+    finally:
+        db.close()
+
 class WindowsSIPHandler:
     """Simple SIP handler for Windows - interfaces with Gate VoIP system"""
     
@@ -2695,27 +2746,20 @@ class WindowsSIPHandler:
                 elif line.startswith('Call-ID:'):
                     call_id = line.split(':', 1)[1].strip()
             
-            logger.info(f"📞 Incoming call from {caller_id} (Call-ID: {call_id})")
-            logger.info(f"📞 From address: {addr}")
-            logger.info(f"📞 Raw caller info for language detection: {caller_id}")
+            logger.info(f"📞 Incoming call from {caller_id}")
             
             # Generate session ID
             session_id = str(uuid.uuid4())
             
             # Send 180 Ringing first
-            logger.info("📤 Sending 180 Ringing...")
             ringing_response = self._create_sip_ringing_response(message, session_id)
             self.socket.sendto(ringing_response.encode(), addr)
-            logger.info("🔔 180 Ringing sent")
-            
-            # Send 200 OK immediately - no delay needed
+            logger.info("🔔 Sent 180 Ringing")
             
             # Send 200 OK response
-            logger.info("📤 Sending 200 OK response...")
             ok_response = self._create_sip_ok_response(message, session_id)
-            logger.debug(f"200 OK response:\n{ok_response}")
             self.socket.sendto(ok_response.encode(), addr)
-            logger.info("✅ 200 OK response sent")
+            logger.info("✅ Sent 200 OK")
             
             # Create or update CRM database - call answered
             db = get_session()
@@ -2725,10 +2769,13 @@ class WindowsSIPHandler:
                     crm_session.status = CallStatus.ANSWERED
                 else:
                     # Create new session for incoming calls
+                    # Get default owner for incoming calls (first admin user)
+                    default_owner_id = get_default_owner_id()
                     crm_session = CallSession(
                         session_id=session_id,
                         caller_id=caller_id,
                         called_number=config.get('phone_number', 'Unknown'),
+                        owner_id=default_owner_id,  # Assign to default admin user
                         status=CallStatus.ANSWERED,
                         started_at=datetime.utcnow(),
                         answered_at=datetime.utcnow()
@@ -2741,20 +2788,13 @@ class WindowsSIPHandler:
                 db.close()
             
             # Detect caller's country and language
-            logger.info(f"🌍 ======== LANGUAGE DETECTION ========")
-            logger.info(f"📞 Caller ID: {caller_id}")
-            
             caller_country = detect_caller_country(caller_id)
             language_info = get_language_config(caller_country)
             voice_config = create_voice_config(language_info)
             
-            logger.info(f"🌍 ✅ Detected country: {caller_country}")
-            logger.info(f"🗣️ ✅ Selected language: {language_info['lang']} ({language_info['code']})")
-            logger.info(f"👤 ✅ Formal address: {language_info['formal_address']}")
-            logger.info(f"🌍 =====================================")
+            logger.info(f"🌍 Language: {language_info['lang']} ({caller_country})")
             
             # Create voice session with language-specific configuration
-            logger.info(f"🎙️  Creating voice session {session_id} with {language_info['lang']} language config")
             voice_session = WindowsVoiceSession(session_id, caller_id, self.phone_number, voice_config, custom_config=None)
             
             # Create RTP session for audio
@@ -2764,63 +2804,12 @@ class WindowsSIPHandler:
                 "voice_session": voice_session,
                 "rtp_session": rtp_session,
                 "caller_addr": addr,
-                "status": "connecting",
+                "status": "waiting_for_ack",
                 "call_start": datetime.now(timezone.utc),
                 "call_id": call_id
             }
             
-            # Start voice session in separate thread
-            def start_voice_session():
-                try:
-                    asyncio.run(voice_session.initialize_voice_session())
-                    # Mark as active once voice session is ready
-                    if session_id in active_sessions:
-                        active_sessions[session_id]["status"] = "active"
-                        logger.info(f"🎯 Voice session {session_id} is now active and ready")
-                        
-                        # Play greeting and let natural conversation flow
-                        def play_greeting():
-                            # Wait briefly for call to be fully established
-                            time.sleep(1.0)  # 1 second delay for call establishment
-                            
-                            # Ensure RTP session is ready and processing
-                            max_wait = 5.0  # Maximum 5 seconds wait
-                            waited = 0.0
-                            while waited < max_wait:
-                                if rtp_session.output_processing and session_id in active_sessions:
-                                    if active_sessions[session_id]["status"] == "active":
-                                        break
-                                time.sleep(0.1)
-                                waited += 0.1
-                            
-                            # Check if call is still active before playing greeting
-                            if session_id not in active_sessions:
-                                logger.warning("⚠️ Call ended before greeting could be played")
-                                return
-                            
-                            logger.info("🎵 Playing greeting...")
-                            logger.info(f"📞 Call status: {active_sessions[session_id]['status']}")
-                            
-                            # Play greeting file first and get actual duration
-                            greeting_duration = rtp_session.play_greeting_file("greeting.wav")
-                            
-                            if greeting_duration > 0:
-                                logger.info(f"✅ Greeting played successfully ({greeting_duration:.1f}s). Voice session ready for natural conversation.")
-                            else:
-                                logger.warning("⚠️ Greeting file not found or failed to play")
-                            logger.info("🎤 Waiting for user to speak - AI will respond naturally when it detects speech")
-                        
-                        threading.Thread(target=play_greeting, daemon=True).start()
-                        
-                except Exception as e:
-                    logger.error(f"❌ Failed to start voice session: {e}")
-                    import traceback
-                    logger.error(f"Traceback: {traceback.format_exc()}")
-                    # Remove failed session
-                    if session_id in active_sessions:
-                        del active_sessions[session_id]
-            
-            threading.Thread(target=start_voice_session, daemon=True).start()
+            logger.info(f"⏳ Waiting for ACK to establish call {session_id}...")
             logger.info("📞 ================================================")
             
         except Exception as e:
@@ -2966,8 +2955,82 @@ Content-Length: 0
                 pass
     
     def _handle_ack(self, message: str, addr):
-        """Handle ACK message"""
-        logger.debug("Received ACK")
+        """Handle ACK message - call is now fully established"""
+        try:
+            # Extract Call-ID to find the session
+            call_id = None
+            for line in message.split('\n'):
+                line = line.strip()
+                if line.startswith('Call-ID:'):
+                    call_id = line.split(':', 1)[1].strip()
+                    break
+            
+            if not call_id:
+                logger.debug("ACK received but no Call-ID found")
+                return
+            
+            # Find the session with matching call_id
+            session_id = None
+            for sid, session_data in active_sessions.items():
+                if session_data.get("call_id") == call_id and session_data.get("status") == "waiting_for_ack":
+                    session_id = sid
+                    break
+            
+            if not session_id:
+                logger.debug(f"ACK received for Call-ID {call_id} but no matching session found")
+                return
+            
+            logger.info(f"✅ ACK received - Call {session_id} is now fully established!")
+            
+            voice_session = active_sessions[session_id]["voice_session"]
+            rtp_session = active_sessions[session_id]["rtp_session"]
+            
+            # Now initialize Gemini connection and play greeting in separate thread
+            def start_voice_session():
+                try:
+                    # Initialize Gemini connection
+                    logger.info(f"🔗 Connecting to Gemini for session {session_id}...")
+                    asyncio.run(voice_session.initialize_voice_session())
+                    
+                    # Mark as active once voice session is ready
+                    if session_id in active_sessions:
+                        active_sessions[session_id]["status"] = "active"
+                        logger.info(f"🎯 Voice session {session_id} is now active and ready")
+                        
+                        # Play greeting now that call is fully established
+                        def play_greeting():
+                            # Small delay to ensure RTP is ready
+                            time.sleep(0.5)
+                            
+                            # Check if call is still active
+                            if session_id not in active_sessions:
+                                logger.warning("⚠️ Call ended before greeting could be played")
+                                return
+                            
+                            logger.info("🎵 Playing greeting...")
+                            
+                            # Play greeting file
+                            greeting_duration = rtp_session.play_greeting_file("greeting.wav")
+                            
+                            if greeting_duration > 0:
+                                logger.info(f"✅ Greeting played ({greeting_duration:.1f}s). Ready for conversation.")
+                            else:
+                                logger.warning("⚠️ Greeting file not found or failed to play")
+                        
+                        threading.Thread(target=play_greeting, daemon=True).start()
+                        
+                except Exception as e:
+                    logger.error(f"❌ Failed to start voice session: {e}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
+                    # Remove failed session
+                    if session_id in active_sessions:
+                        del active_sessions[session_id]
+            
+            threading.Thread(target=start_voice_session, daemon=True).start()
+            
+        except Exception as e:
+            logger.error(f"Error handling ACK: {e}")
     
     def _handle_register(self, message: str, addr):
         """Handle incoming REGISTER from Gate VoIP (trunk registration)"""
@@ -3017,8 +3080,7 @@ Content-Length: 0
 """
             
             self.socket.sendto(ok_response.encode(), addr)
-            logger.info("✅ Accepted Gate VoIP trunk registration")
-            logger.info("🎯 Voice agent is now registered as SIP trunk!")
+            logger.info("✅ Gate VoIP trunk registered")
             
         except Exception as e:
             logger.error(f"Error handling incoming REGISTER: {e}")
@@ -3123,8 +3185,14 @@ Content-Length: {len(sdp_content)}
                 logger.error("💡 Wait for extension registration to complete")
                 return None
             
-            logger.info(f"📞 Initiating outbound call to {phone_number} as Extension 200")
-            logger.info(f"📞 Call will be routed through Gate VoIP → {self.config.get('outbound_trunk', 'gsm2')} trunk")
+            # Add "9" prefix for SIM gate port 9 routing
+            # Remove '+' and add '9' prefix
+            dialed_number = phone_number.replace('+', '').replace(' ', '').replace('-', '')
+            if not dialed_number.startswith('9'):
+                dialed_number = '9' + dialed_number
+            
+            logger.info(f"📞 Initiating outbound call to {phone_number} (dialing: {dialed_number}) as Extension 200")
+            logger.info(f"📞 Call will be routed through Gate VoIP → {self.config.get('outbound_trunk', 'gsm2')} trunk → Port 9")
             
             session_id = str(uuid.uuid4())
             username = self.config.get('username', '200')
@@ -3143,12 +3211,12 @@ a=fmtp:101 0-15
 a=sendrecv
 a=ptime:20"""
             
-            # Create INVITE as Extension 200
-            invite_message = f"""INVITE sip:{phone_number}@{self.gate_ip} SIP/2.0
+            # Create INVITE as Extension 200 using dialed_number with prefix
+            invite_message = f"""INVITE sip:{dialed_number}@{self.gate_ip} SIP/2.0
 Via: SIP/2.0/UDP {self.local_ip}:{self.sip_port};branch=z9hG4bK{session_id[:8]};rport
 Max-Forwards: 70
 From: <sip:{username}@{self.gate_ip}>;tag={session_id[:8]}
-To: <sip:{phone_number}@{self.gate_ip}>
+To: <sip:{dialed_number}@{self.gate_ip}>
 Call-ID: {session_id}
 CSeq: 1 INVITE
 Contact: <sip:{username}@{self.local_ip}:{self.sip_port}>
@@ -3162,7 +3230,8 @@ Content-Length: {len(sdp_content)}
             
             # Store INVITE information for potential authentication challenge
             self.pending_invites[session_id] = {
-                'phone_number': phone_number,
+                'phone_number': dialed_number,  # Store dialed number with prefix
+                'original_number': phone_number,  # Store original for reference
                 'session_id': session_id,
                 'username': username,
                 'sdp_content': sdp_content,
@@ -3172,7 +3241,7 @@ Content-Length: {len(sdp_content)}
             
             # Send INVITE
             self.socket.sendto(invite_message.encode(), (self.gate_ip, self.sip_port))
-            logger.info(f"📤 Sent INVITE for outbound call to {phone_number}")
+            logger.info(f"📤 Sent INVITE for outbound call to {phone_number} (dialed: {dialed_number})")
             logger.debug(f"INVITE message:\n{invite_message}")
             
             return session_id
@@ -3596,23 +3665,21 @@ Content-Length: {len(sdp_content)}
             
             invite_info = self.pending_invites[call_id]
             phone_number = invite_info['phone_number']
+            original_number = invite_info.get('original_number', phone_number)  # Get original number without prefix
             session_id = invite_info['session_id']
             
-            logger.info(f"✅ Outbound call to {phone_number} answered successfully!")
-            logger.info(f"📞 Call established - Session ID: {session_id}")
+            logger.info(f"✅ Outbound call to {phone_number} answered!")
             
             # Detect caller's country and language (for outbound calls, use target number)
-            caller_country = detect_caller_country(phone_number)  # Use target number for language
+            caller_country = detect_caller_country(original_number)  # Use original number for language
             language_info = get_language_config(caller_country)
             
             # Get custom config if available from pending invite
             custom_config = invite_info.get('custom_config', None)
-            if custom_config:
-                logger.info(f"🗣️ Using custom config for outbound call: {custom_config}")
             
             voice_config = create_voice_config(language_info, custom_config)
             
-            logger.info(f"🗣️ Using {language_info['lang']} for outbound call to {phone_number}")
+            logger.info(f"🌍 Language: {language_info['lang']} ({caller_country})")
             
             # Create voice session for outbound call (we are the caller)
             voice_session = WindowsVoiceSession(
@@ -3639,54 +3706,45 @@ Content-Length: {len(sdp_content)}
                 "call_type": "outbound"
             }
             
-            # Send ACK to complete the call setup
+            # Send ACK to complete the call setup BEFORE initializing Gemini
             self._send_ack(call_id, to_tag, from_tag, invite_info)
+            logger.info(f"✅ Outbound call {session_id} established")
             
             # Clean up pending invite
             del self.pending_invites[call_id]
             
-            # Start voice session in separate thread
+            # NOW start voice session after ACK is sent
             def start_voice_session():
                 try:
+                    # Initialize Gemini connection
+                    logger.info(f"🔗 Connecting to Gemini for outbound session {session_id}...")
                     asyncio.run(voice_session.initialize_voice_session())
+                    
                     # Mark as active once voice session is ready
                     if session_id in active_sessions:
                         active_sessions[session_id]["status"] = "active"
                         logger.info(f"🎯 Outbound voice session {session_id} is now active and ready")
                         
-                        # For outbound calls, play greeting and let natural conversation flow
+                        # Play greeting now that call is fully established
                         def play_outbound_greeting():
-                            # Wait briefly for call to be fully established
-                            time.sleep(1.0)  # 1 second delay for call establishment
+                            # Small delay to ensure RTP is ready
+                            time.sleep(0.5)
                             
-                            # Ensure RTP session is ready and processing
-                            max_wait = 5.0  # Maximum 5 seconds wait
-                            waited = 0.0
-                            while waited < max_wait:
-                                if rtp_session.output_processing and session_id in active_sessions:
-                                    if active_sessions[session_id]["status"] == "active":
-                                        break
-                                time.sleep(0.1)
-                                waited += 0.1
-                            
-                            # Check if call is still active before playing greeting
+                            # Check if call is still active
                             if session_id not in active_sessions:
                                 logger.warning("⚠️ Outbound call ended before greeting could be played")
                                 return
                             
                             logger.info("🎵 Playing greeting to called party...")
-                            logger.info(f"📞 Outbound call status: {active_sessions[session_id]['status']}")
                             
-                            # Play greeting file first and get actual duration
                             # Check if custom greeting file is available
                             custom_greeting = custom_config.get('greeting_file', 'greeting.wav') if custom_config else 'greeting.wav'
                             greeting_duration = rtp_session.play_greeting_file(custom_greeting)
                             
                             if greeting_duration > 0:
-                                logger.info(f"✅ Outbound greeting played successfully ({greeting_duration:.1f}s). Voice session ready for natural conversation.")
+                                logger.info(f"✅ Greeting played ({greeting_duration:.1f}s). Ready for conversation.")
                             else:
-                                logger.warning("⚠️ Greeting file not found or failed to play for outbound call")
-                            logger.info("🎤 Waiting for called party to speak - AI will respond naturally when it detects speech")
+                                logger.warning("⚠️ Greeting file not found or failed to play")
                         
                         threading.Thread(target=play_outbound_greeting, daemon=True).start()
                         
@@ -3726,8 +3784,6 @@ Content-Length: 0
 """
             
             self.socket.sendto(ack_message.encode(), (self.gate_ip, self.sip_port))
-            logger.info(f"📤 Sent ACK to complete call setup")
-            logger.debug(f"ACK message:\n{ack_message}")
             
         except Exception as e:
             logger.error(f"❌ Error sending ACK: {e}")
@@ -4284,26 +4340,8 @@ class WindowsVoiceSession:
         except Exception as e:
             logger.error(f"Error cleaning up session: {e}")
 
-# Initialize SIP handler
+# Initialize SIP handler (must be after app definition to avoid circular reference issues)
 sip_handler = WindowsSIPHandler()
-
-@app.on_event("startup")
-async def startup_event():
-    """Start SIP listener when FastAPI starts"""
-    # Initialize CRM database
-    init_database()
-    logger.info("CRM database initialized")
-    
-    sip_handler.start_sip_listener()
-    logger.info("Windows VoIP Voice Agent started")
-    logger.info(f"Phone number: {config['phone_number']}")
-    logger.info(f"Local IP: {config['local_ip']}")
-    logger.info(f"Gate VoIP: {config['host']}")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup when shutting down"""
-    sip_handler.stop()
 
 @app.post("/api/generate_greeting")
 async def generate_greeting(greeting_request: dict):
@@ -4322,14 +4360,13 @@ async def generate_greeting(greeting_request: dict):
             raise HTTPException(status_code=400, detail="Phone number required")
         
         # Detect language from phone number
+        logger.info(f"🎤 Generating greeting for {phone_number}")
         caller_country = detect_caller_country(phone_number)
         language_info = get_language_config(caller_country)
         
         # Extract voice and greeting instruction from call_config
         voice_name = call_config.get("voice_name", "Puck")
         greeting_instruction = call_config.get("greeting_instruction")
-        
-        logger.info(f"🎤 Generating greeting for {phone_number}")
         logger.info(f"🌍 Detected language: {language_info['lang']} ({language_info['code']})")
         logger.info(f"🎙️ Using voice: {voice_name}")
         if greeting_instruction:
@@ -4364,7 +4401,7 @@ async def generate_greeting(greeting_request: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/make_call")
-async def make_outbound_call(call_request: dict):
+async def make_outbound_call(call_request: dict, current_user: User = Depends(check_subscription)):
     """API endpoint to initiate an outbound call with optional custom prompt"""
     try:
         phone_number = call_request.get("phone_number")
@@ -4427,6 +4464,7 @@ async def make_outbound_call(call_request: dict):
                     called_number=phone_number,
                     lead_id=lead.id if lead else None,
                     campaign_id=None,  # Manual call
+                    owner_id=current_user.id,  # Set owner to current authenticated user
                     status=CallStatus.DIALING,
                     started_at=datetime.utcnow()
                 )
