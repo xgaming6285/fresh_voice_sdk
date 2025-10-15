@@ -26,7 +26,7 @@ import {
   Phone as PhoneIcon,
   CheckCircle as CheckCircleIcon,
   Cancel as CancelIcon,
-  Headset as HeadsetIcon,
+  PlayArrow as PlayArrowIcon,
   Description as TranscriptIcon,
   Summarize as SummaryIcon,
   FilterList as FilterIcon,
@@ -411,18 +411,19 @@ function Sessions() {
         <Button
           size="small"
           variant="contained"
-          startIcon={<HeadsetIcon />}
+          startIcon={<PlayArrowIcon />}
           onClick={() => navigate(`/sessions/${params.row.session_id}`)}
           sx={{
-            borderRadius: "24px",
+            borderRadius: "20px",
             textTransform: "none",
             fontWeight: 600,
-            background: "linear-gradient(135deg, #F5A890 0%, #E89B85 100%)",
-            color: "#8B4513",
-            boxShadow: "0 2px 8px rgba(245, 168, 144, 0.3)",
+            padding: "4px 12px",
+            background: "linear-gradient(135deg, #90C4F5 0%, #85B4E8 100%)",
+            color: "#1565C0",
+            boxShadow: "0 2px 8px rgba(144, 196, 245, 0.3)",
             "&:hover": {
-              background: "linear-gradient(135deg, #FFBFA8 0%, #F5A890 100%)",
-              boxShadow: "0 4px 12px rgba(245, 168, 144, 0.4)",
+              background: "linear-gradient(135deg, #A8D4FF 0%, #90C4F5 100%)",
+              boxShadow: "0 4px 12px rgba(144, 196, 245, 0.4)",
               transform: "translateY(-1px)",
             },
             transition: "all 0.2s ease-in-out",
@@ -483,10 +484,23 @@ function Sessions() {
               label="Start Date/Time"
               value={startDate}
               onChange={setStartDate}
+              ampm={false}
+              views={["year", "month", "day", "hours", "minutes"]}
               renderInput={(params) => (
                 <TextField {...params} fullWidth size="small" />
               )}
-              slotProps={{ textField: { size: "small", fullWidth: true } }}
+              slotProps={{
+                textField: {
+                  size: "small",
+                  fullWidth: true,
+                  inputProps: {
+                    readOnly: true,
+                  },
+                },
+                actionBar: {
+                  actions: ["accept", "cancel", "clear"],
+                },
+              }}
             />
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
@@ -494,10 +508,23 @@ function Sessions() {
               label="End Date/Time"
               value={endDate}
               onChange={setEndDate}
+              ampm={false}
+              views={["year", "month", "day", "hours", "minutes"]}
               renderInput={(params) => (
                 <TextField {...params} fullWidth size="small" />
               )}
-              slotProps={{ textField: { size: "small", fullWidth: true } }}
+              slotProps={{
+                textField: {
+                  size: "small",
+                  fullWidth: true,
+                  inputProps: {
+                    readOnly: true,
+                  },
+                },
+                actionBar: {
+                  actions: ["accept", "cancel", "clear"],
+                },
+              }}
             />
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
@@ -560,49 +587,6 @@ function Sessions() {
           </Grid>
         </Grid>
       </Paper>
-
-      {/* Bulk Actions */}
-      {selectedRows.length > 0 && (
-        <Paper
-          className="glass-effect ios-blur-container"
-          sx={{
-            p: 2,
-            mb: 3,
-            background:
-              "linear-gradient(135deg, rgba(200, 92, 60, 0.08) 0%, rgba(200, 92, 60, 0.03) 100%)",
-            border: "1px solid rgba(200, 92, 60, 0.2)",
-          }}
-        >
-          <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
-            <Typography variant="body1" fontWeight={600}>
-              {selectedRows.length} session{selectedRows.length > 1 ? "s" : ""}{" "}
-              selected
-            </Typography>
-            <Button
-              variant="contained"
-              startIcon={<TranscriptIcon />}
-              onClick={() => setBulkDialog({ open: true, type: "transcript" })}
-              disabled={bulkProcessing}
-              sx={{
-                background: "linear-gradient(135deg, #5C8AA6 0%, #426D87 100%)",
-              }}
-            >
-              Bulk Transcript
-            </Button>
-            <Button
-              variant="contained"
-              startIcon={<SummaryIcon />}
-              onClick={() => setBulkDialog({ open: true, type: "summary" })}
-              disabled={bulkProcessing}
-              sx={{
-                background: "linear-gradient(135deg, #6B9A5A 0%, #517542 100%)",
-              }}
-            >
-              Bulk Summary
-            </Button>
-          </Box>
-        </Paper>
-      )}
 
       {/* Active Sessions */}
       {activeVoiceSessions.length > 0 && (
@@ -668,11 +652,74 @@ function Sessions() {
         }}
       >
         <Box p={3}>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
-            <Typography variant="h6">📊</Typography>
-            <Typography variant="h6" fontWeight={700}>
-              CRM Call Sessions
-            </Typography>
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              mb: 2,
+            }}
+          >
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+              <Typography variant="h6">📊</Typography>
+              <Typography variant="h6" fontWeight={700}>
+                CRM Call Sessions
+              </Typography>
+              {selectedRows.length > 0 && (
+                <Chip
+                  label={`${selectedRows.length} selected`}
+                  size="small"
+                  color="primary"
+                  sx={{ ml: 2 }}
+                />
+              )}
+            </Box>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+              <Button
+                variant="contained"
+                size="small"
+                startIcon={<TranscriptIcon />}
+                onClick={() =>
+                  setBulkDialog({ open: true, type: "transcript" })
+                }
+                disabled={bulkProcessing || selectedRows.length === 0}
+                sx={{
+                  background:
+                    selectedRows.length === 0
+                      ? "rgba(92, 138, 166, 0.3)"
+                      : "linear-gradient(135deg, #5C8AA6 0%, #426D87 100%)",
+                  "&:hover": {
+                    background:
+                      selectedRows.length === 0
+                        ? "rgba(92, 138, 166, 0.3)"
+                        : "linear-gradient(135deg, #6B9FB5 0%, #517C96 100%)",
+                  },
+                }}
+              >
+                Bulk Transcript
+              </Button>
+              <Button
+                variant="contained"
+                size="small"
+                startIcon={<SummaryIcon />}
+                onClick={() => setBulkDialog({ open: true, type: "summary" })}
+                disabled={bulkProcessing || selectedRows.length === 0}
+                sx={{
+                  background:
+                    selectedRows.length === 0
+                      ? "rgba(107, 154, 90, 0.3)"
+                      : "linear-gradient(135deg, #6B9A5A 0%, #517542 100%)",
+                  "&:hover": {
+                    background:
+                      selectedRows.length === 0
+                        ? "rgba(107, 154, 90, 0.3)"
+                        : "linear-gradient(135deg, #7AAA69 0%, #608451 100%)",
+                  },
+                }}
+              >
+                Bulk Summary
+              </Button>
+            </Box>
           </Box>
         </Box>
         <DataGrid
@@ -683,7 +730,7 @@ function Sessions() {
           loading={loading}
           autoHeight
           checkboxSelection
-          disableSelectionOnClick
+          disableRowSelectionOnClick
           onRowSelectionModelChange={(newSelection) => {
             setSelectedRows(newSelection);
           }}
@@ -692,6 +739,24 @@ function Sessions() {
             "& .MuiDataGrid-cell": {
               borderBottom: "1px solid rgba(224, 224, 224, 0.2)",
               fontSize: "0.875rem",
+              "&:focus": {
+                outline: "none",
+              },
+              "&:focus-within": {
+                outline: "none",
+              },
+            },
+            "& .MuiDataGrid-cell:focus-within": {
+              outline: "none",
+            },
+            "& .MuiDataGrid-columnHeader:focus": {
+              outline: "none",
+            },
+            "& .MuiDataGrid-columnHeader:focus-within": {
+              outline: "none",
+            },
+            "& .MuiCheckbox-root": {
+              padding: "4px",
             },
             "& .MuiDataGrid-columnHeaders": {
               backgroundColor: "rgba(248, 243, 239, 0.8)",
@@ -709,6 +774,12 @@ function Sessions() {
               "&:hover": {
                 backgroundColor: "rgba(200, 92, 60, 0.04)",
               },
+              cursor: "default",
+            },
+          }}
+          slotProps={{
+            baseCheckbox: {
+              disableRipple: true,
             },
           }}
         />
