@@ -478,8 +478,8 @@ function Sessions() {
             Filters
           </Typography>
         </Box>
-        <Grid container spacing={2}>
-          <Grid item xs={12} sm={6} md={3}>
+        <Grid container spacing={1.5}>
+          <Grid item xs={12} sm={4} md={2}>
             <DateTimePicker
               label="Start Date/Time"
               value={startDate}
@@ -503,7 +503,7 @@ function Sessions() {
               }}
             />
           </Grid>
-          <Grid item xs={12} sm={6} md={3}>
+          <Grid item xs={12} sm={4} md={2}>
             <DateTimePicker
               label="End Date/Time"
               value={endDate}
@@ -527,7 +527,7 @@ function Sessions() {
               }}
             />
           </Grid>
-          <Grid item xs={12} sm={6} md={3}>
+          <Grid item xs={12} sm={4} md={2}>
             <FormControl fullWidth size="small">
               <InputLabel>Campaign</InputLabel>
               <Select
@@ -544,7 +544,7 @@ function Sessions() {
               </Select>
             </FormControl>
           </Grid>
-          <Grid item xs={12} sm={6} md={3}>
+          <Grid item xs={12} sm={4} md={2}>
             <FormControl fullWidth size="small">
               <InputLabel>Country</InputLabel>
               <Select
@@ -561,7 +561,7 @@ function Sessions() {
               </Select>
             </FormControl>
           </Grid>
-          <Grid item xs={12} sm={6} md={3}>
+          <Grid item xs={12} sm={4} md={2}>
             <FormControl fullWidth size="small">
               <InputLabel>Interest Status</InputLabel>
               <Select
@@ -575,7 +575,7 @@ function Sessions() {
               </Select>
             </FormControl>
           </Grid>
-          <Grid item xs={12} sm={6} md={3}>
+          <Grid item xs={12} sm={4} md={2}>
             <Button
               fullWidth
               variant="outlined"
@@ -651,13 +651,19 @@ function Sessions() {
           animationFillMode: "both",
         }}
       >
-        <Box p={3}>
+        <Box
+          px={3}
+          py={1.5}
+          sx={{
+            background: "linear-gradient(135deg, #FFD54F 0%, #FF9800 100%)",
+            borderRadius: "8px 8px 0 0",
+          }}
+        >
           <Box
             sx={{
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
-              mb: 2,
             }}
           >
             <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -737,7 +743,8 @@ function Sessions() {
           rowSelectionModel={selectedRows}
           sx={{
             "& .MuiDataGrid-cell": {
-              borderBottom: "1px solid rgba(224, 224, 224, 0.2)",
+              borderBottom: "3px solid rgba(224, 224, 224, 0.8)",
+              borderRight: "1px solid rgba(224, 224, 224, 0.3)",
               fontSize: "0.875rem",
               "&:focus": {
                 outline: "none",
@@ -759,11 +766,18 @@ function Sessions() {
               padding: "4px",
             },
             "& .MuiDataGrid-columnHeaders": {
-              backgroundColor: "rgba(248, 243, 239, 0.8)",
+              backgroundColor: "#F3B3F3",
               backdropFilter: "blur(10px)",
-              borderBottom: "2px solid rgba(200, 92, 60, 0.15)",
-              fontWeight: 600,
-              fontSize: "0.875rem",
+              borderBottom: "2px solid rgba(238, 130, 238, 0.5)",
+              "& .MuiDataGrid-columnHeaderTitle": {
+                fontWeight: 700,
+                fontSize: "0.875rem",
+              },
+            },
+            "& .MuiDataGrid-columnSeparator": {
+              visibility: "visible !important",
+              opacity: "1 !important",
+              color: "rgba(255, 255, 255, 0.8)",
             },
             "& .MuiDataGrid-footerContainer": {
               borderTop: "2px solid rgba(200, 92, 60, 0.15)",
@@ -771,8 +785,9 @@ function Sessions() {
               backdropFilter: "blur(10px)",
             },
             "& .MuiDataGrid-row": {
+              backgroundColor: "rgba(255, 255, 255, 0.6)",
               "&:hover": {
-                backgroundColor: "rgba(200, 92, 60, 0.04)",
+                backgroundColor: "rgba(200, 92, 60, 0.08)",
               },
               cursor: "default",
             },
