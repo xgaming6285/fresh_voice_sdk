@@ -32,12 +32,7 @@ import {
   FilterList as FilterIcon,
 } from "@mui/icons-material";
 import { DateTimePicker } from "@mui/x-date-pickers/DateTimePicker";
-import {
-  sessionAPI,
-  voiceAgentAPI,
-  campaignAPI,
-  leadAPI,
-} from "../services/api";
+import { sessionAPI, voiceAgentAPI, campaignAPI } from "../services/api";
 
 function Sessions() {
   const navigate = useNavigate();
@@ -48,7 +43,6 @@ function Sessions() {
   const [selectedRows, setSelectedRows] = useState([]);
 
   // Filter states
-  const [statusFilter, setStatusFilter] = useState("");
   const [campaignFilter, setCampaignFilter] = useState("");
   const [countryFilter, setCountryFilter] = useState("");
   const [interestFilter, setInterestFilter] = useState("");
@@ -76,22 +70,13 @@ function Sessions() {
     loadSessions();
     loadActiveVoiceSessions();
     loadCampaigns();
-    loadCountries();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    statusFilter,
-    campaignFilter,
-    countryFilter,
-    interestFilter,
-    startDate,
-    endDate,
-  ]);
+  }, [campaignFilter, countryFilter, interestFilter, startDate, endDate]);
 
   const loadSessions = async () => {
     setLoading(true);
     try {
       const params = {};
-      if (statusFilter) params.status = statusFilter;
       if (campaignFilter) params.campaign_id = campaignFilter;
 
       const response = await sessionAPI.getAll(params);
@@ -99,6 +84,14 @@ function Sessions() {
 
       // Load summaries for CRM sessions
       await loadSummariesForSessions(sessionsData);
+
+      // Extract unique countries from sessions data (before filtering)
+      const uniqueCountries = [
+        ...new Set(
+          sessionsData.map((session) => session.lead_country).filter(Boolean)
+        ),
+      ].sort();
+      setCountries(uniqueCountries);
 
       // Apply client-side filters after getting summaries
       sessionsData = applyClientFilters(sessionsData);
@@ -151,19 +144,6 @@ function Sessions() {
       setCampaigns(response.data.campaigns || []);
     } catch (error) {
       console.error("Error loading campaigns:", error);
-    }
-  };
-
-  const loadCountries = async () => {
-    try {
-      const response = await leadAPI.getAll({ per_page: 1000 });
-      const leads = response.data.leads || [];
-      const uniqueCountries = [
-        ...new Set(leads.map((lead) => lead.country).filter(Boolean)),
-      ];
-      setCountries(uniqueCountries);
-    } catch (error) {
-      console.error("Error loading countries:", error);
     }
   };
 
@@ -290,7 +270,6 @@ function Sessions() {
   };
 
   const clearFilters = () => {
-    setStatusFilter("");
     setCampaignFilter("");
     setCountryFilter("");
     setInterestFilter("");
@@ -521,24 +500,7 @@ function Sessions() {
               slotProps={{ textField: { size: "small", fullWidth: true } }}
             />
           </Grid>
-          <Grid item xs={12} sm={6} md={2}>
-            <FormControl fullWidth size="small">
-              <InputLabel>Status</InputLabel>
-              <Select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
-                label="Status"
-              >
-                <MenuItem value="">All</MenuItem>
-                <MenuItem value="answered">Answered</MenuItem>
-                <MenuItem value="rejected">Rejected</MenuItem>
-                <MenuItem value="no_answer">No Answer</MenuItem>
-                <MenuItem value="failed">Failed</MenuItem>
-                <MenuItem value="in_call">In Call</MenuItem>
-              </Select>
-            </FormControl>
-          </Grid>
-          <Grid item xs={12} sm={6} md={2}>
+          <Grid item xs={12} sm={6} md={3}>
             <FormControl fullWidth size="small">
               <InputLabel>Campaign</InputLabel>
               <Select
@@ -555,7 +517,7 @@ function Sessions() {
               </Select>
             </FormControl>
           </Grid>
-          <Grid item xs={12} sm={6} md={2}>
+          <Grid item xs={12} sm={6} md={3}>
             <FormControl fullWidth size="small">
               <InputLabel>Country</InputLabel>
               <Select
@@ -572,7 +534,7 @@ function Sessions() {
               </Select>
             </FormControl>
           </Grid>
-          <Grid item xs={12} sm={6} md={2}>
+          <Grid item xs={12} sm={6} md={3}>
             <FormControl fullWidth size="small">
               <InputLabel>Interest Status</InputLabel>
               <Select
@@ -583,11 +545,10 @@ function Sessions() {
                 <MenuItem value="">All</MenuItem>
                 <MenuItem value="interested">Interested</MenuItem>
                 <MenuItem value="not_interested">Not Interested</MenuItem>
-                <MenuItem value="undecided">Undecided</MenuItem>
               </Select>
             </FormControl>
           </Grid>
-          <Grid item xs={12} sm={6} md={2}>
+          <Grid item xs={12} sm={6} md={3}>
             <Button
               fullWidth
               variant="outlined"

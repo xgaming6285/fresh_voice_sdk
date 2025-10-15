@@ -2776,10 +2776,19 @@ class WindowsSIPHandler:
                     # Create new session for incoming calls
                     # Get default owner for incoming calls (first admin user)
                     default_owner_id = get_default_owner_id()
+                    
+                    # Try to find lead by caller phone number
+                    lead = db.query(Lead).filter(
+                        (Lead.phone == caller_id) |
+                        (Lead.phone == caller_id.replace('+', '')) |
+                        (Lead.phone.contains(caller_id[-10:] if len(caller_id) >= 10 else caller_id))  # Last 10 digits
+                    ).first()
+                    
                     crm_session = CallSession(
                         session_id=session_id,
                         caller_id=caller_id,
                         called_number=config.get('phone_number', 'Unknown'),
+                        lead_id=lead.id if lead else None,
                         owner_id=default_owner_id,  # Assign to default admin user
                         status=CallStatus.ANSWERED,
                         started_at=datetime.utcnow(),

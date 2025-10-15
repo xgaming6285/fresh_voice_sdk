@@ -15,6 +15,7 @@ import io
 import asyncio
 import logging
 from pathlib import Path
+from sqlalchemy.orm import joinedload
 
 from crm_database import (
     get_session, Lead, Campaign, CampaignLead, CallSession, User,
@@ -123,6 +124,7 @@ class CallSessionResponse(BaseModel):
     session_id: str
     campaign_id: Optional[int]
     lead_id: Optional[int]
+    lead_country: Optional[str]
     caller_id: Optional[str]
     called_number: Optional[str]
     status: str
@@ -834,7 +836,7 @@ async def get_call_sessions(
         accessible_session_ids = []
         if current_user.role == UserRole.SUPERADMIN:
             # Superadmin sees all call sessions (except orphaned ones)
-            query = session.query(CallSession).filter(CallSession.owner_id.isnot(None))
+            query = session.query(CallSession).options(joinedload(CallSession.lead)).filter(CallSession.owner_id.isnot(None))
         elif current_user.role == UserRole.ADMIN:
             # Admin sees their own sessions + their agents' sessions
             from crm_database import UserManager
@@ -842,13 +844,13 @@ async def get_call_sessions(
             agents = user_manager.get_agents_by_admin(current_user.id)
             agent_ids = [agent.id for agent in agents]
             accessible_user_ids = [current_user.id] + agent_ids
-            query = session.query(CallSession).filter(
+            query = session.query(CallSession).options(joinedload(CallSession.lead)).filter(
                 CallSession.owner_id.in_(accessible_user_ids),
                 CallSession.owner_id.isnot(None)  # Extra safety: exclude NULL owner_id
             )
         else:  # AGENT
             # Agent only sees their own sessions
-            query = session.query(CallSession).filter(
+            query = session.query(CallSession).options(joinedload(CallSession.lead)).filter(
                 CallSession.owner_id == current_user.id,
                 CallSession.owner_id.isnot(None)  # Extra safety: exclude NULL owner_id
             )
@@ -868,6 +870,7 @@ async def get_call_sessions(
                 session_id=s.session_id,
                 campaign_id=s.campaign_id,
                 lead_id=s.lead_id,
+                lead_country=s.lead.country if s.lead else None,
                 caller_id=s.caller_id,
                 called_number=s.called_number,
                 status=s.status.value,
@@ -897,7 +900,7 @@ async def get_call_session(session_id: str, current_user: User = Depends(get_cur
     """Get a specific call session by voice agent session ID"""
     try:
         session = get_session()
-        call_session = session.query(CallSession).filter(
+        call_session = session.query(CallSession).options(joinedload(CallSession.lead)).filter(
             CallSession.session_id == session_id
         ).first()
         
@@ -942,6 +945,7 @@ async def get_call_session(session_id: str, current_user: User = Depends(get_cur
             session_id=call_session.session_id,
             campaign_id=call_session.campaign_id,
             lead_id=call_session.lead_id,
+            lead_country=call_session.lead.country if call_session.lead else None,
             caller_id=call_session.caller_id,
             called_number=call_session.called_number,
             status=call_session.status.value,
