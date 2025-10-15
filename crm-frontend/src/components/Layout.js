@@ -70,6 +70,13 @@ function Layout({ children }) {
           },
           { text: "Leads", icon: <PeopleIcon />, path: "/leads", emoji: "👥" },
           {
+            text: "Money",
+            icon: <AssessmentIcon />,
+            path: "/money",
+            emoji: "💰",
+            emojiImg: "/transparent-money-bag-1713860414830.webp",
+          },
+          {
             text: "Campaigns",
             icon: <CampaignIcon />,
             path: "/campaigns",
@@ -205,9 +212,27 @@ function Layout({ children }) {
                       ? "inherit"
                       : "primary.main",
                   minWidth: 40,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
                 }}
               >
-                {item.icon}
+                {item.emojiImg ? (
+                  <img
+                    src={item.emojiImg}
+                    alt={item.text}
+                    style={{
+                      width: 24,
+                      height: 24,
+                      filter:
+                        location.pathname === item.path
+                          ? "brightness(0) invert(1)"
+                          : "none",
+                    }}
+                  />
+                ) : (
+                  item.icon
+                )}
               </ListItemIcon>
               <ListItemText
                 primary={item.text}
@@ -258,10 +283,33 @@ function Layout({ children }) {
           <Box
             sx={{ display: "flex", alignItems: "center", gap: 1, flexGrow: 1 }}
           >
-            <Typography variant="h4">
-              {menuItems.find((item) => item.path === location.pathname)
-                ?.emoji || "🎙️"}
-            </Typography>
+            {(() => {
+              const currentMenuItem = menuItems.find(
+                (item) => item.path === location.pathname
+              );
+              const emojiImg = currentMenuItem?.emojiImg;
+              const emoji = currentMenuItem?.emoji || "🎙️";
+
+              return emojiImg ? (
+                <Box
+                  sx={{
+                    width: 32,
+                    height: 32,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <img
+                    src={emojiImg}
+                    alt={currentMenuItem?.text}
+                    style={{ width: 28, height: 28 }}
+                  />
+                </Box>
+              ) : (
+                <Typography variant="h4">{emoji}</Typography>
+              );
+            })()}
             <Typography
               variant="h4"
               noWrap
