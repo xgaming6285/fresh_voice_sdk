@@ -218,18 +218,20 @@ function Layout({ children }) {
                 }}
               >
                 {item.emojiImg ? (
-                  <img
-                    src={item.emojiImg}
-                    alt={item.text}
-                    style={{
-                      width: 24,
-                      height: 24,
-                      filter:
-                        location.pathname === item.path
-                          ? "brightness(0) invert(1)"
-                          : "none",
-                    }}
-                  />
+                  location.pathname === item.path ? (
+                    <Typography variant="h6" sx={{ fontSize: 24 }}>
+                      {item.emoji}
+                    </Typography>
+                  ) : (
+                    <img
+                      src={item.emojiImg}
+                      alt={item.text}
+                      style={{
+                        width: 24,
+                        height: 24,
+                      }}
+                    />
+                  )
                 ) : (
                   item.icon
                 )}

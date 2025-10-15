@@ -8,7 +8,6 @@ import {
   Male as MaleIcon,
   Female as FemaleIcon,
   QuestionMark as QuestionMarkIcon,
-  TrendingUp as TrendingUpIcon,
 } from "@mui/icons-material";
 import { leadAPI, sessionAPI, voiceAgentAPI } from "../services/api";
 
@@ -58,16 +57,13 @@ function Money() {
 
             if (!interestedSessionsMap.has(phoneKey)) {
               interestedSessionsMap.set(phoneKey, {
-                interested_count: 1,
                 last_interested_at: session.started_at,
                 session_id: session.session_id,
                 summary: summary,
               });
             } else {
-              // Increment interested count if same lead appears multiple times
-              const existing = interestedSessionsMap.get(phoneKey);
-              existing.interested_count += 1;
               // Update to most recent interested session
+              const existing = interestedSessionsMap.get(phoneKey);
               if (
                 new Date(session.started_at) >
                 new Date(existing.last_interested_at)
@@ -92,7 +88,6 @@ function Money() {
         if (lead) {
           interestedLeadsData.push({
             ...lead,
-            interested_count: sessionData.interested_count,
             last_interested_at: sessionData.last_interested_at,
             session_id: sessionData.session_id,
             summary: sessionData.summary,
@@ -107,7 +102,6 @@ function Money() {
             country: "—",
             gender: "unknown",
             email: "",
-            interested_count: sessionData.interested_count,
             last_interested_at: sessionData.last_interested_at,
             session_id: sessionData.session_id,
             summary: sessionData.summary,
@@ -275,44 +269,6 @@ function Money() {
       ),
     },
     {
-      field: "interested_count",
-      headerName: "Interest Count",
-      flex: 0.8,
-      minWidth: 130,
-      align: "center",
-      headerAlign: "center",
-      renderCell: (params) => (
-        <Box
-          sx={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 0.5,
-            px: 1.5,
-            py: 0.5,
-            borderRadius: 10,
-            background: `rgba(107, 154, 90, ${Math.min(
-              params.value * 0.15,
-              0.4
-            )})`,
-            border: "1px solid",
-            borderColor: "success.light",
-          }}
-        >
-          <TrendingUpIcon sx={{ fontSize: 16, color: "success.dark" }} />
-          <Typography
-            variant="body2"
-            fontWeight={700}
-            sx={{
-              color: "success.dark",
-            }}
-          >
-            {params.value}
-          </Typography>
-        </Box>
-      ),
-    },
-    {
       field: "last_interested_at",
       headerName: "Last Interested",
       flex: 1.3,
@@ -394,7 +350,7 @@ function Money() {
             </Typography>
             <Typography variant="body2" color="text.secondary">
               Leads who have shown interest during call sessions. Sort by name,
-              country, gender, or interest count.
+              country, or gender.
             </Typography>
           </Box>
           <Box
