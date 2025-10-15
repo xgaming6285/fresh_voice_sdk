@@ -113,7 +113,7 @@ def init_database():
         # System Settings collection
         _db.system_settings.create_index([("key", ASCENDING)], unique=True)
         
-        print(f"[OK] MongoDB initialized: {db_name} at {mongo_url}")
+        print(f"✅ MongoDB initialized: {db_name} at {mongo_url}")
     
     return _db
 
@@ -184,39 +184,35 @@ class MongoQuery:
         self.offset_val = 0
         self.options_val = []
         
-        # Use the model's collection name method for consistency
-        collection_name = model._get_collection_name()
+        # Determine collection name
+        collection_name = model.__name__.lower() + 's'
+        if collection_name == 'campaignleads':
+            collection_name = 'campaign_leads'
+        elif collection_name == 'callsessions':
+            collection_name = 'call_sessions'
+        elif collection_name == 'paymentrequests':
+            collection_name = 'payment_requests'
+        elif collection_name == 'systemsettingss':
+            collection_name = 'system_settings'
+        
         self.collection = self.db[collection_name]
-    
-    @staticmethod
-    def _normalize_value(value):
-        """Normalize values for MongoDB queries (convert enums, etc.)"""
-        if isinstance(value, enum.Enum):
-            return value.value
-        elif isinstance(value, list):
-            return [MongoQuery._normalize_value(v) for v in value]
-        elif isinstance(value, dict):
-            return {k: MongoQuery._normalize_value(v) for k, v in value.items()}
-        return value
     
     def filter(self, *args, **kwargs):
         """Add filter conditions"""
         for condition in args:
             if hasattr(condition, 'compile'):
                 # Handle SQLAlchemy-like conditions
-                compiled = condition.compile()
-                self.filters.update({k: self._normalize_value(v) for k, v in compiled.items()})
+                self.filters.update(condition.compile())
         
         # Handle simple key-value filters
         for key, value in kwargs.items():
-            self.filters[key] = self._normalize_value(value)
+            self.filters[key] = value
         
         return self
     
     def filter_by(self, **kwargs):
         """Filter by keyword arguments"""
-        for key, value in kwargs.items():
-            self.filters[key] = self._normalize_value(value)
+        self.filters.update(kwargs)
         return self
     
     def order_by(self, *args):
@@ -297,7 +293,16 @@ class MongoModel:
     
     def save(self, db):
         """Save to database"""
-        collection_name = self._get_collection_name()
+        collection_name = self.__class__.__name__.lower() + 's'
+        if collection_name == 'campaignlead':
+            collection_name = 'campaign_leads'
+        elif collection_name == 'callsession':
+            collection_name = 'call_sessions'
+        elif collection_name == 'paymentrequest':
+            collection_name = 'payment_requests'
+        elif collection_name == 'systemsettings':
+            collection_name = 'system_settings'
+        
         collection = db[collection_name]
         doc = self._to_dict()
         
@@ -316,7 +321,7 @@ class MongoModel:
     def delete(self, db):
         """Delete from database"""
         if self._id:
-            collection_name = self._get_collection_name()
+            collection_name = self.__class__.__name__.lower() + 's'
             db[collection_name].delete_one({"_id": self._id})
     
     def _to_dict(self):
@@ -332,22 +337,6 @@ class MongoModel:
             else:
                 doc[key] = value
         return doc
-    
-    @classmethod
-    def _get_collection_name(cls):
-        """Get the collection name for this model"""
-        name = cls.__name__.lower()
-        # Handle special cases with compound names
-        if name == 'campaignlead':
-            return 'campaign_leads'
-        elif name == 'callsession':
-            return 'call_sessions'
-        elif name == 'paymentrequest':
-            return 'payment_requests'
-        elif name == 'systemsettings':
-            return 'system_settings'
-        else:
-            return name + 's'
     
     @classmethod
     def _from_dict(cls, doc):
