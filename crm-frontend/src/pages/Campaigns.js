@@ -178,7 +178,234 @@ function Campaigns() {
         <Box display="flex" justifyContent="center" p={4}>
           <LinearProgress sx={{ width: "50%" }} />
         </Box>
+      ) : campaigns.length === 0 ? (
+        /* Empty State - First Time */
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            minHeight: "60vh",
+            py: 8,
+          }}
+        >
+          <Box
+            className="scale-in"
+            sx={{
+              textAlign: "center",
+              maxWidth: 600,
+              px: 3,
+            }}
+          >
+            {/* Animated Icon */}
+            <Box
+              className="bounce-in float"
+              sx={{
+                mb: 4,
+                position: "relative",
+                display: "inline-block",
+              }}
+            >
+              <Box
+                sx={{
+                  width: 140,
+                  height: 140,
+                  borderRadius: "50%",
+                  background:
+                    "linear-gradient(135deg, rgba(200, 92, 60, 0.15) 0%, rgba(139, 94, 60, 0.15) 100%)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  position: "relative",
+                  animation: "borderGlow 2s ease-in-out infinite",
+                  "&::before": {
+                    content: '""',
+                    position: "absolute",
+                    top: -10,
+                    left: -10,
+                    right: -10,
+                    bottom: -10,
+                    borderRadius: "50%",
+                    border: "2px dashed rgba(200, 92, 60, 0.3)",
+                    animation: "spin 20s linear infinite",
+                  },
+                }}
+              >
+                <Box
+                  sx={{
+                    width: 100,
+                    height: 100,
+                    borderRadius: "50%",
+                    background:
+                      "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    boxShadow: "0 8px 32px rgba(200, 92, 60, 0.4)",
+                  }}
+                >
+                  <AddIcon sx={{ fontSize: 50, color: "white" }} />
+                </Box>
+              </Box>
+            </Box>
+
+            {/* Heading */}
+            <Typography
+              variant="h3"
+              className="text-shimmer"
+              sx={{
+                fontWeight: 800,
+                mb: 2,
+                animation: "slideUp 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)",
+                animationDelay: "0.2s",
+                animationFillMode: "both",
+              }}
+            >
+              Create Your First Campaign
+            </Typography>
+
+            {/* Description */}
+            <Typography
+              variant="body1"
+              sx={{
+                color: "text.secondary",
+                mb: 4,
+                lineHeight: 1.8,
+                fontSize: "1.1rem",
+                animation: "slideUp 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)",
+                animationDelay: "0.3s",
+                animationFillMode: "both",
+              }}
+            >
+              Start reaching your leads with automated voice campaigns.
+              <br />
+              Set up your first campaign and watch your outreach come to life!
+              🚀
+            </Typography>
+
+            {/* Features List */}
+            <Box
+              sx={{
+                display: "flex",
+                justifyContent: "center",
+                gap: 3,
+                mb: 5,
+                flexWrap: "wrap",
+                animation: "slideUp 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)",
+                animationDelay: "0.4s",
+                animationFillMode: "both",
+              }}
+            >
+              {[
+                { icon: "📞", text: "Automated Calls" },
+                { icon: "🎯", text: "Smart Targeting" },
+                { icon: "📊", text: "Real-time Analytics" },
+              ].map((feature, index) => (
+                <Box
+                  key={index}
+                  className={`scale-in stagger-${index + 1}`}
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1,
+                    px: 2,
+                    py: 1,
+                    borderRadius: 3,
+                    background: "rgba(200, 92, 60, 0.05)",
+                    backdropFilter: "blur(10px)",
+                    border: "1px solid rgba(200, 92, 60, 0.1)",
+                  }}
+                >
+                  <Typography variant="h6">{feature.icon}</Typography>
+                  <Typography variant="body2" fontWeight={600}>
+                    {feature.text}
+                  </Typography>
+                </Box>
+              ))}
+            </Box>
+
+            {/* CTA Button */}
+            <Tooltip
+              title={
+                !hasActiveSubscription()
+                  ? "Subscription required to create campaigns"
+                  : ""
+              }
+            >
+              <Box
+                sx={{
+                  animation: "slideUp 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)",
+                  animationDelay: "0.5s",
+                  animationFillMode: "both",
+                }}
+              >
+                <Button
+                  variant="contained"
+                  size="large"
+                  startIcon={<AddIcon />}
+                  onClick={handleOpenCreateDialog}
+                  disabled={!hasActiveSubscription()}
+                  className="ripple-container hover-scale"
+                  sx={{
+                    py: 2,
+                    px: 5,
+                    fontSize: "1.1rem",
+                    fontWeight: 700,
+                    borderRadius: 4,
+                    background:
+                      "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+                    boxShadow: "0 8px 32px rgba(200, 92, 60, 0.4)",
+                    position: "relative",
+                    overflow: "hidden",
+                    "&::before": {
+                      content: '""',
+                      position: "absolute",
+                      top: 0,
+                      left: "-100%",
+                      width: "100%",
+                      height: "100%",
+                      background:
+                        "linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent)",
+                      transition: "left 0.5s",
+                    },
+                    "&:hover": {
+                      boxShadow: "0 12px 40px rgba(200, 92, 60, 0.6)",
+                      transform: "translateY(-4px) scale(1.05)",
+                      "&::before": {
+                        left: "100%",
+                      },
+                    },
+                    "&:disabled": {
+                      background: "rgba(0, 0, 0, 0.12)",
+                      boxShadow: "none",
+                    },
+                  }}
+                >
+                  Create Your First Campaign
+                </Button>
+              </Box>
+            </Tooltip>
+
+            {!hasActiveSubscription() && (
+              <Typography
+                variant="caption"
+                sx={{
+                  display: "block",
+                  mt: 2,
+                  color: "warning.main",
+                  fontWeight: 600,
+                  animation: "fadeIn 0.8s ease-out",
+                  animationDelay: "0.6s",
+                  animationFillMode: "both",
+                }}
+              >
+                💡 Subscribe to start creating campaigns
+              </Typography>
+            )}
+          </Box>
+        </Box>
       ) : (
+        /* Campaigns Grid with Template Card */
         <Grid container spacing={3}>
           {/* Add Campaign Template Card */}
           <Grid item xs={4} md={3} lg={2}>
@@ -193,7 +420,7 @@ function Campaigns() {
                 onClick={
                   hasActiveSubscription() ? handleOpenCreateDialog : undefined
                 }
-                className="glass-effect ios-card"
+                className="glass-effect ios-card hover-lift"
                 sx={{
                   height: "100%",
                   minHeight: 120,
@@ -205,6 +432,7 @@ function Campaigns() {
                   background: "rgba(200, 92, 60, 0.02)",
                   transition: "all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
                   opacity: hasActiveSubscription() ? 1 : 0.5,
+                  animation: "springIn 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)",
                   "&:hover": hasActiveSubscription()
                     ? {
                         border: "2px dashed rgba(200, 92, 60, 0.6)",
@@ -224,6 +452,7 @@ function Campaigns() {
                   }}
                 >
                   <Box
+                    className="hover-rotate"
                     sx={{
                       width: 35,
                       height: 35,
@@ -234,9 +463,6 @@ function Campaigns() {
                       alignItems: "center",
                       justifyContent: "center",
                       transition: "all 0.3s ease",
-                      "&:hover": {
-                        transform: "rotate(90deg) scale(1.1)",
-                      },
                     }}
                   >
                     <AddIcon sx={{ fontSize: 20, color: "white" }} />

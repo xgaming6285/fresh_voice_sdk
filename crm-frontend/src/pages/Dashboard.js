@@ -6,12 +6,12 @@ import {
   Box,
   Card,
   CardContent,
-  CircularProgress,
   IconButton,
   Button,
   Container,
 } from "@mui/material";
 import SubscriptionBanner from "../components/SubscriptionBanner";
+import { DashboardSkeleton } from "../components/LoadingSkeleton";
 import {
   People as PeopleIcon,
   Campaign as CampaignIcon,
@@ -19,6 +19,7 @@ import {
   CheckCircle as CheckCircleIcon,
   Cancel as CancelIcon,
   Refresh as RefreshIcon,
+  TrendingUp as TrendingUpIcon,
 } from "@mui/icons-material";
 import { Line, Doughnut } from "react-chartjs-2";
 import {
@@ -135,30 +136,67 @@ function Dashboard() {
     ],
   };
 
-  const StatCard = ({ title, value, icon, color }) => (
+  const StatCard = ({ title, value, icon, color, index }) => (
     <Card
-      className="glass-effect ios-card"
+      className="glass-effect ios-card hover-lift"
       sx={{
         animation: "springIn 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)",
+        animationDelay: `${index * 0.1}s`,
+        animationFillMode: "both",
+        position: "relative",
+        overflow: "hidden",
+        "&::before": {
+          content: '""',
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: `linear-gradient(135deg, ${
+            color === "primary"
+              ? "rgba(200, 92, 60, 0.05)"
+              : color === "secondary"
+              ? "rgba(139, 94, 60, 0.05)"
+              : color === "info"
+              ? "rgba(92, 138, 166, 0.05)"
+              : color === "success"
+              ? "rgba(107, 154, 90, 0.05)"
+              : "rgba(200, 92, 60, 0.05)"
+          }, transparent)`,
+          transform: "translateX(-100%)",
+          transition: "transform 0.5s ease",
+        },
         "&:hover": {
           "& .stat-icon": {
-            transform: "rotate(10deg) scale(1.1)",
+            transform: "rotate(10deg) scale(1.15)",
+            animation: "heartbeat 1s ease-in-out",
+          },
+          "&::before": {
+            transform: "translateX(100%)",
+          },
+          "& .stat-value": {
+            transform: "scale(1.1)",
           },
         },
       }}
     >
       <CardContent>
         <Box display="flex" justifyContent="space-between" alignItems="center">
-          <Box>
+          <Box sx={{ zIndex: 1 }}>
             <Typography
               color="textSecondary"
               gutterBottom
               fontWeight={600}
               fontSize="0.875rem"
+              sx={{
+                textTransform: "uppercase",
+                letterSpacing: "0.5px",
+              }}
             >
               {title}
             </Typography>
             <Typography
+              className="stat-value"
               variant="h4"
               fontWeight={700}
               sx={{
@@ -186,6 +224,7 @@ function Dashboard() {
                 WebkitBackgroundClip: "text",
                 WebkitTextFillColor: "transparent",
                 backgroundClip: "text",
+                transition: "transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
               }}
             >
               {value}
@@ -199,27 +238,28 @@ function Dashboard() {
               display: "flex",
               background: `linear-gradient(135deg, ${
                 color === "primary"
-                  ? "rgba(200, 92, 60, 0.1)"
+                  ? "rgba(200, 92, 60, 0.15)"
                   : color === "secondary"
-                  ? "rgba(139, 94, 60, 0.1)"
+                  ? "rgba(139, 94, 60, 0.15)"
                   : color === "info"
-                  ? "rgba(92, 138, 166, 0.1)"
+                  ? "rgba(92, 138, 166, 0.15)"
                   : color === "success"
-                  ? "rgba(107, 154, 90, 0.1)"
-                  : "rgba(200, 92, 60, 0.1)"
+                  ? "rgba(107, 154, 90, 0.15)"
+                  : "rgba(200, 92, 60, 0.15)"
               } 0%, transparent 100%)`,
               boxShadow: `0 8px 24px ${
                 color === "primary"
-                  ? "rgba(200, 92, 60, 0.2)"
+                  ? "rgba(200, 92, 60, 0.25)"
                   : color === "secondary"
-                  ? "rgba(139, 94, 60, 0.2)"
+                  ? "rgba(139, 94, 60, 0.25)"
                   : color === "info"
-                  ? "rgba(92, 138, 166, 0.2)"
+                  ? "rgba(92, 138, 166, 0.25)"
                   : color === "success"
-                  ? "rgba(107, 154, 90, 0.2)"
-                  : "rgba(200, 92, 60, 0.2)"
+                  ? "rgba(107, 154, 90, 0.25)"
+                  : "rgba(200, 92, 60, 0.25)"
               }`,
               transition: "all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
+              zIndex: 1,
             }}
           >
             {icon}
@@ -231,14 +271,9 @@ function Dashboard() {
 
   if (loading) {
     return (
-      <Box
-        display="flex"
-        justifyContent="center"
-        alignItems="center"
-        minHeight="400px"
-      >
-        <CircularProgress />
-      </Box>
+      <Container maxWidth="xl" sx={{ mt: 4, mb: 4 }}>
+        <DashboardSkeleton />
+      </Container>
     );
   }
 
@@ -248,11 +283,24 @@ function Dashboard() {
       <Box className="fade-in">
         {/* System Status */}
         <Paper
-          className="glass-effect-colored ios-blur-container"
+          className="glass-effect-colored ios-blur-container hover-glow gradient-border"
           sx={{
             p: 3,
             mb: 4,
             animation: "slideUp 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)",
+            position: "relative",
+            overflow: "hidden",
+            "&::after": {
+              content: '""',
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              background:
+                "linear-gradient(135deg, rgba(200, 92, 60, 0.05) 0%, transparent 50%, rgba(92, 138, 166, 0.05) 100%)",
+              pointerEvents: "none",
+            },
           }}
         >
           <Box
@@ -260,13 +308,19 @@ function Dashboard() {
             justifyContent="space-between"
             alignItems="center"
             mb={2}
+            sx={{ position: "relative", zIndex: 1 }}
           >
-            <Typography variant="h6" fontWeight={700}>
-              System Status
-            </Typography>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+              <Typography variant="h5" className="wave">
+                ⚡
+              </Typography>
+              <Typography variant="h6" fontWeight={700}>
+                System Status
+              </Typography>
+            </Box>
             <IconButton
               onClick={loadDashboardData}
-              className="ios-button"
+              className="ripple-container hover-scale"
               size="small"
               sx={{
                 background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
@@ -275,33 +329,48 @@ function Dashboard() {
                 "&:hover": {
                   background:
                     "linear-gradient(135deg, #E07B5F 0%, #C85C3C 100%)",
-                  transform: "rotate(180deg)",
-                  boxShadow: "0 8px 24px rgba(200, 92, 60, 0.4)",
+                  transform: "rotate(360deg) scale(1.1)",
+                  boxShadow: "0 8px 24px rgba(200, 92, 60, 0.5)",
                 },
-                transition: "all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)",
+                transition: "all 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)",
               }}
             >
               <RefreshIcon />
             </IconButton>
           </Box>
-          <Grid container spacing={2} alignItems="center">
+          <Grid
+            container
+            spacing={2}
+            alignItems="center"
+            sx={{ position: "relative", zIndex: 1 }}
+          >
             <Grid item xs={12} md={4}>
-              <Box display="flex" alignItems="center">
+              <Box
+                className="scale-in"
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  p: 1.5,
+                  borderRadius: 2,
+                  background: "rgba(255, 255, 255, 0.5)",
+                  backdropFilter: "blur(10px)",
+                }}
+              >
                 <Box
                   sx={{
-                    width: 12,
-                    height: 12,
+                    width: 16,
+                    height: 16,
                     borderRadius: "50%",
                     backgroundColor:
                       systemHealth?.status === "healthy"
                         ? "success.main"
                         : "error.main",
-                    mr: 1,
+                    mr: 1.5,
                     animation: "pulse 2s ease-in-out infinite",
                     boxShadow:
                       systemHealth?.status === "healthy"
-                        ? "0 0 15px rgba(107, 154, 90, 0.6)"
-                        : "0 0 15px rgba(199, 84, 80, 0.6)",
+                        ? "0 0 20px rgba(107, 154, 90, 0.8)"
+                        : "0 0 20px rgba(199, 84, 80, 0.8)",
                   }}
                 />
                 <Typography fontWeight={600}>
@@ -313,6 +382,7 @@ function Dashboard() {
                         systemHealth?.status === "healthy"
                           ? "success.main"
                           : "error.main",
+                      fontWeight: 700,
                     }}
                   >
                     {systemHealth?.status === "healthy" ? "Online" : "Offline"}
@@ -321,18 +391,52 @@ function Dashboard() {
               </Box>
             </Grid>
             <Grid item xs={12} md={4}>
-              <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-                <Typography variant="body2">📞</Typography>
-                <Typography variant="body2" fontWeight={500}>
-                  Active Sessions: {systemHealth?.active_sessions || 0}
+              <Box
+                className="scale-in stagger-1"
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 1,
+                  p: 1.5,
+                  borderRadius: 2,
+                  background: "rgba(255, 255, 255, 0.5)",
+                  backdropFilter: "blur(10px)",
+                }}
+              >
+                <Typography variant="h6">📞</Typography>
+                <Typography fontWeight={600}>
+                  Active Sessions:{" "}
+                  <Box
+                    component="span"
+                    sx={{ color: "info.main", fontWeight: 700 }}
+                  >
+                    {systemHealth?.active_sessions || 0}
+                  </Box>
                 </Typography>
               </Box>
             </Grid>
             <Grid item xs={12} md={4}>
-              <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-                <Typography variant="body2">📱</Typography>
-                <Typography variant="body2" fontWeight={500}>
-                  Phone: {systemHealth?.phone_number || "Not configured"}
+              <Box
+                className="scale-in stagger-2"
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 1,
+                  p: 1.5,
+                  borderRadius: 2,
+                  background: "rgba(255, 255, 255, 0.5)",
+                  backdropFilter: "blur(10px)",
+                }}
+              >
+                <Typography variant="h6">📱</Typography>
+                <Typography fontWeight={600}>
+                  Phone:{" "}
+                  <Box
+                    component="span"
+                    sx={{ color: "primary.main", fontWeight: 700 }}
+                  >
+                    {systemHealth?.phone_number || "Not configured"}
+                  </Box>
                 </Typography>
               </Box>
             </Grid>
@@ -345,24 +449,27 @@ function Dashboard() {
             <StatCard
               title="Total Leads"
               value={stats.totalLeads}
-              icon={<PeopleIcon color="primary" />}
+              icon={<PeopleIcon color="primary" sx={{ fontSize: 40 }} />}
               color="primary"
+              index={0}
             />
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
             <StatCard
               title="Active Campaigns"
               value={stats.activeCampaigns}
-              icon={<CampaignIcon color="secondary" />}
+              icon={<CampaignIcon color="secondary" sx={{ fontSize: 40 }} />}
               color="secondary"
+              index={1}
             />
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
             <StatCard
               title="Total Calls"
               value={stats.totalCalls}
-              icon={<PhoneIcon color="info" />}
+              icon={<PhoneIcon color="info" sx={{ fontSize: 40 }} />}
               color="info"
+              index={2}
             />
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
@@ -375,8 +482,9 @@ function Dashboard() {
                     )}%`
                   : "0%"
               }
-              icon={<CheckCircleIcon color="success" />}
+              icon={<CheckCircleIcon color="success" sx={{ fontSize: 40 }} />}
               color="success"
+              index={3}
             />
           </Grid>
         </Grid>
@@ -385,18 +493,32 @@ function Dashboard() {
         <Grid container spacing={3} mb={4}>
           <Grid item xs={12} md={8}>
             <Paper
-              className="glass-effect ios-blur-container"
+              className="glass-effect ios-blur-container hover-lift"
               sx={{
                 p: 3,
                 animation: "springIn 0.7s cubic-bezier(0.34, 1.56, 0.64, 1)",
-                animationDelay: "0.1s",
+                animationDelay: "0.4s",
                 animationFillMode: "both",
+                position: "relative",
+                overflow: "hidden",
+                "&::before": {
+                  content: '""',
+                  position: "absolute",
+                  top: -50,
+                  right: -50,
+                  width: 100,
+                  height: 100,
+                  background:
+                    "radial-gradient(circle, rgba(200, 92, 60, 0.1) 0%, transparent 70%)",
+                  borderRadius: "50%",
+                  pointerEvents: "none",
+                },
               }}
             >
               <Box
-                sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}
+                sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}
               >
-                <Typography variant="h6">📈</Typography>
+                <TrendingUpIcon sx={{ color: "primary.main", fontSize: 28 }} />
                 <Typography variant="h6" fontWeight={700}>
                   Call Trends (Last 7 Days)
                 </Typography>
@@ -424,18 +546,34 @@ function Dashboard() {
           </Grid>
           <Grid item xs={12} md={4}>
             <Paper
-              className="glass-effect ios-blur-container"
+              className="glass-effect ios-blur-container hover-lift"
               sx={{
                 p: 3,
                 animation: "springIn 0.7s cubic-bezier(0.34, 1.56, 0.64, 1)",
-                animationDelay: "0.2s",
+                animationDelay: "0.5s",
                 animationFillMode: "both",
+                position: "relative",
+                overflow: "hidden",
+                "&::before": {
+                  content: '""',
+                  position: "absolute",
+                  top: -50,
+                  left: -50,
+                  width: 100,
+                  height: 100,
+                  background:
+                    "radial-gradient(circle, rgba(92, 138, 166, 0.1) 0%, transparent 70%)",
+                  borderRadius: "50%",
+                  pointerEvents: "none",
+                },
               }}
             >
               <Box
-                sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}
+                sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}
               >
-                <Typography variant="h6">🎯</Typography>
+                <Typography variant="h5" className="rotate-in">
+                  🎯
+                </Typography>
                 <Typography variant="h6" fontWeight={700}>
                   Call Outcomes
                 </Typography>
@@ -465,40 +603,73 @@ function Dashboard() {
 
         {/* Recent Sessions */}
         <Paper
-          className="glass-effect ios-blur-container"
+          className="glass-effect ios-blur-container hover-lift"
           sx={{
             p: 3,
             animation: "slideUp 0.8s cubic-bezier(0.34, 1.56, 0.64, 1)",
-            animationDelay: "0.3s",
+            animationDelay: "0.6s",
             animationFillMode: "both",
+            position: "relative",
+            overflow: "hidden",
+            "&::before": {
+              content: '""',
+              position: "absolute",
+              top: -50,
+              left: "50%",
+              width: 100,
+              height: 100,
+              background:
+                "radial-gradient(circle, rgba(107, 154, 90, 0.1) 0%, transparent 70%)",
+              borderRadius: "50%",
+              transform: "translateX(-50%)",
+              pointerEvents: "none",
+            },
           }}
         >
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
-            <Typography variant="h6">📞</Typography>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 3 }}>
+            <PhoneIcon sx={{ color: "info.main", fontSize: 28 }} />
             <Typography variant="h6" fontWeight={700}>
               Recent Call Sessions
             </Typography>
           </Box>
           {recentSessions.length > 0 ? (
             <Box>
-              {recentSessions.map((session) => (
+              {recentSessions.map((session, index) => (
                 <Box
                   key={session.id}
+                  className="fade-in"
                   sx={{
-                    p: 2,
+                    p: 2.5,
                     borderBottom: "1px solid",
                     borderColor: "divider",
-                    "&:last-child": { borderBottom: 0 },
+                    borderRadius: 2,
+                    mb: 1,
+                    transition: "all 0.3s ease",
+                    animation: "slideInLeft 0.5s ease-out",
+                    animationDelay: `${index * 0.05}s`,
+                    animationFillMode: "both",
+                    "&:last-child": { borderBottom: 0, mb: 0 },
+                    "&:hover": {
+                      backgroundColor: "rgba(200, 92, 60, 0.03)",
+                      transform: "translateX(8px)",
+                      boxShadow: "-4px 0 0 0 rgba(200, 92, 60, 0.3)",
+                    },
                   }}
                 >
                   <Grid container alignItems="center" spacing={2}>
                     <Grid item xs={12} md={3}>
-                      <Typography variant="body2" color="textSecondary">
+                      <Typography
+                        variant="body2"
+                        color="textSecondary"
+                        fontWeight={500}
+                      >
                         {new Date(session.started_at).toLocaleString()}
                       </Typography>
                     </Grid>
                     <Grid item xs={12} md={3}>
-                      <Typography>{session.called_number}</Typography>
+                      <Typography fontWeight={600}>
+                        {session.called_number}
+                      </Typography>
                     </Grid>
                     <Grid item xs={12} md={2}>
                       <Box display="flex" alignItems="center">
@@ -506,6 +677,7 @@ function Dashboard() {
                           <CheckCircleIcon
                             color="success"
                             fontSize="small"
+                            className="heartbeat"
                             sx={{ mr: 1 }}
                           />
                         ) : (
@@ -515,14 +687,14 @@ function Dashboard() {
                             sx={{ mr: 1 }}
                           />
                         )}
-                        <Typography variant="body2">
+                        <Typography variant="body2" fontWeight={500}>
                           {session.status.charAt(0).toUpperCase() +
                             session.status.slice(1)}
                         </Typography>
                       </Box>
                     </Grid>
                     <Grid item xs={12} md={2}>
-                      <Typography variant="body2">
+                      <Typography variant="body2" fontWeight={500}>
                         Duration:{" "}
                         {session.duration ? `${session.duration}s` : "-"}
                       </Typography>
@@ -532,12 +704,14 @@ function Dashboard() {
                         size="small"
                         variant="outlined"
                         href={`/sessions/${session.session_id}`}
-                        className="ios-button"
+                        className="ripple-container hover-scale"
                         sx={{
                           borderRadius: 10,
                           fontWeight: 600,
+                          borderWidth: 1.5,
                           "&:hover": {
-                            backgroundColor: "rgba(200, 92, 60, 0.04)",
+                            backgroundColor: "rgba(200, 92, 60, 0.06)",
+                            borderWidth: 1.5,
                           },
                         }}
                       >
@@ -549,7 +723,18 @@ function Dashboard() {
               ))}
             </Box>
           ) : (
-            <Typography color="textSecondary">No recent sessions</Typography>
+            <Box
+              sx={{
+                textAlign: "center",
+                py: 4,
+                animation: "fadeIn 0.5s ease-out",
+              }}
+            >
+              <Typography variant="h3" sx={{ mb: 1, opacity: 0.3 }}>
+                📞
+              </Typography>
+              <Typography color="textSecondary">No recent sessions</Typography>
+            </Box>
           )}
         </Paper>
       </Box>

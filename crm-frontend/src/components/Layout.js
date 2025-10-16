@@ -35,6 +35,7 @@ import {
 } from "@mui/icons-material";
 import { voiceAgentAPI } from "../services/api";
 import { useAuth } from "../contexts/AuthContext";
+import ScrollToTop from "./ScrollToTop";
 
 const drawerWidth = 240;
 
@@ -463,6 +464,7 @@ function Layout({ children }) {
         <Toolbar />
         {children}
       </Box>
+      <ScrollToTop />
     </Box>
   );
 }
