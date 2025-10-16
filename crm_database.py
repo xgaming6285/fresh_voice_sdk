@@ -1,17 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-CRM Database Models for Voice Agent - MongoDB Version
-Handles leads, campaigns, and call sessions using MongoDB
+CRM Database Models for Voice Agent
+Handles leads, campaigns, and call sessions
 """
 
-from pymongo import MongoClient, ASCENDING, DESCENDING
-from pymongo.errors import DuplicateKeyError
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Float, Boolean, Text, ForeignKey, Enum, JSON
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship, sessionmaker
 from datetime import datetime
 from passlib.context import CryptContext
 import enum
 import os
-from typing import Optional, List, Dict, Any
-from bson import ObjectId
+
+Base = declarative_base()
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -48,341 +49,48 @@ class CallStatus(enum.Enum):
     FAILED = "failed"
     COMPLETED = "completed"
 
-class PaymentRequestStatus(enum.Enum):
-    PENDING = "pending"
-    APPROVED = "approved"
-    REJECTED = "rejected"
-
-
-# MongoDB Connection
-_client = None
-_db = None
-
-def get_database_url():
-    """Get MongoDB connection URL from environment or use default"""
-    return os.getenv('MONGODB_URL', 'mongodb://localhost:27017/')
-
-def get_database_name():
-    """Get database name from environment or use default"""
-    return os.getenv('MONGODB_DATABASE', 'voice_agent_crm')
-
-def init_database():
-    """Initialize MongoDB connection and create indexes"""
-    global _client, _db
-    
-    if _client is None:
-        mongo_url = get_database_url()
-        db_name = get_database_name()
-        
-        _client = MongoClient(mongo_url)
-        _db = _client[db_name]
-        
-        # Create indexes
-        # Users collection
-        _db.users.create_index([("username", ASCENDING)], unique=True)
-        _db.users.create_index([("email", ASCENDING)], unique=True)
-        _db.users.create_index([("created_by_id", ASCENDING)])
-        _db.users.create_index([("role", ASCENDING)])
-        
-        # Leads collection
-        _db.leads.create_index([("owner_id", ASCENDING)])
-        _db.leads.create_index([("country", ASCENDING)])
-        _db.leads.create_index([("phone", ASCENDING)])
-        
-        # Campaigns collection
-        _db.campaigns.create_index([("owner_id", ASCENDING)])
-        _db.campaigns.create_index([("status", ASCENDING)])
-        
-        # Campaign Leads collection
-        _db.campaign_leads.create_index([("campaign_id", ASCENDING)])
-        _db.campaign_leads.create_index([("lead_id", ASCENDING)])
-        _db.campaign_leads.create_index([("status", ASCENDING)])
-        _db.campaign_leads.create_index([("campaign_id", ASCENDING), ("lead_id", ASCENDING)], unique=True)
-        
-        # Call Sessions collection
-        _db.call_sessions.create_index([("session_id", ASCENDING)], unique=True)
-        _db.call_sessions.create_index([("owner_id", ASCENDING)])
-        _db.call_sessions.create_index([("campaign_id", ASCENDING)])
-        _db.call_sessions.create_index([("lead_id", ASCENDING)])
-        _db.call_sessions.create_index([("started_at", DESCENDING)])
-        
-        # Payment Requests collection
-        _db.payment_requests.create_index([("admin_id", ASCENDING)])
-        _db.payment_requests.create_index([("status", ASCENDING)])
-        
-        # System Settings collection
-        _db.system_settings.create_index([("key", ASCENDING)], unique=True)
-        
-        print(f"[OK] MongoDB initialized: {db_name} at {mongo_url}")
-    
-    return _db
-
-def get_session():
-    """Get database instance (maintains compatibility with SQLAlchemy interface)"""
-    if _db is None:
-        init_database()
-    return MongoDBSession(_db)
-
-
-class MongoDBSession:
-    """
-    Wrapper class to provide SQLAlchemy-like interface for MongoDB
-    This maintains compatibility with existing code
-    """
-    def __init__(self, db):
-        self.db = db
-        self._changes = []  # Track changes for commit/rollback
-        
-    def query(self, model):
-        """Create a query object for the model"""
-        return MongoQuery(self.db, model)
-    
-    def add(self, obj):
-        """Add object to session (will be saved on commit)"""
-        self._changes.append(('add', obj))
-    
-    def delete(self, obj):
-        """Mark object for deletion"""
-        self._changes.append(('delete', obj))
-    
-    def commit(self):
-        """Commit all changes"""
-        for action, obj in self._changes:
-            if action == 'add':
-                obj.save(self.db)
-            elif action == 'delete':
-                obj.delete(self.db)
-        self._changes = []
-    
-    def rollback(self):
-        """Rollback changes"""
-        self._changes = []
-    
-    def close(self):
-        """Close session (no-op for MongoDB but maintains compatibility)"""
-        pass
-    
-    def refresh(self, obj):
-        """Refresh object from database"""
-        if hasattr(obj, 'id') and obj.id:
-            collection_name = obj.__class__.__name__.lower() + 's'
-            if collection_name.endswith('ys'):
-                collection_name = collection_name[:-2] + 'ies'
-            doc = self.db[collection_name].find_one({"_id": ObjectId(obj.id)})
-            if doc:
-                obj.__dict__.update(obj._from_dict(doc).__dict__)
-
-
-class MongoQuery:
-    """Query builder for MongoDB (SQLAlchemy-like interface)"""
-    def __init__(self, db, model):
-        self.db = db
-        self.model = model
-        self.filters = {}
-        self.sort_fields = []
-        self.limit_val = None
-        self.offset_val = 0
-        self.options_val = []
-        
-        # Use the model's collection name method for consistency
-        collection_name = model._get_collection_name()
-        self.collection = self.db[collection_name]
-    
-    @staticmethod
-    def _normalize_value(value):
-        """Normalize values for MongoDB queries (convert enums, etc.)"""
-        if isinstance(value, enum.Enum):
-            return value.value
-        elif isinstance(value, list):
-            return [MongoQuery._normalize_value(v) for v in value]
-        elif isinstance(value, dict):
-            return {k: MongoQuery._normalize_value(v) for k, v in value.items()}
-        return value
-    
-    def filter(self, *args, **kwargs):
-        """Add filter conditions"""
-        for condition in args:
-            if hasattr(condition, 'compile'):
-                # Handle SQLAlchemy-like conditions
-                compiled = condition.compile()
-                self.filters.update({k: self._normalize_value(v) for k, v in compiled.items()})
-        
-        # Handle simple key-value filters
-        for key, value in kwargs.items():
-            self.filters[key] = self._normalize_value(value)
-        
-        return self
-    
-    def filter_by(self, **kwargs):
-        """Filter by keyword arguments"""
-        for key, value in kwargs.items():
-            self.filters[key] = self._normalize_value(value)
-        return self
-    
-    def order_by(self, *args):
-        """Add ordering"""
-        for field in args:
-            if hasattr(field, 'compile_order'):
-                self.sort_fields.append(field.compile_order())
-            else:
-                # Simple field name
-                self.sort_fields.append((str(field), ASCENDING))
-        return self
-    
-    def limit(self, val):
-        """Limit results"""
-        self.limit_val = val
-        return self
-    
-    def offset(self, val):
-        """Offset results"""
-        self.offset_val = val
-        return self
-    
-    def options(self, *args):
-        """Query options (for compatibility, mostly ignored)"""
-        self.options_val.extend(args)
-        return self
-    
-    def count(self):
-        """Count results"""
-        return self.collection.count_documents(self.filters)
-    
-    def all(self):
-        """Get all results"""
-        cursor = self.collection.find(self.filters)
-        
-        if self.sort_fields:
-            cursor = cursor.sort(self.sort_fields)
-        
-        if self.offset_val:
-            cursor = cursor.skip(self.offset_val)
-        
-        if self.limit_val:
-            cursor = cursor.limit(self.limit_val)
-        
-        return [self.model._from_dict(doc) for doc in cursor]
-    
-    def first(self):
-        """Get first result"""
-        doc = self.collection.find_one(self.filters)
-        return self.model._from_dict(doc) if doc else None
-    
-    def get(self, id_val):
-        """Get by ID"""
-        try:
-            if isinstance(id_val, str):
-                id_val = ObjectId(id_val)
-            elif isinstance(id_val, int):
-                # For integer IDs, search by id field
-                doc = self.collection.find_one({"id": id_val})
-                return self.model._from_dict(doc) if doc else None
-            
-            doc = self.collection.find_one({"_id": id_val})
-            return self.model._from_dict(doc) if doc else None
-        except:
-            return None
-
-
-# Base Model Class
-class MongoModel:
-    """Base class for all MongoDB models"""
-    def __init__(self, **kwargs):
-        self._id = kwargs.get('_id')
-        self.id = kwargs.get('id')
-        
-        for key, value in kwargs.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
-    
-    def save(self, db):
-        """Save to database"""
-        collection_name = self._get_collection_name()
-        collection = db[collection_name]
-        doc = self._to_dict()
-        
-        if self._id:
-            # Update existing
-            collection.replace_one({"_id": self._id}, doc)
-        else:
-            # Insert new
-            result = collection.insert_one(doc)
-            self._id = result.inserted_id
-            if not self.id:
-                # Generate integer ID for compatibility
-                self.id = int(str(result.inserted_id)[-8:], 16)
-                collection.update_one({"_id": self._id}, {"$set": {"id": self.id}})
-    
-    def delete(self, db):
-        """Delete from database"""
-        if self._id:
-            collection_name = self._get_collection_name()
-            db[collection_name].delete_one({"_id": self._id})
-    
-    def _to_dict(self):
-        """Convert to dictionary for MongoDB"""
-        doc = {}
-        for key, value in self.__dict__.items():
-            if key.startswith('_'):
-                continue
-            if isinstance(value, enum.Enum):
-                doc[key] = value.value
-            elif isinstance(value, datetime):
-                doc[key] = value
-            else:
-                doc[key] = value
-        return doc
-    
-    @classmethod
-    def _get_collection_name(cls):
-        """Get the collection name for this model"""
-        name = cls.__name__.lower()
-        # Handle special cases with compound names
-        if name == 'campaignlead':
-            return 'campaign_leads'
-        elif name == 'callsession':
-            return 'call_sessions'
-        elif name == 'paymentrequest':
-            return 'payment_requests'
-        elif name == 'systemsettings':
-            return 'system_settings'
-        else:
-            return name + 's'
-    
-    @classmethod
-    def _from_dict(cls, doc):
-        """Create instance from MongoDB document"""
-        if not doc:
-            return None
-        return cls(**doc)
-
-
-# User Model
-class User(MongoModel):
+class User(Base):
     """User model for authentication and authorization"""
-    def __init__(self, **kwargs):
-        self.id = kwargs.get('id')
-        self.username = kwargs.get('username')
-        self.email = kwargs.get('email')
-        self.hashed_password = kwargs.get('hashed_password')
-        self.role = kwargs.get('role')
-        if isinstance(self.role, str):
-            self.role = UserRole(self.role)
-        
-        self.created_by_id = kwargs.get('created_by_id')
-        self.organization = kwargs.get('organization')
-        self.max_agents = kwargs.get('max_agents', 0)
-        self.subscription_end_date = kwargs.get('subscription_end_date')
-        
-        self.first_name = kwargs.get('first_name')
-        self.last_name = kwargs.get('last_name')
-        self.is_active = kwargs.get('is_active', True)
-        
-        self.created_at = kwargs.get('created_at', datetime.utcnow())
-        self.updated_at = kwargs.get('updated_at', datetime.utcnow())
-        self.last_login = kwargs.get('last_login')
-        
-        super().__init__(**kwargs)
+    __tablename__ = 'users'
+    
+    id = Column(Integer, primary_key=True)
+    username = Column(String(100), unique=True, nullable=False, index=True)
+    email = Column(String(200), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(200), nullable=False)
+    role = Column(Enum(UserRole), nullable=False)
+    
+    # For agents: who created them (admin_id)
+    # For admins: who created them (superadmin_id)
+    created_by_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    
+    # Organization name (for admins - their client organization)
+    organization = Column(String(200))
+    
+    # Billing - max number of agents admin can create (for admins only)
+    max_agents = Column(Integer, default=0)
+    
+    # Subscription - when the admin's subscription ends (for admins only)
+    subscription_end_date = Column(DateTime, nullable=True)
+    
+    # User details
+    first_name = Column(String(100))
+    last_name = Column(String(100))
+    is_active = Column(Boolean, default=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_login = Column(DateTime)
+    
+    # Relationships
+    # Agents created by this admin
+    agents = relationship("User", back_populates="created_by", remote_side=[id])
+    # Admin who created this agent
+    created_by = relationship("User", back_populates="agents", remote_side=[created_by_id])
+    
+    # Leads and campaigns owned by this user
+    leads = relationship("Lead", back_populates="owner", cascade="all, delete-orphan")
+    campaigns = relationship("Campaign", back_populates="owner", cascade="all, delete-orphan")
     
     @property
     def full_name(self):
@@ -416,33 +124,77 @@ class User(MongoModel):
         
         return False
 
+class PaymentRequestStatus(enum.Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
 
-# Lead Model
-class Lead(MongoModel):
+class PaymentRequest(Base):
+    """Payment request model for admin agent slot purchases"""
+    __tablename__ = 'payment_requests'
+    
+    id = Column(Integer, primary_key=True)
+    admin_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    num_agents = Column(Integer, nullable=False)  # Number of agent slots requested
+    total_amount = Column(Float, nullable=False)  # Total amount in USD
+    status = Column(Enum(PaymentRequestStatus), default=PaymentRequestStatus.PENDING)
+    
+    # Payment details
+    payment_notes = Column(Text)  # Admin can add notes about payment
+    admin_notes = Column(Text)  # Superadmin notes about verification
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    approved_at = Column(DateTime)
+    approved_by_id = Column(Integer, ForeignKey('users.id'))
+    
+    # Relationships
+    admin = relationship("User", foreign_keys=[admin_id], backref="payment_requests")
+    approved_by = relationship("User", foreign_keys=[approved_by_id])
+
+class SystemSettings(Base):
+    """System-wide settings"""
+    __tablename__ = 'system_settings'
+    
+    id = Column(Integer, primary_key=True)
+    key = Column(String(100), unique=True, nullable=False)
+    value = Column(Text)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_by_id = Column(Integer, ForeignKey('users.id'))
+    
+    updated_by = relationship("User")
+
+class Lead(Base):
     """Lead/Contact model"""
-    def __init__(self, **kwargs):
-        self.id = kwargs.get('id')
-        self.owner_id = kwargs.get('owner_id')
-        self.first_name = kwargs.get('first_name')
-        self.last_name = kwargs.get('last_name')
-        self.email = kwargs.get('email')
-        self.phone = kwargs.get('phone')
-        self.country = kwargs.get('country')
-        self.country_code = kwargs.get('country_code')
-        self.gender = kwargs.get('gender', Gender.UNKNOWN)
-        if isinstance(self.gender, str):
-            self.gender = Gender(self.gender)
-        
-        self.address = kwargs.get('address')
-        self.created_at = kwargs.get('created_at', datetime.utcnow())
-        self.updated_at = kwargs.get('updated_at', datetime.utcnow())
-        self.last_called_at = kwargs.get('last_called_at')
-        self.call_count = kwargs.get('call_count', 0)
-        self.notes = kwargs.get('notes')
-        self.custom_data = kwargs.get('custom_data')
-        self.import_batch_id = kwargs.get('import_batch_id')
-        
-        super().__init__(**kwargs)
+    __tablename__ = 'leads'
+    
+    id = Column(Integer, primary_key=True)
+    owner_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    first_name = Column(String(100))
+    last_name = Column(String(100))
+    email = Column(String(200))
+    phone = Column(String(50), nullable=False)  # Phone without country code
+    country = Column(String(100))  # Country name
+    country_code = Column(String(10))  # Country calling code (e.g., +359)
+    gender = Column(Enum(Gender), default=Gender.UNKNOWN)
+    address = Column(Text)
+    
+    # Additional fields for tracking
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_called_at = Column(DateTime)
+    call_count = Column(Integer, default=0)
+    notes = Column(Text)
+    custom_data = Column(JSON)  # For storing additional flexible data
+    
+    # Import tracking
+    import_batch_id = Column(String(100))  # Track which import batch this lead came from
+    
+    # Relationships
+    owner = relationship("User", back_populates="leads")
+    campaign_leads = relationship("CampaignLead", back_populates="lead", cascade="all, delete-orphan")
+    call_sessions = relationship("CallSession", back_populates="lead", cascade="all, delete-orphan")
     
     @property
     def full_phone(self):
@@ -455,201 +207,146 @@ class Lead(MongoModel):
         parts = [p for p in [self.first_name, self.last_name] if p]
         return " ".join(parts) if parts else "Unknown"
 
-
-# Campaign Model
-class Campaign(MongoModel):
+class Campaign(Base):
     """Campaign model for organizing and executing call campaigns"""
-    def __init__(self, **kwargs):
-        self.id = kwargs.get('id')
-        self.owner_id = kwargs.get('owner_id')
-        self.name = kwargs.get('name')
-        self.description = kwargs.get('description')
-        self.status = kwargs.get('status', CampaignStatus.DRAFT)
-        if isinstance(self.status, str):
-            self.status = CampaignStatus(self.status)
-        
-        self.bot_config = kwargs.get('bot_config', {})
-        self.dialing_config = kwargs.get('dialing_config', {})
-        self.schedule_config = kwargs.get('schedule_config', {})
-        
-        self.total_leads = kwargs.get('total_leads', 0)
-        self.leads_called = kwargs.get('leads_called', 0)
-        self.leads_answered = kwargs.get('leads_answered', 0)
-        self.leads_rejected = kwargs.get('leads_rejected', 0)
-        self.leads_failed = kwargs.get('leads_failed', 0)
-        
-        self.created_at = kwargs.get('created_at', datetime.utcnow())
-        self.updated_at = kwargs.get('updated_at', datetime.utcnow())
-        self.started_at = kwargs.get('started_at')
-        self.completed_at = kwargs.get('completed_at')
-        
-        super().__init__(**kwargs)
+    __tablename__ = 'campaigns'
+    
+    id = Column(Integer, primary_key=True)
+    owner_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    name = Column(String(200), nullable=False)
+    description = Column(Text)
+    status = Column(Enum(CampaignStatus), default=CampaignStatus.DRAFT)
+    
+    # Campaign configuration
+    bot_config = Column(JSON)  # Store bot configuration (voice settings, script, etc.)
+    dialing_config = Column(JSON)  # Dialing settings (concurrent calls, retry attempts, etc.)
+    schedule_config = Column(JSON)  # When to run (time windows, days of week, etc.)
+    
+    # Statistics
+    total_leads = Column(Integer, default=0)
+    leads_called = Column(Integer, default=0)
+    leads_answered = Column(Integer, default=0)
+    leads_rejected = Column(Integer, default=0)
+    leads_failed = Column(Integer, default=0)
+    
+    # Timing
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    
+    # Relationships
+    owner = relationship("User", back_populates="campaigns")
+    campaign_leads = relationship("CampaignLead", back_populates="campaign", cascade="all, delete-orphan")
+    call_sessions = relationship("CallSession", back_populates="campaign", cascade="all, delete-orphan")
 
-
-# CampaignLead Model
-class CampaignLead(MongoModel):
+class CampaignLead(Base):
     """Many-to-many relationship between campaigns and leads with additional data"""
-    def __init__(self, **kwargs):
-        self.id = kwargs.get('id')
-        self.campaign_id = kwargs.get('campaign_id')
-        self.lead_id = kwargs.get('lead_id')
-        
-        self.status = kwargs.get('status', CallStatus.PENDING)
-        if isinstance(self.status, str):
-            self.status = CallStatus(self.status)
-        
-        self.priority = kwargs.get('priority', 0)
-        self.call_attempts = kwargs.get('call_attempts', 0)
-        self.last_attempt_at = kwargs.get('last_attempt_at')
-        self.scheduled_for = kwargs.get('scheduled_for')
-        
-        self.call_session_id = kwargs.get('call_session_id')
-        self.call_duration = kwargs.get('call_duration')
-        self.call_result = kwargs.get('call_result')
-        self.call_notes = kwargs.get('call_notes')
-        
-        self.added_at = kwargs.get('added_at', datetime.utcnow())
-        self.called_at = kwargs.get('called_at')
-        self.completed_at = kwargs.get('completed_at')
-        
-        # Lazy-loaded relationships
-        self._lead = None
-        self._campaign = None
-        
-        super().__init__(**kwargs)
+    __tablename__ = 'campaign_leads'
     
-    @property
-    def lead(self):
-        """Get associated lead"""
-        if self._lead is None and self.lead_id:
-            db = init_database()
-            doc = db.leads.find_one({"id": self.lead_id})
-            if doc:
-                self._lead = Lead._from_dict(doc)
-        return self._lead
+    id = Column(Integer, primary_key=True)
+    campaign_id = Column(Integer, ForeignKey('campaigns.id'), nullable=False)
+    lead_id = Column(Integer, ForeignKey('leads.id'), nullable=False)
     
-    @property
-    def campaign(self):
-        """Get associated campaign"""
-        if self._campaign is None and self.campaign_id:
-            db = init_database()
-            doc = db.campaigns.find_one({"id": self.campaign_id})
-            if doc:
-                self._campaign = Campaign._from_dict(doc)
-        return self._campaign
+    # Status for this lead in this campaign
+    status = Column(Enum(CallStatus), default=CallStatus.PENDING)
+    priority = Column(Integer, default=0)  # Higher priority = called first
+    
+    # Call tracking
+    call_attempts = Column(Integer, default=0)
+    last_attempt_at = Column(DateTime)
+    scheduled_for = Column(DateTime)  # When to call this lead
+    
+    # Results
+    call_session_id = Column(String(100))  # Link to voice agent session
+    call_duration = Column(Integer)  # In seconds
+    call_result = Column(String(100))  # Quick result summary
+    call_notes = Column(Text)  # AI-generated or manual notes
+    
+    # Timestamps
+    added_at = Column(DateTime, default=datetime.utcnow)
+    called_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    
+    # Relationships
+    campaign = relationship("Campaign", back_populates="campaign_leads")
+    lead = relationship("Lead", back_populates="campaign_leads")
 
-
-# CallSession Model
-class CallSession(MongoModel):
+class CallSession(Base):
     """Track individual call sessions with links to voice agent sessions"""
-    def __init__(self, **kwargs):
-        self.id = kwargs.get('id')
-        self.session_id = kwargs.get('session_id')
-        self.campaign_id = kwargs.get('campaign_id')
-        self.lead_id = kwargs.get('lead_id')
-        self.owner_id = kwargs.get('owner_id')
-        
-        self.caller_id = kwargs.get('caller_id')
-        self.called_number = kwargs.get('called_number')
-        self.status = kwargs.get('status', CallStatus.PENDING)
-        if isinstance(self.status, str):
-            self.status = CallStatus(self.status)
-        
-        self.started_at = kwargs.get('started_at', datetime.utcnow())
-        self.answered_at = kwargs.get('answered_at')
-        self.ended_at = kwargs.get('ended_at')
-        self.duration = kwargs.get('duration')
-        self.talk_time = kwargs.get('talk_time')
-        
-        self.recording_path = kwargs.get('recording_path')
-        self.transcript_status = kwargs.get('transcript_status')
-        self.transcript_language = kwargs.get('transcript_language')
-        
-        self.sentiment_score = kwargs.get('sentiment_score')
-        self.interest_level = kwargs.get('interest_level')
-        self.key_points = kwargs.get('key_points')
-        self.follow_up_required = kwargs.get('follow_up_required', False)
-        self.follow_up_notes = kwargs.get('follow_up_notes')
-        
-        self.call_metadata = kwargs.get('call_metadata')
-        self.created_at = kwargs.get('created_at', datetime.utcnow())
-        self.updated_at = kwargs.get('updated_at', datetime.utcnow())
-        
-        # Lazy-loaded relationships
-        self._lead = None
-        self._campaign = None
-        
-        super().__init__(**kwargs)
+    __tablename__ = 'call_sessions'
     
-    @property
-    def lead(self):
-        """Get associated lead"""
-        if self._lead is None and self.lead_id:
-            db = init_database()
-            doc = db.leads.find_one({"id": self.lead_id})
-            if doc:
-                self._lead = Lead._from_dict(doc)
-        return self._lead
+    id = Column(Integer, primary_key=True)
+    session_id = Column(String(100), unique=True, nullable=False)  # Voice agent session ID
+    campaign_id = Column(Integer, ForeignKey('campaigns.id'))
+    lead_id = Column(Integer, ForeignKey('leads.id'))
+    owner_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)  # User who initiated the call
     
-    @property
-    def campaign(self):
-        """Get associated campaign"""
-        if self._campaign is None and self.campaign_id:
-            db = init_database()
-            doc = db.campaigns.find_one({"id": self.campaign_id})
-            if doc:
-                self._campaign = Campaign._from_dict(doc)
-        return self._campaign
+    # Call details
+    caller_id = Column(String(50))  # Our number
+    called_number = Column(String(50))  # Lead's number
+    status = Column(Enum(CallStatus), default=CallStatus.PENDING)
+    
+    # Timing
+    started_at = Column(DateTime, default=datetime.utcnow)
+    answered_at = Column(DateTime)
+    ended_at = Column(DateTime)
+    duration = Column(Integer)  # Total duration in seconds
+    talk_time = Column(Integer)  # Actual conversation time in seconds
+    
+    # Recording and transcription
+    recording_path = Column(String(500))  # Path to recording files
+    transcript_status = Column(String(50))  # pending, processing, completed, failed
+    transcript_language = Column(String(10))
+    
+    # AI Analysis (can be populated after call)
+    sentiment_score = Column(Float)  # -1 to 1
+    interest_level = Column(Integer)  # 1-10
+    key_points = Column(JSON)  # List of key points from conversation
+    follow_up_required = Column(Boolean, default=False)
+    follow_up_notes = Column(Text)
+    
+    # Raw data storage
+    call_metadata = Column(JSON)  # Store any additional call data
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    campaign = relationship("Campaign", back_populates="call_sessions")
+    lead = relationship("Lead", back_populates="call_sessions")
+    owner = relationship("User", foreign_keys=[owner_id])
 
+# Database setup functions
+def get_database_url():
+    """Get database URL from environment or use default SQLite"""
+    return os.getenv('DATABASE_URL', 'sqlite:///voice_agent_crm.db')
 
-# PaymentRequest Model
-class PaymentRequest(MongoModel):
-    """Payment request model for admin agent slot purchases"""
-    def __init__(self, **kwargs):
-        self.id = kwargs.get('id')
-        self.admin_id = kwargs.get('admin_id')
-        self.num_agents = kwargs.get('num_agents')
-        self.total_amount = kwargs.get('total_amount')
-        self.status = kwargs.get('status', PaymentRequestStatus.PENDING)
-        if isinstance(self.status, str):
-            self.status = PaymentRequestStatus(self.status)
-        
-        self.payment_notes = kwargs.get('payment_notes')
-        self.admin_notes = kwargs.get('admin_notes')
-        
-        self.created_at = kwargs.get('created_at', datetime.utcnow())
-        self.updated_at = kwargs.get('updated_at', datetime.utcnow())
-        self.approved_at = kwargs.get('approved_at')
-        self.approved_by_id = kwargs.get('approved_by_id')
-        
-        super().__init__(**kwargs)
+def init_database():
+    """Initialize database and create tables"""
+    engine = create_engine(get_database_url())
+    Base.metadata.create_all(engine)
+    return engine
 
+def get_session():
+    """Get database session"""
+    engine = init_database()
+    Session = sessionmaker(bind=engine)
+    return Session()
 
-# SystemSettings Model
-class SystemSettings(MongoModel):
-    """System-wide settings"""
-    def __init__(self, **kwargs):
-        self.id = kwargs.get('id')
-        self.key = kwargs.get('key')
-        self.value = kwargs.get('value')
-        self.updated_at = kwargs.get('updated_at', datetime.utcnow())
-        self.updated_by_id = kwargs.get('updated_by_id')
-        
-        super().__init__(**kwargs)
-
-
-# Manager Classes
+# Utility functions for common queries
 class LeadManager:
     """Manager class for lead operations"""
     
     def __init__(self, session):
         self.session = session
-        self.db = session.db
     
     def create_lead(self, lead_data):
         """Create a new lead"""
         lead = Lead(**lead_data)
-        lead.save(self.db)
+        self.session.add(lead)
+        self.session.commit()
         return lead
     
     def bulk_import_leads(self, leads_data, import_batch_id=None):
@@ -661,38 +358,33 @@ class LeadManager:
         for lead_data in leads_data:
             lead_data['import_batch_id'] = import_batch_id
             lead = Lead(**lead_data)
-            leads.append(lead._to_dict())
+            leads.append(lead)
         
-        if leads:
-            result = self.db.leads.insert_many(leads)
-            return len(result.inserted_ids)
-        return 0
+        self.session.bulk_save_objects(leads)
+        self.session.commit()
+        return len(leads)
     
     def get_leads_by_criteria(self, owner_id=None, country=None, limit=None, offset=0):
         """Get leads by various criteria"""
-        filters = {}
+        query = self.session.query(Lead)
+        
         if owner_id:
-            filters['owner_id'] = owner_id
+            query = query.filter(Lead.owner_id == owner_id)
         if country:
-            filters['country'] = country
+            query = query.filter(Lead.country == country)
         
-        total = self.db.leads.count_documents(filters)
+        total = query.count()
         
-        cursor = self.db.leads.find(filters).skip(offset)
         if limit:
-            cursor = cursor.limit(limit)
+            query = query.limit(limit).offset(offset)
         
-        leads = [Lead._from_dict(doc) for doc in cursor]
-        
-        return leads, total
-
+        return query.all(), total
 
 class CampaignManager:
     """Manager class for campaign operations"""
     
     def __init__(self, session):
         self.session = session
-        self.db = session.db
     
     def create_campaign(self, owner_id, name, description=None, bot_config=None):
         """Create a new campaign"""
@@ -704,108 +396,86 @@ class CampaignManager:
             dialing_config={},
             schedule_config={}
         )
-        campaign.save(self.db)
+        self.session.add(campaign)
+        self.session.commit()
         return campaign
     
     def add_leads_to_campaign(self, campaign_id, lead_ids, priority=0):
         """Add leads to a campaign"""
         campaign_leads = []
         for lead_id in lead_ids:
-            cl_dict = {
-                'campaign_id': campaign_id,
-                'lead_id': lead_id,
-                'priority': priority,
-                'status': CallStatus.PENDING.value,
-                'call_attempts': 0,
-                'added_at': datetime.utcnow()
-            }
-            campaign_leads.append(cl_dict)
+            cl = CampaignLead(
+                campaign_id=campaign_id,
+                lead_id=lead_id,
+                priority=priority
+            )
+            campaign_leads.append(cl)
         
-        if campaign_leads:
-            try:
-                self.db.campaign_leads.insert_many(campaign_leads, ordered=False)
-            except Exception as e:
-                # Handle duplicate key errors
-                pass
+        self.session.bulk_save_objects(campaign_leads)
         
         # Update campaign total leads
-        total_leads = self.db.campaign_leads.count_documents({'campaign_id': campaign_id})
-        self.db.campaigns.update_one(
-            {'id': campaign_id},
-            {'$set': {'total_leads': total_leads}}
-        )
+        campaign = self.session.query(Campaign).get(campaign_id)
+        campaign.total_leads = len(campaign_leads)
         
+        self.session.commit()
         return len(campaign_leads)
     
     def get_next_lead_to_call(self, campaign_id):
         """Get the next lead to call in a campaign"""
-        doc = self.db.campaign_leads.find_one_and_update(
-            {
-                'campaign_id': campaign_id,
-                'status': CallStatus.PENDING.value
-            },
-            {
-                '$set': {
-                    'status': CallStatus.DIALING.value,
-                    'last_attempt_at': datetime.utcnow()
-                },
-                '$inc': {'call_attempts': 1}
-            },
-            sort=[('priority', DESCENDING), ('added_at', ASCENDING)]
-        )
+        campaign_lead = self.session.query(CampaignLead).filter(
+            CampaignLead.campaign_id == campaign_id,
+            CampaignLead.status == CallStatus.PENDING
+        ).order_by(
+            CampaignLead.priority.desc(),
+            CampaignLead.added_at
+        ).first()
         
-        return CampaignLead._from_dict(doc) if doc else None
+        if campaign_lead:
+            # Mark as dialing
+            campaign_lead.status = CallStatus.DIALING
+            campaign_lead.call_attempts += 1
+            campaign_lead.last_attempt_at = datetime.utcnow()
+            self.session.commit()
+        
+        return campaign_lead
     
     def update_call_result(self, campaign_id, lead_id, session_id, status, duration=None):
         """Update the result of a call"""
-        # Update campaign lead
-        update_data = {
-            'status': status.value if isinstance(status, enum.Enum) else status,
-            'call_session_id': session_id
-        }
+        campaign_lead = self.session.query(CampaignLead).filter(
+            CampaignLead.campaign_id == campaign_id,
+            CampaignLead.lead_id == lead_id
+        ).first()
         
-        if duration:
-            update_data['call_duration'] = duration
-        
-        if status in [CallStatus.ANSWERED, CallStatus.REJECTED, CallStatus.NO_ANSWER]:
-            update_data['completed_at'] = datetime.utcnow()
-        
-        self.db.campaign_leads.update_one(
-            {'campaign_id': campaign_id, 'lead_id': lead_id},
-            {'$set': update_data}
-        )
-        
-        # Update lead's last called info
-        self.db.leads.update_one(
-            {'id': lead_id},
-            {
-                '$set': {'last_called_at': datetime.utcnow()},
-                '$inc': {'call_count': 1}
-            }
-        )
-        
-        # Update campaign statistics
-        campaign_update = {'$inc': {'leads_called': 1}}
-        
-        if status == CallStatus.ANSWERED:
-            campaign_update['$inc']['leads_answered'] = 1
-        elif status == CallStatus.REJECTED:
-            campaign_update['$inc']['leads_rejected'] = 1
-        elif status in [CallStatus.FAILED, CallStatus.NO_ANSWER]:
-            campaign_update['$inc']['leads_failed'] = 1
-        
-        self.db.campaigns.update_one(
-            {'id': campaign_id},
-            campaign_update
-        )
-
+        if campaign_lead:
+            campaign_lead.status = status
+            campaign_lead.call_session_id = session_id
+            if duration:
+                campaign_lead.call_duration = duration
+            if status in [CallStatus.ANSWERED, CallStatus.REJECTED, CallStatus.NO_ANSWER]:
+                campaign_lead.completed_at = datetime.utcnow()
+            
+            # Update lead's last called info
+            lead = self.session.query(Lead).get(lead_id)
+            lead.last_called_at = datetime.utcnow()
+            lead.call_count += 1
+            
+            # Update campaign statistics
+            campaign = self.session.query(Campaign).get(campaign_id)
+            campaign.leads_called += 1
+            if status == CallStatus.ANSWERED:
+                campaign.leads_answered += 1
+            elif status == CallStatus.REJECTED:
+                campaign.leads_rejected += 1
+            elif status in [CallStatus.FAILED, CallStatus.NO_ANSWER]:
+                campaign.leads_failed += 1
+            
+            self.session.commit()
 
 class UserManager:
     """Manager class for user operations"""
     
     def __init__(self, session):
         self.session = session
-        self.db = session.db
     
     def create_user(self, username, email, password, role, created_by_id=None, first_name=None, last_name=None):
         """Create a new user"""
@@ -818,75 +488,51 @@ class UserManager:
             first_name=first_name,
             last_name=last_name
         )
-        user.save(self.db)
+        self.session.add(user)
+        self.session.commit()
         return user
     
     def get_user_by_username(self, username):
         """Get user by username"""
-        doc = self.db.users.find_one({'username': username})
-        return User._from_dict(doc) if doc else None
+        return self.session.query(User).filter(User.username == username).first()
     
     def get_user_by_email(self, email):
         """Get user by email"""
-        doc = self.db.users.find_one({'email': email})
-        return User._from_dict(doc) if doc else None
+        return self.session.query(User).filter(User.email == email).first()
     
     def get_user_by_id(self, user_id):
         """Get user by ID"""
-        doc = self.db.users.find_one({'id': user_id})
-        return User._from_dict(doc) if doc else None
+        return self.session.query(User).filter(User.id == user_id).first()
     
     def get_agents_by_admin(self, admin_id):
         """Get all agents created by an admin"""
-        cursor = self.db.users.find({
-            'created_by_id': admin_id,
-            'role': UserRole.AGENT.value
-        })
-        return [User._from_dict(doc) for doc in cursor]
+        return self.session.query(User).filter(
+            User.created_by_id == admin_id,
+            User.role == UserRole.AGENT
+        ).all()
     
     def update_user(self, user_id, **kwargs):
         """Update user fields"""
-        doc = self.db.users.find_one({'id': user_id})
-        if doc:
-            user = User._from_dict(doc)
+        user = self.session.query(User).filter(User.id == user_id).first()
+        if user:
             for key, value in kwargs.items():
                 if key == 'password':
                     user.hashed_password = User.hash_password(value)
                 elif hasattr(user, key):
                     setattr(user, key, value)
-            user.updated_at = datetime.utcnow()
-            user.save(self.db)
-            return user
-        return None
+            self.session.commit()
+        return user
     
     def delete_user(self, user_id):
         """Delete a user"""
-        # Delete user's leads
-        self.db.leads.delete_many({'owner_id': user_id})
-        
-        # Delete user's campaigns
-        campaign_ids = [doc['id'] for doc in self.db.campaigns.find({'owner_id': user_id}, {'id': 1})]
-        if campaign_ids:
-            self.db.campaign_leads.delete_many({'campaign_id': {'$in': campaign_ids}})
-            self.db.campaigns.delete_many({'owner_id': user_id})
-        
-        # Delete user's call sessions
-        self.db.call_sessions.delete_many({'owner_id': user_id})
-        
-        # Delete the user
-        result = self.db.users.delete_one({'id': user_id})
-        return result.deleted_count > 0
-
-
-# Helper function for joinedload compatibility
-def joinedload(relationship):
-    """Dummy function for SQLAlchemy joinedload compatibility"""
-    return relationship
-
+        user = self.session.query(User).filter(User.id == user_id).first()
+        if user:
+            self.session.delete(user)
+            self.session.commit()
+            return True
+        return False
 
 if __name__ == "__main__":
     # Initialize database
-    db = init_database()
-    print("✅ MongoDB database initialized successfully!")
-    print(f"   Collections: {db.list_collection_names()}")
-
+    engine = init_database()
+    print("Database initialized successfully!")
