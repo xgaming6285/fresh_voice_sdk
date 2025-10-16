@@ -15,12 +15,10 @@ import io
 import asyncio
 import logging
 from pathlib import Path
-from sqlalchemy.orm import joinedload
-
 from crm_database import (
     get_session, Lead, Campaign, CampaignLead, CallSession, User,
     Gender, CampaignStatus, CallStatus, UserRole,
-    LeadManager, CampaignManager
+    LeadManager, CampaignManager, joinedload
 )
 from crm_auth import get_current_user, get_current_admin, check_subscription, user_to_dict
 
@@ -141,8 +139,44 @@ class CallSessionResponse(BaseModel):
     key_points: Optional[List[str]]
     follow_up_required: bool
     follow_up_notes: Optional[str]
+    # New fields from MongoDB
+    transcripts: Optional[Dict[str, Any]] = None
+    analysis: Optional[Dict[str, Any]] = None
+    audio_files: Optional[Dict[str, str]] = None
+    session_info: Optional[Dict[str, Any]] = None
 
 # Helper functions
+def build_call_session_response(call_session: CallSession) -> CallSessionResponse:
+    """Build CallSessionResponse from CallSession object with MongoDB data"""
+    return CallSessionResponse(
+        id=call_session.id,
+        session_id=call_session.session_id,
+        campaign_id=call_session.campaign_id,
+        lead_id=call_session.lead_id,
+        lead_country=call_session.lead.country if call_session.lead else None,
+        caller_id=call_session.caller_id,
+        called_number=call_session.called_number,
+        status=call_session.status.value,
+        started_at=call_session.started_at,
+        answered_at=call_session.answered_at,
+        ended_at=call_session.ended_at,
+        duration=call_session.duration,
+        talk_time=call_session.talk_time,
+        recording_path=call_session.recording_path,
+        transcript_status=call_session.transcript_status,
+        transcript_language=call_session.transcript_language,
+        sentiment_score=call_session.sentiment_score,
+        interest_level=call_session.interest_level,
+        key_points=call_session.key_points,
+        follow_up_required=call_session.follow_up_required,
+        follow_up_notes=call_session.follow_up_notes,
+        # Include MongoDB fields if they exist
+        transcripts=getattr(call_session, 'transcripts', None),
+        analysis=getattr(call_session, 'analysis', None),
+        audio_files=getattr(call_session, 'audio_files', None),
+        session_info=getattr(call_session, 'session_info', None)
+    )
+
 def build_lead_response(lead: Lead, session) -> LeadResponse:
     """Build LeadResponse from Lead object"""
     owner = session.query(User).get(lead.owner_id)
@@ -205,11 +239,11 @@ def get_accessible_lead_ids(user: User, session) -> List[int]:
         agents = user_manager.get_agents_by_admin(user.id)
         agent_ids = [agent.id for agent in agents]
         accessible_ids = [user.id] + agent_ids
-        leads = session.query(Lead.id).filter(Lead.owner_id.in_(accessible_ids)).all()
+        leads = session.query(Lead).filter(Lead.owner_id.in_(accessible_ids)).all()
         return [lead.id for lead in leads]
     else:
         # Agent can only see their own leads
-        leads = session.query(Lead.id).filter(Lead.owner_id == user.id).all()
+        leads = session.query(Lead).filter(Lead.owner_id == user.id).all()
         return [lead.id for lead in leads]
 
 def get_accessible_campaign_ids(user: User, session) -> List[int]:
@@ -222,11 +256,11 @@ def get_accessible_campaign_ids(user: User, session) -> List[int]:
         agents = user_manager.get_agents_by_admin(user.id)
         agent_ids = [agent.id for agent in agents]
         accessible_ids = [user.id] + agent_ids
-        campaigns = session.query(Campaign.id).filter(Campaign.owner_id.in_(accessible_ids)).all()
+        campaigns = session.query(Campaign).filter(Campaign.owner_id.in_(accessible_ids)).all()
         return [campaign.id for campaign in campaigns]
     else:
         # Agent can only see their own campaigns
-        campaigns = session.query(Campaign.id).filter(Campaign.owner_id == user.id).all()
+        campaigns = session.query(Campaign).filter(Campaign.owner_id == user.id).all()
         return [campaign.id for campaign in campaigns]
 
 # Lead endpoints
@@ -864,31 +898,7 @@ async def get_call_sessions(
         
         sessions = query.order_by(CallSession.started_at.desc()).limit(limit).all()
         
-        return [
-            CallSessionResponse(
-                id=s.id,
-                session_id=s.session_id,
-                campaign_id=s.campaign_id,
-                lead_id=s.lead_id,
-                lead_country=s.lead.country if s.lead else None,
-                caller_id=s.caller_id,
-                called_number=s.called_number,
-                status=s.status.value,
-                started_at=s.started_at,
-                answered_at=s.answered_at,
-                ended_at=s.ended_at,
-                duration=s.duration,
-                talk_time=s.talk_time,
-                recording_path=s.recording_path,
-                transcript_status=s.transcript_status,
-                transcript_language=s.transcript_language,
-                sentiment_score=s.sentiment_score,
-                interest_level=s.interest_level,
-                key_points=s.key_points,
-                follow_up_required=s.follow_up_required,
-                follow_up_notes=s.follow_up_notes
-            ) for s in sessions
-        ]
+        return [build_call_session_response(s) for s in sessions]
     except Exception as e:
         logger.error(f"Error getting call sessions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -940,29 +950,7 @@ async def get_call_session(session_id: str, current_user: User = Depends(get_cur
                 raise HTTPException(status_code=403, detail="Access denied")
         # Superadmin can see all sessions
         
-        return CallSessionResponse(
-            id=call_session.id,
-            session_id=call_session.session_id,
-            campaign_id=call_session.campaign_id,
-            lead_id=call_session.lead_id,
-            lead_country=call_session.lead.country if call_session.lead else None,
-            caller_id=call_session.caller_id,
-            called_number=call_session.called_number,
-            status=call_session.status.value,
-            started_at=call_session.started_at,
-            answered_at=call_session.answered_at,
-            ended_at=call_session.ended_at,
-            duration=call_session.duration,
-            talk_time=call_session.talk_time,
-            recording_path=call_session.recording_path,
-            transcript_status=call_session.transcript_status,
-            transcript_language=call_session.transcript_language,
-            sentiment_score=call_session.sentiment_score,
-            interest_level=call_session.interest_level,
-            key_points=call_session.key_points,
-            follow_up_required=call_session.follow_up_required,
-            follow_up_notes=call_session.follow_up_notes
-        )
+        return build_call_session_response(call_session)
     except HTTPException:
         raise
     except Exception as e:
