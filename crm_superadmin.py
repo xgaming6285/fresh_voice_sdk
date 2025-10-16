@@ -246,6 +246,7 @@ async def update_admin(
             setattr(admin, field, value)
         
         admin.updated_at = datetime.utcnow()
+        session.add(admin)
         session.commit()
         session.refresh(admin)
         
@@ -287,6 +288,7 @@ async def reset_admin_password(
         # Reset password
         admin.hashed_password = User.hash_password(new_password)
         admin.updated_at = datetime.utcnow()
+        session.add(admin)
         session.commit()
         
         return {
@@ -438,6 +440,7 @@ async def reset_agent_password(
         # Reset password
         agent.hashed_password = User.hash_password(new_password)
         agent.updated_at = datetime.utcnow()
+        session.add(agent)
         session.commit()
         
         return {
@@ -572,6 +575,7 @@ async def approve_payment_request(
             # New or expired subscription
             admin.subscription_end_date = datetime.utcnow() + timedelta(days=30)
         
+        session.add(admin)
         session.commit()
         
         return {
@@ -619,6 +623,7 @@ async def reject_payment_request(
         payment_request.admin_notes = rejection_data.get("admin_notes", "")
         payment_request.updated_at = datetime.utcnow()
         
+        session.add(payment_request)
         session.commit()
         
         return {
@@ -671,6 +676,7 @@ async def set_payment_wallet(
             setting.value = wallet_address
             setting.updated_at = datetime.utcnow()
             setting.updated_by_id = current_user.id
+            session.add(setting)
         else:
             setting = SystemSettings(
                 key="payment_wallet_address",
@@ -720,6 +726,7 @@ async def update_admin_max_agents(
         
         admin.max_agents = max_agents
         admin.updated_at = datetime.utcnow()
+        session.add(admin)
         session.commit()
         
         return {

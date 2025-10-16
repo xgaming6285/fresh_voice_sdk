@@ -1965,6 +1965,13 @@ class CallRecorder:
                 
             logger.info(f"📄 Session info saved: {info_path}")
             
+            # Save to MongoDB
+            try:
+                from session_mongodb_helper import save_session_info_to_mongodb
+                save_session_info_to_mongodb(self.session_id, self.session_dir)
+            except Exception as mongo_error:
+                logger.warning(f"⚠️  Could not save session info to MongoDB: {mongo_error}")
+            
         except Exception as e:
             logger.error(f"Error saving session info: {e}")
     
@@ -4959,6 +4966,14 @@ async def _background_transcribe_session(session_dir: Path, caller_id: str):
         if process.returncode == 0:
             logger.info(f"✅ Transcription script completed successfully")
             logger.info(f"✅ Background transcription completed for {session_dir.name}")
+            
+            # Save transcripts to MongoDB
+            try:
+                from session_mongodb_helper import save_transcripts_to_mongodb
+                session_id = session_dir.name
+                save_transcripts_to_mongodb(session_id, session_dir)
+            except Exception as mongo_error:
+                logger.warning(f"⚠️  Could not save transcripts to MongoDB: {mongo_error}")
         else:
             logger.error(f"❌ Transcription script failed with return code {process.returncode}")
             logger.error(f"stderr: {process.stderr}")
@@ -5017,6 +5032,14 @@ async def _background_generate_summary(session_dir: Path, transcript_files: list
                 # Move (not copy) the file to the session directory
                 shutil.move(str(source_file), str(dest_file))
                 logger.info(f"✅ Summary moved to {dest_file}")
+                
+                # Save analysis to MongoDB
+                try:
+                    from session_mongodb_helper import save_analysis_to_mongodb
+                    session_id = session_dir.name
+                    save_analysis_to_mongodb(session_id, session_dir)
+                except Exception as mongo_error:
+                    logger.warning(f"⚠️  Could not save analysis to MongoDB: {mongo_error}")
             else:
                 logger.error(f"❌ Summary file not found at {source_file}")
                 logger.error(f"Working directory: {Path.cwd()}")

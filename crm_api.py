@@ -373,6 +373,8 @@ async def update_lead(lead_id: int, lead_update: LeadUpdate, current_user: User 
                     value = Gender(value)
                 setattr(lead, field, value)
         
+        # Add to session to mark for update
+        session.add(lead)
         session.commit()
         
         return build_lead_response(lead, session)
@@ -563,6 +565,8 @@ async def update_campaign(campaign_id: int, campaign_update: CampaignUpdate, cur
                     value = CampaignStatus(value)
                 setattr(campaign, field, value)
         
+        # Add to session to mark for update
+        session.add(campaign)
         session.commit()
         
         return build_campaign_response(campaign, session)

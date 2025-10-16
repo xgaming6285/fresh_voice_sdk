@@ -274,6 +274,7 @@ async def login(credentials: UserLogin):
         
         # Update last login
         user.last_login = datetime.utcnow()
+        session.add(user)
         session.commit()
         
         # Generate access token
@@ -347,6 +348,7 @@ async def change_password(
         # Update password
         current_user.hashed_password = User.hash_password(password_data.new_password)
         current_user.updated_at = datetime.utcnow()
+        session.add(current_user)
         session.commit()
         
         return {
