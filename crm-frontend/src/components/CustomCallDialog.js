@@ -32,14 +32,13 @@ import {
 
 const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
   const [callConfig, setCallConfig] = useState({
-    company_name: "QuantumAI",
-    caller_name: "John",
-    product_name: "ArtroFlex joint pain relief cream",
+    company_name: "",
+    caller_name: "",
+    product_name: "",
     additional_prompt: "",
-    call_urgency: "medium", // low, medium, high
-    call_objective: "sales", // sales, followup, survey, appointment
-    main_benefits: "natural ingredients, fast pain relief, no side effects",
-    special_offer: "50% off today only, free shipping, 30-day guarantee",
+    call_objective: "sales", // sales, followup, survey, appointment, confirm_order, promotion_offer
+    main_benefits: "",
+    special_offer: "",
     objection_strategy: "understanding", // understanding, aggressive, educational
     voice_name: "Puck", // Gemini voice selection
     greeting_instruction: "", // Custom greeting text
@@ -47,6 +46,64 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
 
   const [loading, setLoading] = useState(false);
   const [greetingStatus, setGreetingStatus] = useState(""); // "generating", "ready", ""
+
+  // Apply hardcoded demo configurations for specific objectives
+  const applyDemoConfig = (objective) => {
+    switch (objective) {
+      case "promotion_offer":
+        return {
+          company_name: "JBet Casino",
+          caller_name: "Maria",
+          product_name: "JBet Casino - Exclusive 100 Free Spins Offer",
+          main_benefits:
+            "100 free spins on registration, first deposit bonus, secure licensed casino, 24/7 customer support",
+          special_offer:
+            "Sign up now and get 100 free spins immediately! Plus, make your first deposit and receive a special welcome bonus. We'll send you a message with the website link and bonus details.",
+          objection_strategy: "understanding",
+        };
+      case "confirm_order":
+        return {
+          company_name: "Technopolis",
+          caller_name: "Stefan",
+          product_name: 'Microwave "Jira" - Order #6845175',
+          main_benefits:
+            "order verification, confirm customer identity, verify delivery address, 3 business days delivery time, warranty included",
+          special_offer:
+            "Delivery in 3 business days to the registered address. Professional installation available upon request.",
+          objection_strategy: "understanding",
+        };
+      case "appointment":
+        return {
+          company_name: "Pikolo Digital Marketing",
+          caller_name: "Alexandra",
+          product_name: "Digital Marketing Services",
+          main_benefits:
+            "increase online visibility, drive more traffic to your business, professional SEO and social media management, proven results",
+          special_offer:
+            "Free consultation and business analysis. Let us show you how we can help grow your business with our proven digital marketing strategies.",
+          objection_strategy: "educational",
+        };
+      default:
+        return {
+          company_name: "",
+          caller_name: "",
+          product_name: "",
+          main_benefits: "",
+          special_offer: "",
+          objection_strategy: "understanding",
+        };
+    }
+  };
+
+  // Handle call objective change and apply demo config
+  const handleObjectiveChange = (newObjective) => {
+    const demoConfig = applyDemoConfig(newObjective);
+    setCallConfig({
+      ...callConfig,
+      call_objective: newObjective,
+      ...demoConfig,
+    });
+  };
 
   const handleMakeCall = async () => {
     setLoading(true);
@@ -96,14 +153,13 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
       onClose();
       // Reset form
       setCallConfig({
-        company_name: "QuantumAI",
-        caller_name: "John",
-        product_name: "ArtroFlex joint pain relief cream",
+        company_name: "",
+        caller_name: "",
+        product_name: "",
         additional_prompt: "",
-        call_urgency: "medium",
         call_objective: "sales",
-        main_benefits: "natural ingredients, fast pain relief, no side effects",
-        special_offer: "50% off today only, free shipping, 30-day guarantee",
+        main_benefits: "",
+        special_offer: "",
         objection_strategy: "understanding",
         voice_name: "Puck",
         greeting_instruction: "",
@@ -158,60 +214,75 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
       caller_name,
       product_name,
       call_objective,
-      call_urgency,
       main_benefits,
       special_offer,
       objection_strategy,
     } = callConfig;
 
-    let basePrompt = `You are ${caller_name} from ${company_name}, a highly persuasive sales representative for ${product_name}. `;
+    let basePrompt = "";
 
-    if (call_objective === "sales") {
+    // Handle confirm_order differently - it's customer support, not sales
+    if (call_objective === "confirm_order") {
+      basePrompt = `You are ${caller_name} from ${company_name}, a customer support representative. `;
       basePrompt +=
-        "You are making sales calls to sell this product. Focus on converting prospects into customers by highlighting product benefits and closing the sale. ";
-    } else if (call_objective === "followup") {
-      basePrompt +=
-        "You are following up on a previous interaction. Be friendly and check on their interest while guiding toward a purchase decision. ";
-    } else if (call_objective === "survey") {
-      basePrompt +=
-        "You are conducting a survey but also identifying sales opportunities. Ask relevant questions while presenting the product benefits. ";
-    } else if (call_objective === "appointment") {
-      basePrompt +=
-        "You are cold calling to set appointments or qualify leads. Focus on building rapport, understanding their needs, and scheduling a follow-up meeting or call. ";
-    }
+        `You are calling to confirm a customer's existing order. The customer has ordered ${product_name}. ` +
+        "FOLLOW THIS FLOW EXACTLY: " +
+        `1) Greet and introduce yourself: 'Hello, I'm calling from ${company_name}.' ` +
+        "2) Ask if you're speaking with the right person by their full name. If they say NO, apologize and say you're looking for [customer name], then end call politely. If YES, continue. " +
+        "3) Inform about the order: 'You have an order for a microwave \"Jira\" with order number 6845175.' Ask if they confirm this order. " +
+        "4) If they confirm, say 'Okay, we will make a delivery in 3 business days.' Then confirm ALL details: 'Just to confirm, you are [full name] with phone number [phone], and the delivery address is [address]?' " +
+        "5) Wait for their confirmation of details. If correct, thank them and end call. If incorrect, ask for correct information. " +
+        "Be professional, clear, courteous, and helpful throughout the call. ";
 
-    if (main_benefits) {
-      basePrompt += `Key benefits to emphasize: ${main_benefits}. `;
-    }
+      if (special_offer) {
+        basePrompt += `Additional information: ${special_offer}. `;
+      }
 
-    if (special_offer) {
-      basePrompt += `Current offers: ${special_offer}. `;
-    }
-
-    if (call_urgency === "high") {
       basePrompt +=
-        "Create MAXIMUM URGENCY - emphasize time-sensitive offers and limited availability. ";
-    } else if (call_urgency === "medium") {
-      basePrompt +=
-        "Create moderate urgency with special offers and time-sensitive deals. ";
+        "If they have questions or concerns, answer them patiently and professionally.";
     } else {
-      basePrompt +=
-        "Be persistent but not overly aggressive. Focus on building rapport and trust. ";
-    }
+      // For sales-oriented calls
+      basePrompt = `You are ${caller_name} from ${company_name}, a highly persuasive sales representative for ${product_name}. `;
 
-    if (objection_strategy === "understanding") {
-      basePrompt +=
-        "Handle objections with empathy and understanding. Listen to their concerns and address them thoughtfully. ";
-    } else if (objection_strategy === "educational") {
-      basePrompt +=
-        "Handle objections by providing educational information and facts to overcome doubts. ";
-    } else if (objection_strategy === "aggressive") {
-      basePrompt +=
-        "Handle objections persistently. Push back on concerns and maintain strong sales pressure. ";
-    }
+      if (call_objective === "sales") {
+        basePrompt +=
+          "You are making sales calls to sell this product. Focus on converting prospects into customers by highlighting product benefits and closing the sale. ";
+      } else if (call_objective === "followup") {
+        basePrompt +=
+          "You are following up on a previous interaction. Be friendly and check on their interest while guiding toward a purchase decision. ";
+      } else if (call_objective === "survey") {
+        basePrompt +=
+          "You are conducting a survey but also identifying sales opportunities. Ask relevant questions while presenting the product benefits. ";
+      } else if (call_objective === "appointment") {
+        basePrompt +=
+          "You are cold calling to set appointments or qualify leads. Focus on building rapport, understanding their needs, and scheduling a follow-up meeting or call. ";
+      } else if (call_objective === "promotion_offer") {
+        basePrompt +=
+          "You are calling to present a special casino promotional offer. Inform them about the 100 free spins offer and first deposit bonus. Explain that you will send them a message with website details and registration instructions. Be enthusiastic but not pushy. ";
+      }
 
-    basePrompt +=
-      "Always try to close the sale and handle objections professionally.";
+      if (main_benefits) {
+        basePrompt += `Key benefits to emphasize: ${main_benefits}. `;
+      }
+
+      if (special_offer) {
+        basePrompt += `Current offers: ${special_offer}. `;
+      }
+
+      if (objection_strategy === "understanding") {
+        basePrompt +=
+          "Handle objections with empathy and understanding. Listen to their concerns and address them thoughtfully. ";
+      } else if (objection_strategy === "educational") {
+        basePrompt +=
+          "Handle objections by providing educational information and facts to overcome doubts. ";
+      } else if (objection_strategy === "aggressive") {
+        basePrompt +=
+          "Handle objections persistently. Push back on concerns and maintain strong sales pressure. ";
+      }
+
+      basePrompt +=
+        "Always try to close the sale and handle objections professionally.";
+    }
 
     return basePrompt;
   };
@@ -252,6 +323,58 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
       </DialogTitle>
 
       <DialogContent sx={{ p: 3 }}>
+        {/* Demo Configuration Info */}
+        {(callConfig.call_objective === "promotion_offer" ||
+          callConfig.call_objective === "confirm_order" ||
+          callConfig.call_objective === "appointment") && (
+          <Alert severity="success" sx={{ mb: 2, borderRadius: 2 }}>
+            <Box>
+              <Typography variant="body2" fontWeight={600}>
+                🎬 Demo Configuration Active
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Pre-configured settings have been applied for{" "}
+                {callConfig.call_objective === "promotion_offer"
+                  ? "JBet Casino Promotion"
+                  : callConfig.call_objective === "confirm_order"
+                  ? "Technopolis Order Confirmation"
+                  : "Pikolo Digital Marketing"}
+                . You can edit any field if needed.
+              </Typography>
+            </Box>
+          </Alert>
+        )}
+
+        {/* Order Confirmation Flow Info */}
+        {callConfig.call_objective === "confirm_order" && (
+          <Alert severity="info" sx={{ mb: 2, borderRadius: 2 }}>
+            <Box>
+              <Typography variant="body2" fontWeight={600}>
+                📋 Order Confirmation Call Flow
+              </Typography>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                component="div"
+              >
+                The AI will follow this sequence:
+                <br />
+                1️⃣ Verify identity: "Are you [Lead Name]?"
+                <br />
+                2️⃣ Mention order: Microwave "Jira" #6845175
+                <br />
+                3️⃣ Confirm details: Name, phone, and delivery address
+                <br />
+                4️⃣ Inform delivery: 3 business days
+                <br />
+                <br />
+                💡 The lead's name and phone from your database will be used
+                automatically.
+              </Typography>
+            </Box>
+          </Alert>
+        )}
+
         {/* Language Detection Info */}
         <Alert
           severity="info"
@@ -294,7 +417,13 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
                     <BusinessIcon sx={{ mr: 1, color: "text.secondary" }} />
                   ),
                 }}
-                helperText="The company you're representing"
+                helperText={
+                  callConfig.call_objective === "promotion_offer" ||
+                  callConfig.call_objective === "confirm_order" ||
+                  callConfig.call_objective === "appointment"
+                    ? "Demo configuration applied - you can edit if needed"
+                    : "The company you're representing"
+                }
               />
             </Grid>
             <Grid item xs={12} md={6}>
@@ -310,7 +439,13 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
                     <PersonIcon sx={{ mr: 1, color: "text.secondary" }} />
                   ),
                 }}
-                helperText="Your name (e.g., 'John', 'Sarah')"
+                helperText={
+                  callConfig.call_objective === "promotion_offer" ||
+                  callConfig.call_objective === "confirm_order" ||
+                  callConfig.call_objective === "appointment"
+                    ? "Demo configuration applied - you can edit if needed"
+                    : "Your name (e.g., 'John', 'Sarah')"
+                }
               />
             </Grid>
             <Grid item xs={12}>
@@ -326,20 +461,21 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
                     <ProductIcon sx={{ mr: 1, color: "text.secondary" }} />
                   ),
                 }}
-                helperText="What you're selling (e.g., 'ArtroFlex joint pain relief cream')"
+                helperText={
+                  callConfig.call_objective === "promotion_offer" ||
+                  callConfig.call_objective === "confirm_order" ||
+                  callConfig.call_objective === "appointment"
+                    ? "Demo configuration applied - you can edit if needed"
+                    : "What you're selling (e.g., 'ArtroFlex joint pain relief cream')"
+                }
               />
             </Grid>
-            <Grid item xs={12} md={6}>
+            <Grid item xs={12}>
               <FormControl fullWidth>
                 <InputLabel>Call Objective</InputLabel>
                 <Select
                   value={callConfig.call_objective}
-                  onChange={(e) =>
-                    setCallConfig({
-                      ...callConfig,
-                      call_objective: e.target.value,
-                    })
-                  }
+                  onChange={(e) => handleObjectiveChange(e.target.value)}
                   label="Call Objective"
                 >
                   <MenuItem value="sales">
@@ -366,42 +502,17 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
                       Appointment setter/Cold calling
                     </Box>
                   </MenuItem>
-                </Select>
-              </FormControl>
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <FormControl fullWidth>
-                <InputLabel>Call Urgency</InputLabel>
-                <Select
-                  value={callConfig.call_urgency}
-                  onChange={(e) =>
-                    setCallConfig({
-                      ...callConfig,
-                      call_urgency: e.target.value,
-                    })
-                  }
-                  label="Call Urgency"
-                >
-                  <MenuItem value="low">
-                    <Chip
-                      label="Low - Build Rapport"
-                      color="success"
-                      size="small"
-                    />
+                  <MenuItem value="confirm_order">
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                      <SettingsIcon fontSize="small" />
+                      Confirm Order
+                    </Box>
                   </MenuItem>
-                  <MenuItem value="medium">
-                    <Chip
-                      label="Medium - Moderate Urgency"
-                      color="warning"
-                      size="small"
-                    />
-                  </MenuItem>
-                  <MenuItem value="high">
-                    <Chip
-                      label="High - Maximum Urgency"
-                      color="error"
-                      size="small"
-                    />
+                  <MenuItem value="promotion_offer">
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                      <ProductIcon fontSize="small" />
+                      Promotion Offer
+                    </Box>
                   </MenuItem>
                 </Select>
               </FormControl>
@@ -489,7 +600,13 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
                     main_benefits: e.target.value,
                   })
                 }
-                helperText="Key selling points to emphasize (e.g., 'natural ingredients, fast pain relief, no side effects')"
+                helperText={
+                  callConfig.call_objective === "promotion_offer" ||
+                  callConfig.call_objective === "confirm_order" ||
+                  callConfig.call_objective === "appointment"
+                    ? "Demo configuration applied - you can edit if needed"
+                    : "Key selling points to emphasize (e.g., 'natural ingredients, fast pain relief, no side effects')"
+                }
                 placeholder="natural ingredients, fast pain relief, no side effects"
               />
             </Grid>
@@ -504,7 +621,13 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
                     special_offer: e.target.value,
                   })
                 }
-                helperText="Current promotions and deals to mention"
+                helperText={
+                  callConfig.call_objective === "promotion_offer" ||
+                  callConfig.call_objective === "confirm_order" ||
+                  callConfig.call_objective === "appointment"
+                    ? "Demo configuration applied - you can edit if needed"
+                    : "Current promotions and deals to mention"
+                }
                 placeholder="50% off today only, free shipping, 30-day guarantee"
               />
             </Grid>
@@ -658,6 +781,10 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
             : `Make ${
                 callConfig.call_objective === "appointment"
                   ? "Appointment"
+                  : callConfig.call_objective === "confirm_order"
+                  ? "Confirm Order"
+                  : callConfig.call_objective === "promotion_offer"
+                  ? "Promotion"
                   : callConfig.call_objective
               } Call`}
         </Button>

@@ -12,7 +12,7 @@ import {
 } from "@mui/icons-material";
 import { leadAPI, sessionAPI, voiceAgentAPI } from "../services/api";
 
-function Money() {
+function Conversions() {
   const [interestedLeads, setInterestedLeads] = useState([]);
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(0);
@@ -384,7 +384,7 @@ function Money() {
           >
             <img
               src="/transparent-money-bag-1713860414830.webp"
-              alt="Money"
+              alt="Conversions"
               style={{ width: 40, height: 40 }}
             />
           </Box>
@@ -514,4 +514,4 @@ function Money() {
   );
 }
 
-export default Money;
+export default Conversions;

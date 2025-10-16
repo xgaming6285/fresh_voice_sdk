@@ -71,9 +71,9 @@ function Layout({ children }) {
           },
           { text: "Leads", icon: <PeopleIcon />, path: "/leads", emoji: "👥" },
           {
-            text: "Money",
+            text: "Conversions",
             icon: <AssessmentIcon />,
-            path: "/money",
+            path: "/conversions",
             emoji: "💰",
             emojiImg: "/transparent-money-bag-1713860414830.webp",
           },

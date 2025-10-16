@@ -17,7 +17,7 @@ import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import Leads from "./pages/Leads";
-import Money from "./pages/Money";
+import Conversions from "./pages/Conversions";
 import Campaigns from "./pages/Campaigns";
 import CampaignDetail from "./pages/CampaignDetail";
 import Sessions from "./pages/Sessions";
@@ -377,11 +377,11 @@ function AppRoutes() {
         }
       />
       <Route
-        path="/money"
+        path="/conversions"
         element={
           <ProtectedRoute>
             <Layout>
-              <Money />
+              <Conversions />
             </Layout>
           </ProtectedRoute>
         }
