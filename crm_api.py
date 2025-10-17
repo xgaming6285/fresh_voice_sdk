@@ -18,7 +18,7 @@ from pathlib import Path
 from crm_database import (
     get_session, Lead, Campaign, CampaignLead, CallSession, User,
     Gender, CampaignStatus, CallStatus, UserRole,
-    LeadManager, CampaignManager, joinedload
+    LeadManager, CampaignManager, joinedload, get_enum_value
 )
 from crm_auth import get_current_user, get_current_admin, check_subscription, user_to_dict
 
@@ -156,7 +156,7 @@ def build_call_session_response(call_session: CallSession) -> CallSessionRespons
         lead_country=call_session.lead.country if call_session.lead else None,
         caller_id=call_session.caller_id,
         called_number=call_session.called_number,
-        status=call_session.status.value,
+        status=get_enum_value(call_session.status),
         started_at=call_session.started_at,
         answered_at=call_session.answered_at,
         ended_at=call_session.ended_at,
@@ -192,7 +192,7 @@ def build_lead_response(lead: Lead, session) -> LeadResponse:
         phone=lead.phone,
         country=lead.country,
         country_code=lead.country_code,
-        gender=lead.gender.value if lead.gender else "unknown",
+        gender=get_enum_value(lead.gender) if lead.gender else "unknown",
         address=lead.address,
         created_at=lead.created_at,
         updated_at=lead.updated_at,
@@ -214,7 +214,7 @@ def build_campaign_response(campaign: Campaign, session) -> CampaignResponse:
         owner_name=owner_name,
         name=campaign.name,
         description=campaign.description,
-        status=campaign.status.value,
+        status=get_enum_value(campaign.status),
         bot_config=campaign.bot_config or {},
         dialing_config=campaign.dialing_config or {},
         schedule_config=campaign.schedule_config or {},
@@ -720,7 +720,7 @@ async def get_campaign_leads(
                 "lead_name": lead.full_name,
                 "lead_phone": lead.full_phone,
                 "lead_country": lead.country,
-                "status": cl.status.value,
+                "status": get_enum_value(cl.status),
                 "priority": cl.priority,
                 "call_attempts": cl.call_attempts,
                 "last_attempt_at": cl.last_attempt_at,
@@ -762,7 +762,7 @@ async def start_campaign(campaign_id: int, background_tasks: BackgroundTasks, cu
         if campaign.status not in [CampaignStatus.DRAFT, CampaignStatus.READY, CampaignStatus.PAUSED]:
             raise HTTPException(
                 status_code=400, 
-                detail=f"Campaign cannot be started from status: {campaign.status.value}"
+                detail=f"Campaign cannot be started from status: {get_enum_value(campaign.status)}"
             )
         
         # Check if campaign has leads
@@ -813,7 +813,7 @@ async def pause_campaign(campaign_id: int, current_user: User = Depends(get_curr
         if campaign.status != CampaignStatus.RUNNING:
             raise HTTPException(
                 status_code=400,
-                detail=f"Campaign is not running (status: {campaign.status.value})"
+                detail=f"Campaign is not running (status: {get_enum_value(campaign.status)})"
             )
         
         campaign.status = CampaignStatus.PAUSED

@@ -177,10 +177,13 @@ export const superadminAPI = {
     api.post("/api/superadmin/settings/payment-wallet", {
       wallet_address: walletAddress,
     }),
-  updateAdminMaxAgents: (adminId, maxAgents) =>
-    api.put(`/api/superadmin/admins/${adminId}/max-agents`, {
-      max_agents: maxAgents,
+  adjustAdminSlots: (adminId, slotsChange, reason) =>
+    api.post(`/api/superadmin/admins/${adminId}/adjust-slots`, {
+      slots_change: slotsChange,
+      reason: reason,
     }),
+  getAdminSlotAdjustments: (adminId) =>
+    api.get(`/api/superadmin/admins/${adminId}/slot-adjustments`),
 };
 
 // Billing APIs (Admin only)
@@ -188,6 +191,7 @@ export const billingAPI = {
   getInfo: () => api.get("/api/billing/info"),
   createRequest: (data) => api.post("/api/billing/request", data),
   getRequests: () => api.get("/api/billing/requests"),
+  getSlotAdjustments: () => api.get("/api/billing/slot-adjustments"),
 };
 
 // Add to main api object for easier access

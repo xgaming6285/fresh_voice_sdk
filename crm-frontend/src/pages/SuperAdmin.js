@@ -39,6 +39,8 @@ import {
   VpnKey as VpnKeyIcon,
   CheckCircle as CheckIcon,
   Cancel as CancelIcon,
+  AddCircle as AddCircleIcon,
+  RemoveCircle as RemoveCircleIcon,
 } from "@mui/icons-material";
 import api from "../services/api";
 
@@ -79,6 +81,12 @@ function SuperAdmin() {
   // Wallet dialog state
   const [openWalletDialog, setOpenWalletDialog] = useState(false);
   const [newWalletAddress, setNewWalletAddress] = useState("");
+
+  // Slot adjustment dialog state
+  const [openSlotDialog, setOpenSlotDialog] = useState(false);
+  const [selectedAdmin, setSelectedAdmin] = useState(null);
+  const [slotsChange, setSlotsChange] = useState("");
+  const [slotAdjustmentReason, setSlotAdjustmentReason] = useState("");
 
   useEffect(() => {
     loadData();
@@ -306,6 +314,57 @@ function SuperAdmin() {
     }
   };
 
+  const handleOpenSlotDialog = (admin) => {
+    setSelectedAdmin(admin);
+    setSlotsChange("");
+    setSlotAdjustmentReason("");
+    setOpenSlotDialog(true);
+  };
+
+  const handleCloseSlotDialog = () => {
+    setOpenSlotDialog(false);
+    setSelectedAdmin(null);
+    setSlotsChange("");
+    setSlotAdjustmentReason("");
+  };
+
+  const handleAdjustSlots = async () => {
+    try {
+      setError("");
+
+      const slotsNum = parseInt(slotsChange);
+      if (isNaN(slotsNum) || slotsNum === 0) {
+        setError(
+          "Please enter a valid number (positive to add, negative to remove)"
+        );
+        return;
+      }
+
+      if (!slotAdjustmentReason || slotAdjustmentReason.trim().length < 3) {
+        setError("Please provide a reason (at least 3 characters)");
+        return;
+      }
+
+      await api.superadminAPI.adjustAdminSlots(
+        selectedAdmin.id,
+        slotsNum,
+        slotAdjustmentReason
+      );
+
+      const action = slotsNum > 0 ? "added" : "removed";
+      setSuccess(
+        `Successfully ${action} ${Math.abs(slotsNum)} agent slot(s) for ${
+          selectedAdmin.username
+        }`
+      );
+      handleCloseSlotDialog();
+      loadData();
+    } catch (err) {
+      console.error("Error adjusting slots:", err);
+      setError(err.response?.data?.detail || "Failed to adjust slots");
+    }
+  };
+
   if (loading && !stats) {
     return (
       <Box
@@ -500,6 +559,15 @@ function SuperAdmin() {
                           }
                         >
                           <VpnKeyIcon />
+                        </IconButton>
+                      </Tooltip>
+                      <Tooltip title="Adjust Agent Slots">
+                        <IconButton
+                          size="small"
+                          color="primary"
+                          onClick={() => handleOpenSlotDialog(admin)}
+                        >
+                          <AddCircleIcon />
                         </IconButton>
                       </Tooltip>
                       <Tooltip title="Delete">
@@ -1002,6 +1070,64 @@ function SuperAdmin() {
           <Button onClick={handleCloseWalletDialog}>Cancel</Button>
           <Button onClick={handleSaveWallet} variant="contained">
             Save Wallet Address
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Slot Adjustment Dialog */}
+      <Dialog
+        open={openSlotDialog}
+        onClose={handleCloseSlotDialog}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>
+          Adjust Agent Slots for {selectedAdmin?.username}
+        </DialogTitle>
+        <DialogContent>
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 2, mt: 2 }}>
+            <Alert severity="info">
+              <Typography variant="body2" gutterBottom>
+                <strong>Current slots:</strong> {selectedAdmin?.max_agents || 0}
+              </Typography>
+              <Typography variant="caption">
+                Enter a positive number to add slots or a negative number to
+                remove slots.
+              </Typography>
+            </Alert>
+
+            <TextField
+              label="Slots Change"
+              type="number"
+              value={slotsChange}
+              onChange={(e) => setSlotsChange(e.target.value)}
+              fullWidth
+              required
+              helperText="Example: +5 to add 5 slots, -3 to remove 3 slots"
+              placeholder="e.g., 5 or -3"
+            />
+
+            <TextField
+              label="Reason for Adjustment"
+              multiline
+              rows={3}
+              value={slotAdjustmentReason}
+              onChange={(e) => setSlotAdjustmentReason(e.target.value)}
+              fullWidth
+              required
+              helperText="Provide a clear reason for this adjustment (min 3 characters)"
+              placeholder="e.g., Bonus slots for excellent performance"
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseSlotDialog}>Cancel</Button>
+          <Button
+            onClick={handleAdjustSlots}
+            variant="contained"
+            disabled={!slotsChange || !slotAdjustmentReason}
+          >
+            Apply Adjustment
           </Button>
         </DialogActions>
       </Dialog>

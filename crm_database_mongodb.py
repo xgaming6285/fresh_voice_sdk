@@ -11,9 +11,23 @@ import enum
 import os
 from typing import List, Optional, Dict, Any
 from bson import ObjectId
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# Helper function for safe enum value extraction
+def get_enum_value(enum_or_str):
+    """
+    Safely get the value from an enum or return the string if it's already a string.
+    This handles cases where MongoDB might return strings instead of enums.
+    """
+    if enum_or_str is None:
+        return None
+    return enum_or_str.value if hasattr(enum_or_str, 'value') else enum_or_str
 
 # Enums
 class UserRole(enum.Enum):
@@ -61,9 +75,17 @@ class MongoDB:
     def get_client(cls):
         """Get MongoDB client"""
         if cls._client is None:
-            mongo_host = os.getenv('MONGODB_HOST', 'localhost')
-            mongo_port = int(os.getenv('MONGODB_PORT', '27017'))
-            cls._client = MongoClient(mongo_host, mongo_port)
+            # Check for MongoDB connection string (Atlas or full URI)
+            mongo_uri = os.getenv('MONGO_DB') or os.getenv('MONGODB_URI')
+            
+            if mongo_uri:
+                # Use connection string (MongoDB Atlas or full URI)
+                cls._client = MongoClient(mongo_uri)
+            else:
+                # Fallback to host:port format for local MongoDB
+                mongo_host = os.getenv('MONGODB_HOST', 'localhost')
+                mongo_port = int(os.getenv('MONGODB_PORT', '27017'))
+                cls._client = MongoClient(mongo_host, mongo_port)
         return cls._client
     
     @classmethod
@@ -109,6 +131,10 @@ def init_database():
     db.payment_requests.create_index([("admin_id", ASCENDING)])
     db.payment_requests.create_index([("status", ASCENDING)])
     
+    # Create indexes for slot_adjustments collection
+    db.slot_adjustments.create_index([("admin_id", ASCENDING)])
+    db.slot_adjustments.create_index([("created_at", DESCENDING)])
+    
     # Create indexes for system_settings collection
     db.system_settings.create_index([("key", ASCENDING)], unique=True)
     
@@ -151,6 +177,7 @@ class MongoSession:
             'CampaignLead': 'campaign_leads',
             'CallSession': 'call_sessions',
             'PaymentRequest': 'payment_requests',
+            'SlotAdjustment': 'slot_adjustments',
             'SystemSettings': 'system_settings'
         }
         return mapping.get(obj.__class__.__name__, obj.__class__.__name__.lower() + 's')
@@ -207,6 +234,7 @@ class MongoQuery:
             'CampaignLead': 'campaign_leads',
             'CallSession': 'call_sessions',
             'PaymentRequest': 'payment_requests',
+            'SlotAdjustment': 'slot_adjustments',
             'SystemSettings': 'system_settings'
         }
         
@@ -277,7 +305,7 @@ class MongoQuery:
         """Set sort order"""
         if args:
             field = args[0]
-            if hasattr(field, 'desc'):
+            if hasattr(field, '_desc') and field._desc:
                 self.sort_field = field.key
                 self.sort_direction = DESCENDING
             else:
@@ -347,6 +375,8 @@ class MongoQuery:
             return CallSession.from_dict(doc)
         elif self.collection_name == 'payment_requests':
             return PaymentRequest.from_dict(doc)
+        elif self.collection_name == 'slot_adjustments':
+            return SlotAdjustment.from_dict(doc)
         elif self.collection_name == 'system_settings':
             return SystemSettings.from_dict(doc)
         
@@ -498,7 +528,7 @@ class User:
             "username": self.username,
             "email": self.email,
             "hashed_password": self.hashed_password,
-            "role": self.role.value,
+            "role": get_enum_value(self.role),
             "created_by_id": self.created_by_id,
             "organization": self.organization,
             "max_agents": self.max_agents,
@@ -607,7 +637,7 @@ class Lead:
             "phone": self.phone,
             "country": self.country,
             "country_code": self.country_code,
-            "gender": self.gender.value,
+            "gender": get_enum_value(self.gender),
             "address": self.address,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -698,7 +728,7 @@ class Campaign:
             "owner_id": self.owner_id,
             "name": self.name,
             "description": self.description,
-            "status": self.status.value,
+            "status": get_enum_value(self.status),
             "bot_config": self.bot_config,
             "dialing_config": self.dialing_config,
             "schedule_config": self.schedule_config,
@@ -801,7 +831,7 @@ class CampaignLead:
             "id": self.id,
             "campaign_id": self.campaign_id,
             "lead_id": self.lead_id,
-            "status": self.status.value,
+            "status": get_enum_value(self.status),
             "priority": self.priority,
             "call_attempts": self.call_attempts,
             "last_attempt_at": self.last_attempt_at,
@@ -938,7 +968,7 @@ class CallSession:
             "owner_id": self.owner_id,
             "caller_id": self.caller_id,
             "called_number": self.called_number,
-            "status": self.status.value,
+            "status": get_enum_value(self.status),
             "started_at": self.started_at,
             "answered_at": self.answered_at,
             "ended_at": self.ended_at,
@@ -1024,7 +1054,7 @@ class PaymentRequest:
             "admin_id": self.admin_id,
             "num_agents": self.num_agents,
             "total_amount": self.total_amount,
-            "status": self.status.value,
+            "status": get_enum_value(self.status),
             "payment_notes": self.payment_notes,
             "admin_notes": self.admin_notes,
             "created_at": self.created_at,
@@ -1059,6 +1089,69 @@ class PaymentRequest:
         """Delete from database"""
         db = MongoDB.get_db()
         db.payment_requests.delete_one({"id": self.id})
+
+class SlotAdjustment:
+    """Manual slot adjustment model for tracking superadmin changes to admin agent slots"""
+    
+    # Class-level column descriptors
+    id = Column('id')
+    admin_id = Column('admin_id')
+    adjusted_by_id = Column('adjusted_by_id')
+    slots_change = Column('slots_change')  # Positive for increase, negative for decrease
+    reason = Column('reason')
+    previous_max_agents = Column('previous_max_agents')
+    new_max_agents = Column('new_max_agents')
+    created_at = Column('created_at')
+    
+    def __init__(self, **kwargs):
+        self.id = kwargs.get('id')
+        self.admin_id = kwargs.get('admin_id')
+        self.adjusted_by_id = kwargs.get('adjusted_by_id')
+        self.slots_change = kwargs.get('slots_change')
+        self.reason = kwargs.get('reason', '')
+        self.previous_max_agents = kwargs.get('previous_max_agents')
+        self.new_max_agents = kwargs.get('new_max_agents')
+        self.created_at = kwargs.get('created_at', datetime.utcnow())
+    
+    def to_dict(self):
+        """Convert to dictionary"""
+        return {
+            "id": self.id,
+            "admin_id": self.admin_id,
+            "adjusted_by_id": self.adjusted_by_id,
+            "slots_change": self.slots_change,
+            "reason": self.reason,
+            "previous_max_agents": self.previous_max_agents,
+            "new_max_agents": self.new_max_agents,
+            "created_at": self.created_at
+        }
+    
+    @classmethod
+    def from_dict(cls, data):
+        """Create from dictionary"""
+        return cls(**data)
+    
+    def save(self):
+        """Save to database"""
+        db = MongoDB.get_db()
+        doc = self.to_dict()
+        
+        if self.id:
+            db.slot_adjustments.update_one({"id": self.id}, {"$set": doc}, upsert=True)
+        else:
+            if not doc.get('id'):
+                max_id = db.slot_adjustments.find_one(sort=[("id", DESCENDING)])
+                doc['id'] = (max_id['id'] + 1) if max_id and 'id' in max_id else 1
+                self.id = doc['id']
+            
+            db.slot_adjustments.insert_one(doc)
+        
+        return self
+    
+    def delete(self):
+        """Delete from database"""
+        db = MongoDB.get_db()
+        db.slot_adjustments.delete_one({"id": self.id})
 
 class SystemSettings:
     """System-wide settings"""

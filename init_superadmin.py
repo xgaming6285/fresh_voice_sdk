@@ -3,7 +3,7 @@ Script to initialize the superadmin user
 Run this once to create the superadmin account
 """
 
-from crm_database import User, UserRole, get_session
+from crm_database import User, UserRole, get_session, get_enum_value
 from sqlalchemy.orm import Session
 
 def create_superadmin():
@@ -18,7 +18,7 @@ def create_superadmin():
             print("✅ Superadmin already exists!")
             print(f"   Username: {superadmin.username}")
             print(f"   Email: {superadmin.email}")
-            print(f"   Role: {superadmin.role.value}")
+            print(f"   Role: {get_enum_value(superadmin.role)}")
             return
         
         # Create new superadmin

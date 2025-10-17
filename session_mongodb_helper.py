@@ -5,15 +5,33 @@ Updates MongoDB with session transcripts, analysis, and metadata
 """
 
 import json
+import os
 from pathlib import Path
 from datetime import datetime
 from pymongo import MongoClient
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 def get_mongodb_connection():
     """Get MongoDB connection"""
     try:
-        client = MongoClient('localhost', 27017, serverSelectionTimeoutMS=2000)
-        db = client['voice_agent_crm']
+        # Check for MongoDB connection string (Atlas or full URI)
+        mongo_uri = os.getenv('MONGO_DB') or os.getenv('MONGODB_URI')
+        
+        if mongo_uri:
+            # Use connection string (MongoDB Atlas or full URI)
+            client = MongoClient(mongo_uri, serverSelectionTimeoutMS=2000)
+        else:
+            # Fallback to host:port format for local MongoDB
+            mongo_host = os.getenv('MONGODB_HOST', 'localhost')
+            mongo_port = int(os.getenv('MONGODB_PORT', '27017'))
+            client = MongoClient(mongo_host, mongo_port, serverSelectionTimeoutMS=2000)
+        
+        db_name = os.getenv('MONGODB_DATABASE', 'voice_agent_crm')
+        db = client[db_name]
+        
         # Test connection
         client.admin.command('ping')
         return db

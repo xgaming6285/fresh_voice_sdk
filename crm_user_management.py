@@ -11,7 +11,7 @@ from datetime import datetime
 import logging
 
 from crm_database import (
-    get_session, User, UserRole, UserManager
+    get_session, User, UserRole, UserManager, get_enum_value
 )
 from crm_auth import get_current_admin
 
@@ -63,7 +63,7 @@ async def get_my_agents(current_admin: User = Depends(get_current_admin)):
                 id=agent.id,
                 username=agent.username,
                 email=agent.email,
-                role=agent.role.value,
+                role=get_enum_value(agent.role),
                 first_name=agent.first_name,
                 last_name=agent.last_name,
                 full_name=agent.full_name,
@@ -132,7 +132,7 @@ async def create_agent(agent_data: AgentCreate, current_admin: User = Depends(ge
             id=new_agent.id,
             username=new_agent.username,
             email=new_agent.email,
-            role=new_agent.role.value,
+            role=get_enum_value(new_agent.role),
             first_name=new_agent.first_name,
             last_name=new_agent.last_name,
             full_name=new_agent.full_name,
@@ -172,7 +172,7 @@ async def get_agent(agent_id: int, current_admin: User = Depends(get_current_adm
             id=agent.id,
             username=agent.username,
             email=agent.email,
-            role=agent.role.value,
+            role=get_enum_value(agent.role),
             first_name=agent.first_name,
             last_name=agent.last_name,
             full_name=agent.full_name,
@@ -216,7 +216,7 @@ async def update_agent(agent_id: int, agent_update: AgentUpdate, current_admin: 
             id=updated_agent.id,
             username=updated_agent.username,
             email=updated_agent.email,
-            role=updated_agent.role.value,
+            role=get_enum_value(updated_agent.role),
             first_name=updated_agent.first_name,
             last_name=updated_agent.last_name,
             full_name=updated_agent.full_name,

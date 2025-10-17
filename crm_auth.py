@@ -14,7 +14,7 @@ import os
 import logging
 
 from crm_database import (
-    get_session, User, UserRole, UserManager
+    get_session, User, UserRole, UserManager, get_enum_value
 )
 
 logger = logging.getLogger(__name__)
@@ -183,7 +183,7 @@ def user_to_dict(user: User) -> Dict[str, Any]:
         "id": user.id,
         "username": user.username,
         "email": user.email,
-        "role": user.role.value,
+        "role": get_enum_value(user.role),
         "first_name": user.first_name,
         "last_name": user.last_name,
         "full_name": user.full_name,
@@ -228,7 +228,7 @@ async def register(user_data: UserRegister):
         
         # Generate access token
         access_token = create_access_token(
-            data={"user_id": new_user.id, "role": new_user.role.value}
+            data={"user_id": new_user.id, "role": get_enum_value(new_user.role)}
         )
         
         return TokenResponse(
@@ -279,7 +279,7 @@ async def login(credentials: UserLogin):
         
         # Generate access token
         access_token = create_access_token(
-            data={"user_id": user.id, "role": user.role.value}
+            data={"user_id": user.id, "role": get_enum_value(user.role)}
         )
         
         return TokenResponse(
@@ -301,7 +301,7 @@ async def get_me(current_user: User = Depends(get_current_user)):
         id=current_user.id,
         username=current_user.username,
         email=current_user.email,
-        role=current_user.role.value,
+        role=get_enum_value(current_user.role),
         first_name=current_user.first_name,
         last_name=current_user.last_name,
         full_name=current_user.full_name,

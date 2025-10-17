@@ -11,7 +11,7 @@ from datetime import datetime
 import logging
 
 from crm_database import (
-    get_session, User, UserRole, PaymentRequest, PaymentRequestStatus, SystemSettings
+    get_session, User, UserRole, PaymentRequest, PaymentRequestStatus, SlotAdjustment, SystemSettings, get_enum_value
 )
 from crm_auth import get_current_user, get_current_admin, get_current_superadmin
 
@@ -144,7 +144,7 @@ async def create_payment_request(
             admin_organization=current_user.organization,
             num_agents=payment_request.num_agents,
             total_amount=payment_request.total_amount,
-            status=payment_request.status.value,
+            status=get_enum_value(payment_request.status),
             payment_notes=payment_request.payment_notes,
             admin_notes=payment_request.admin_notes,
             created_at=payment_request.created_at,
@@ -166,29 +166,70 @@ async def get_my_payment_requests(current_user: User = Depends(get_current_admin
     try:
         session = get_session()
         
+        logger.info(f"Fetching payment requests for admin_id: {current_user.id}")
+        
         requests = session.query(PaymentRequest).filter(
             PaymentRequest.admin_id == current_user.id
         ).order_by(PaymentRequest.created_at.desc()).all()
         
-        return [
-            PaymentRequestResponse(
-                id=req.id,
-                admin_id=req.admin_id,
-                admin_username=current_user.username,
-                admin_organization=current_user.organization,
-                num_agents=req.num_agents,
-                total_amount=req.total_amount,
-                status=req.status.value,
-                payment_notes=req.payment_notes,
-                admin_notes=req.admin_notes,
-                created_at=req.created_at,
-                updated_at=req.updated_at,
-                approved_at=req.approved_at
+        logger.info(f"Found {len(requests)} payment requests")
+        
+        result = []
+        for req in requests:
+            logger.info(f"Request ID: {req.id}, Status: {get_enum_value(req.status)}, Admin ID: {req.admin_id}")
+            result.append(
+                PaymentRequestResponse(
+                    id=req.id,
+                    admin_id=req.admin_id,
+                    admin_username=current_user.username,
+                    admin_organization=current_user.organization,
+                    num_agents=req.num_agents,
+                    total_amount=req.total_amount,
+                    status=get_enum_value(req.status),
+                    payment_notes=req.payment_notes,
+                    admin_notes=req.admin_notes,
+                    created_at=req.created_at,
+                    updated_at=req.updated_at,
+                    approved_at=req.approved_at
+                )
             )
-            for req in requests
-        ]
+        
+        return result
     except Exception as e:
-        logger.error(f"Error getting payment requests: {e}")
+        logger.error(f"Error getting payment requests: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+@billing_router.get("/slot-adjustments")
+async def get_my_slot_adjustments(current_user: User = Depends(get_current_admin)):
+    """Get slot adjustment history for current admin"""
+    try:
+        session = get_session()
+        
+        # Get all slot adjustments for this admin
+        adjustments = session.query(SlotAdjustment).filter(
+            SlotAdjustment.admin_id == current_user.id
+        ).order_by(SlotAdjustment.created_at.desc()).all()
+        
+        result = []
+        for adj in adjustments:
+            # Get the superadmin who made the adjustment
+            adjusted_by = session.query(User).filter(User.id == adj.adjusted_by_id).first()
+            
+            result.append({
+                "id": adj.id,
+                "adjusted_by_username": adjusted_by.username if adjusted_by else "System",
+                "slots_change": adj.slots_change,
+                "reason": adj.reason,
+                "previous_max_agents": adj.previous_max_agents,
+                "new_max_agents": adj.new_max_agents,
+                "created_at": adj.created_at
+            })
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error getting slot adjustments: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()

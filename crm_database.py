@@ -23,6 +23,7 @@ from crm_database_mongodb import (
     CampaignLead,
     CallSession,
     PaymentRequest,
+    SlotAdjustment,
     SystemSettings,
     
     # Managers
@@ -36,6 +37,9 @@ from crm_database_mongodb import (
     
     # MongoDB connection
     MongoDB,
+    
+    # Helper functions
+    get_enum_value,
     
     # Password context for compatibility
     pwd_context

@@ -12,7 +12,7 @@ import logging
 
 from crm_database import (
     get_session, User, UserRole, UserManager, Lead, Campaign,
-    PaymentRequest, PaymentRequestStatus, SystemSettings
+    PaymentRequest, PaymentRequestStatus, SlotAdjustment, SystemSettings, get_enum_value
 )
 from crm_auth import get_current_superadmin, user_to_dict
 
@@ -69,6 +69,10 @@ class SystemStatsResponse(BaseModel):
     total_leads: int
     total_campaigns: int
 
+class SlotAdjustmentRequest(BaseModel):
+    slots_change: int = Field(..., description="Number of slots to add (positive) or remove (negative)")
+    reason: str = Field(..., min_length=3, max_length=500, description="Reason for the adjustment")
+
 def get_admin_with_stats(user: User, session) -> Dict[str, Any]:
     """Convert admin user to dict with agent count"""
     # Count agents created by this admin
@@ -77,11 +81,14 @@ def get_admin_with_stats(user: User, session) -> Dict[str, Any]:
         User.role == UserRole.AGENT
     ).count()
     
+    # Handle role - it might be an enum or already a string
+    role_value = user.role.value if hasattr(user.role, 'value') else user.role
+    
     return {
         "id": user.id,
         "username": user.username,
         "email": user.email,
-        "role": user.role.value,
+        "role": role_value,
         "organization": user.organization,
         "first_name": user.first_name,
         "last_name": user.last_name,
@@ -366,7 +373,7 @@ async def get_all_agents(current_user: User = Depends(get_current_superadmin)):
                 "id": agent.id,
                 "username": agent.username,
                 "email": agent.email,
-                "role": agent.role.value,
+                "role": get_enum_value(agent.role),
                 "full_name": agent.full_name,
                 "is_active": agent.is_active,
                 "created_at": agent.created_at,
@@ -507,7 +514,7 @@ async def get_all_payment_requests(current_user: User = Depends(get_current_supe
                 "max_agents": admin.max_agents or 0,
                 "num_agents": req.num_agents,
                 "total_amount": req.total_amount,
-                "status": req.status.value,
+                "status": get_enum_value(req.status),
                 "payment_notes": req.payment_notes,
                 "admin_notes": req.admin_notes,
                 "created_at": req.created_at,
@@ -545,7 +552,7 @@ async def approve_payment_request(
         if payment_request.status != PaymentRequestStatus.PENDING:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Payment request is already {payment_request.status.value}"
+                detail=f"Payment request is already {get_enum_value(payment_request.status)}"
             )
         
         # Get admin
@@ -575,6 +582,7 @@ async def approve_payment_request(
             # New or expired subscription
             admin.subscription_end_date = datetime.utcnow() + timedelta(days=30)
         
+        session.add(payment_request)
         session.add(admin)
         session.commit()
         
@@ -615,7 +623,7 @@ async def reject_payment_request(
         if payment_request.status != PaymentRequestStatus.PENDING:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Payment request is already {payment_request.status.value}"
+                detail=f"Payment request is already {get_enum_value(payment_request.status)}"
             )
         
         # Update payment request
@@ -698,21 +706,14 @@ async def set_payment_wallet(
     finally:
         session.close()
 
-@superadmin_router.put("/admins/{admin_id}/max-agents")
-async def update_admin_max_agents(
+@superadmin_router.post("/admins/{admin_id}/adjust-slots")
+async def adjust_admin_slots(
     admin_id: int,
-    data: dict,
+    adjustment_data: SlotAdjustmentRequest,
     current_user: User = Depends(get_current_superadmin)
 ):
-    """Directly update admin's max_agents (manual adjustment)"""
+    """Manually adjust admin's agent slots (increase or decrease) with reason tracking"""
     try:
-        max_agents = data.get("max_agents")
-        if max_agents is None or max_agents < 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="max_agents must be a non-negative number"
-            )
-        
         session = get_session()
         user_manager = UserManager(session)
         
@@ -724,20 +725,101 @@ async def update_admin_max_agents(
                 detail="Admin not found"
             )
         
-        admin.max_agents = max_agents
+        # Calculate new max_agents
+        previous_max_agents = admin.max_agents or 0
+        new_max_agents = previous_max_agents + adjustment_data.slots_change
+        
+        if new_max_agents < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot reduce slots by {abs(adjustment_data.slots_change)}. Admin currently has {previous_max_agents} slots."
+            )
+        
+        # Create slot adjustment record
+        slot_adjustment = SlotAdjustment(
+            admin_id=admin.id,
+            adjusted_by_id=current_user.id,
+            slots_change=adjustment_data.slots_change,
+            reason=adjustment_data.reason,
+            previous_max_agents=previous_max_agents,
+            new_max_agents=new_max_agents,
+            created_at=datetime.utcnow()
+        )
+        
+        # Update admin's max_agents
+        admin.max_agents = new_max_agents
         admin.updated_at = datetime.utcnow()
+        
+        session.add(slot_adjustment)
         session.add(admin)
         session.commit()
         
+        action = "increased" if adjustment_data.slots_change > 0 else "decreased"
+        
         return {
-            "message": f"Admin max_agents updated to {max_agents}",
-            "max_agents": max_agents
+            "message": f"Admin agent slots {action} from {previous_max_agents} to {new_max_agents}",
+            "previous_max_agents": previous_max_agents,
+            "new_max_agents": new_max_agents,
+            "slots_change": adjustment_data.slots_change,
+            "reason": adjustment_data.reason
         }
     except HTTPException:
         raise
     except Exception as e:
         session.rollback()
-        logger.error(f"Error updating admin max_agents: {e}")
+        logger.error(f"Error adjusting admin slots: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+@superadmin_router.get("/admins/{admin_id}/slot-adjustments")
+async def get_admin_slot_adjustments(
+    admin_id: int,
+    current_user: User = Depends(get_current_superadmin)
+):
+    """Get slot adjustment history for an admin"""
+    try:
+        session = get_session()
+        
+        # Verify admin exists
+        admin = session.query(User).filter(
+            User.id == admin_id,
+            User.role == UserRole.ADMIN
+        ).first()
+        
+        if not admin:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Admin not found"
+            )
+        
+        # Get all adjustments for this admin
+        adjustments = session.query(SlotAdjustment).filter(
+            SlotAdjustment.admin_id == admin_id
+        ).order_by(SlotAdjustment.created_at.desc()).all()
+        
+        result = []
+        for adj in adjustments:
+            # Get the superadmin who made the adjustment
+            adjusted_by = session.query(User).filter(User.id == adj.adjusted_by_id).first()
+            
+            result.append({
+                "id": adj.id,
+                "admin_id": adj.admin_id,
+                "adjusted_by_id": adj.adjusted_by_id,
+                "adjusted_by_username": adjusted_by.username if adjusted_by else "Unknown",
+                "slots_change": adj.slots_change,
+                "reason": adj.reason,
+                "previous_max_agents": adj.previous_max_agents,
+                "new_max_agents": adj.new_max_agents,
+                "created_at": adj.created_at
+            })
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting slot adjustments: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()

@@ -40,6 +40,7 @@ const PRICE_PER_AGENT = 300;
 function Billing() {
   const [billingInfo, setBillingInfo] = useState(null);
   const [paymentRequests, setPaymentRequests] = useState([]);
+  const [slotAdjustments, setSlotAdjustments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -58,13 +59,15 @@ function Billing() {
       setLoading(true);
       setError("");
 
-      const [billingRes, requestsRes] = await Promise.all([
+      const [billingRes, requestsRes, adjustmentsRes] = await Promise.all([
         api.billingAPI.getInfo(),
         api.billingAPI.getRequests(),
+        api.billingAPI.getSlotAdjustments(),
       ]);
 
       setBillingInfo(billingRes.data);
       setPaymentRequests(requestsRes.data);
+      setSlotAdjustments(adjustmentsRes.data);
     } catch (err) {
       console.error("Error loading billing data:", err);
       setError(err.response?.data?.detail || "Failed to load billing data");
@@ -199,9 +202,16 @@ function Billing() {
       <Grid container spacing={3} mb={4}>
         {/* Subscription Status Card */}
         <Grid item xs={12} md={3}>
-          <Card>
-            <CardContent>
-              <Box display="flex" alignItems="center" mb={2}>
+          <Card sx={{ height: "100%", minHeight: 140 }}>
+            <CardContent
+              sx={{
+                height: "100%",
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "center",
+              }}
+            >
+              <Box display="flex" alignItems="center">
                 <BusinessIcon
                   color={
                     billingInfo?.is_subscription_active ? "success" : "error"
@@ -235,9 +245,16 @@ function Billing() {
         </Grid>
 
         <Grid item xs={12} md={3}>
-          <Card>
-            <CardContent>
-              <Box display="flex" alignItems="center" mb={2}>
+          <Card sx={{ height: "100%", minHeight: 140 }}>
+            <CardContent
+              sx={{
+                height: "100%",
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "center",
+              }}
+            >
+              <Box display="flex" alignItems="center">
                 <CartIcon color="primary" sx={{ mr: 1, fontSize: 32 }} />
                 <Box>
                   <Typography variant="h4">
@@ -253,9 +270,16 @@ function Billing() {
         </Grid>
 
         <Grid item xs={12} md={3}>
-          <Card>
-            <CardContent>
-              <Box display="flex" alignItems="center" mb={2}>
+          <Card sx={{ height: "100%", minHeight: 140 }}>
+            <CardContent
+              sx={{
+                height: "100%",
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "center",
+              }}
+            >
+              <Box display="flex" alignItems="center">
                 <CheckIcon color="success" sx={{ mr: 1, fontSize: 32 }} />
                 <Box>
                   <Typography variant="h4">
@@ -271,9 +295,16 @@ function Billing() {
         </Grid>
 
         <Grid item xs={12} md={3}>
-          <Card>
-            <CardContent>
-              <Box display="flex" alignItems="center" mb={2}>
+          <Card sx={{ height: "100%", minHeight: 140 }}>
+            <CardContent
+              sx={{
+                height: "100%",
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "center",
+              }}
+            >
+              <Box display="flex" alignItems="center">
                 <PendingIcon color="info" sx={{ mr: 1, fontSize: 32 }} />
                 <Box>
                   <Typography variant="h4">
@@ -399,6 +430,65 @@ function Billing() {
           </Table>
         </TableContainer>
       </Paper>
+
+      {/* Slot Adjustments History */}
+      {slotAdjustments.length > 0 && (
+        <Paper sx={{ mt: 4 }}>
+          <Box p={2}>
+            <Typography variant="h6">Manual Slot Adjustments</Typography>
+            <Typography variant="caption" color="text.secondary">
+              Adjustments made by superadmin
+            </Typography>
+          </Box>
+
+          <TableContainer>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Date</TableCell>
+                  <TableCell>Adjusted By</TableCell>
+                  <TableCell>Change</TableCell>
+                  <TableCell>Previous</TableCell>
+                  <TableCell>New Total</TableCell>
+                  <TableCell>Reason</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {slotAdjustments.map((adjustment) => (
+                  <TableRow key={adjustment.id}>
+                    <TableCell>
+                      {new Date(adjustment.created_at).toLocaleDateString()}
+                    </TableCell>
+                    <TableCell>{adjustment.adjusted_by_username}</TableCell>
+                    <TableCell>
+                      <Chip
+                        label={
+                          adjustment.slots_change > 0
+                            ? `+${adjustment.slots_change}`
+                            : adjustment.slots_change
+                        }
+                        size="small"
+                        color={
+                          adjustment.slots_change > 0 ? "success" : "error"
+                        }
+                      />
+                    </TableCell>
+                    <TableCell>{adjustment.previous_max_agents}</TableCell>
+                    <TableCell fontWeight={600}>
+                      {adjustment.new_max_agents}
+                    </TableCell>
+                    <TableCell>
+                      <Typography variant="body2">
+                        {adjustment.reason}
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Paper>
+      )}
 
       {/* Purchase Dialog */}
       <Dialog

@@ -30,17 +30,39 @@ A comprehensive voice assistant powered by Google Gemini Live API with session l
 pip install -r requirements.txt
 ```
 
-### 2. MongoDB Setup (Optional)
+### 2. MongoDB Setup
+
+**Option A: MongoDB Atlas (Cloud) - Recommended**
+
+Create a `.env` file in the project root:
+
+```env
+# MongoDB Atlas connection string
+MONGO_DB=mongodb+srv://username:password@cluster.mongodb.net/?retryWrites=true&w=majority
+MONGODB_DATABASE=voice_agent_crm
+GOOGLE_API_KEY=your_google_ai_studio_api_key_here
+```
+
+See [MONGODB_SETUP.md](MONGODB_SETUP.md) for detailed setup instructions.
+
+**Option B: Local MongoDB**
 
 - Install MongoDB locally and run on port 27017 (default)
 - Or skip this step - the app will work without MongoDB and save files locally
 
-### 3. Environment Variables
-
 Create a `.env` file:
 
+```env
+MONGODB_HOST=localhost
+MONGODB_PORT=27017
+MONGODB_DATABASE=voice_agent_crm
+GOOGLE_API_KEY=your_google_ai_studio_api_key_here
 ```
-GEMINI_API_KEY=your_google_ai_studio_api_key_here
+
+### 3. Test MongoDB Connection
+
+```bash
+python test_mongodb_connection.py
 ```
 
 ### 4. Run the Application

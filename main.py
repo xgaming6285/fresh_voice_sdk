@@ -99,7 +99,7 @@ pya = pyaudio.PyAudio()
 
 
 class SessionLogger:
-    def __init__(self, mongo_host="localhost", mongo_port=27017, db_name="voice_assistant", collection_name="sessions"):
+    def __init__(self, mongo_uri=None, mongo_host=None, mongo_port=None, db_name="voice_assistant", collection_name="sessions"):
         self.session_id = str(uuid.uuid4())
         self.session_start = datetime.now(timezone.utc)
         self.mongo_client = None
@@ -119,12 +119,32 @@ class SessionLogger:
         
         # Try to connect to MongoDB
         try:
-            self.mongo_client = MongoClient(mongo_host, mongo_port, serverSelectionTimeoutMS=5000)
+            # Check for MongoDB connection string (Atlas or full URI)
+            if mongo_uri is None:
+                mongo_uri = os.getenv('MONGO_DB') or os.getenv('MONGODB_URI')
+            
+            if mongo_uri:
+                # Use connection string (MongoDB Atlas or full URI)
+                self.mongo_client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+                print(f"✅ Connected to MongoDB Atlas")
+            else:
+                # Fallback to host:port format for local MongoDB
+                if mongo_host is None:
+                    mongo_host = os.getenv('MONGODB_HOST', 'localhost')
+                if mongo_port is None:
+                    mongo_port = int(os.getenv('MONGODB_PORT', '27017'))
+                self.mongo_client = MongoClient(mongo_host, mongo_port, serverSelectionTimeoutMS=5000)
+                print(f"✅ Connected to MongoDB at {mongo_host}:{mongo_port}")
+            
             # Test connection
             self.mongo_client.admin.command('ping')
+            
+            # Get database name from environment if not provided
+            if db_name == "voice_assistant":
+                db_name = os.getenv('MONGODB_DATABASE', 'voice_assistant')
+            
             self.db = self.mongo_client[db_name]
             self.collection = self.db[collection_name]
-            print(f"✅ Connected to MongoDB at {mongo_host}:{mongo_port}")
             print(f"📝 Session ID: {self.session_id}")
         except Exception as e:
             print(f"⚠️  MongoDB connection failed: {e}")
