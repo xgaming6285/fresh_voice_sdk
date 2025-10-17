@@ -52,7 +52,7 @@ def update_session_in_mongodb(session_id, update_data):
     """
     try:
         db = get_mongodb_connection()
-        if not db:
+        if db is None:
             return False
         
         # Add timestamp

@@ -649,85 +649,68 @@ function Sessions() {
           animation: "springIn 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)",
           animationDelay: "0.1s",
           animationFillMode: "both",
+          position: "relative",
         }}
       >
-        <Box
-          px={3}
-          py={1.5}
-          sx={{
-            background: "linear-gradient(135deg, #FFD54F 0%, #FF9800 100%)",
-            borderRadius: "8px 8px 0 0",
-          }}
-        >
+        {/* Floating Bulk Action Buttons - Appear when rows are selected */}
+        {selectedRows.length > 0 && (
           <Box
             sx={{
+              position: "absolute",
+              top: 60,
+              right: 20,
+              zIndex: 1000,
               display: "flex",
               alignItems: "center",
-              justifyContent: "space-between",
+              gap: 2,
+              background: "rgba(255, 255, 255, 0.95)",
+              backdropFilter: "blur(10px)",
+              padding: "12px 16px",
+              borderRadius: "12px",
+              boxShadow: "0 4px 20px rgba(0, 0, 0, 0.15)",
+              border: "1px solid rgba(0, 0, 0, 0.1)",
+              animation: "slideInRight 0.3s ease-out",
             }}
           >
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-              <Typography variant="h6">📊</Typography>
-              <Typography variant="h6" fontWeight={700}>
-                CRM Call Sessions
-              </Typography>
-              {selectedRows.length > 0 && (
-                <Chip
-                  label={`${selectedRows.length} selected`}
-                  size="small"
-                  color="primary"
-                  sx={{ ml: 2 }}
-                />
-              )}
-            </Box>
-            <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
-              <Button
-                variant="contained"
-                size="small"
-                startIcon={<TranscriptIcon />}
-                onClick={() =>
-                  setBulkDialog({ open: true, type: "transcript" })
-                }
-                disabled={bulkProcessing || selectedRows.length === 0}
-                sx={{
+            <Chip
+              label={`${selectedRows.length} selected`}
+              size="small"
+              color="primary"
+            />
+            <Button
+              variant="contained"
+              size="small"
+              startIcon={<TranscriptIcon />}
+              onClick={() => setBulkDialog({ open: true, type: "transcript" })}
+              disabled={bulkProcessing}
+              sx={{
+                background: "linear-gradient(135deg, #5C8AA6 0%, #426D87 100%)",
+                "&:hover": {
                   background:
-                    selectedRows.length === 0
-                      ? "rgba(92, 138, 166, 0.3)"
-                      : "linear-gradient(135deg, #5C8AA6 0%, #426D87 100%)",
-                  "&:hover": {
-                    background:
-                      selectedRows.length === 0
-                        ? "rgba(92, 138, 166, 0.3)"
-                        : "linear-gradient(135deg, #6B9FB5 0%, #517C96 100%)",
-                  },
-                }}
-              >
-                Bulk Transcript
-              </Button>
-              <Button
-                variant="contained"
-                size="small"
-                startIcon={<SummaryIcon />}
-                onClick={() => setBulkDialog({ open: true, type: "summary" })}
-                disabled={bulkProcessing || selectedRows.length === 0}
-                sx={{
+                    "linear-gradient(135deg, #6B9FB5 0%, #517C96 100%)",
+                },
+              }}
+            >
+              Bulk Transcript
+            </Button>
+            <Button
+              variant="contained"
+              size="small"
+              startIcon={<SummaryIcon />}
+              onClick={() => setBulkDialog({ open: true, type: "summary" })}
+              disabled={bulkProcessing}
+              sx={{
+                background: "linear-gradient(135deg, #6B9A5A 0%, #517542 100%)",
+                "&:hover": {
                   background:
-                    selectedRows.length === 0
-                      ? "rgba(107, 154, 90, 0.3)"
-                      : "linear-gradient(135deg, #6B9A5A 0%, #517542 100%)",
-                  "&:hover": {
-                    background:
-                      selectedRows.length === 0
-                        ? "rgba(107, 154, 90, 0.3)"
-                        : "linear-gradient(135deg, #7AAA69 0%, #608451 100%)",
-                  },
-                }}
-              >
-                Bulk Summary
-              </Button>
-            </Box>
+                    "linear-gradient(135deg, #7AAA69 0%, #608451 100%)",
+                },
+              }}
+            >
+              Bulk Summary
+            </Button>
           </Box>
-        </Box>
+        )}
         <DataGrid
           rows={sessions}
           columns={columns}

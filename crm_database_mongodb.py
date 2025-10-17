@@ -268,20 +268,52 @@ class MongoQuery:
         for arg in args:
             # Handle FilterExpression objects
             if isinstance(arg, FilterExpression):
-                field = arg.field
-                operator = arg.operator
-                value = self._convert_value(arg.value)
-                
-                if operator == '==':
-                    self.filters[field] = value
-                elif operator == '!=':
-                    self.filters[field] = {"$ne": value}
-                elif operator == 'in':
-                    self.filters[field] = {"$in": value}
-                elif operator == 'is_not':
-                    self.filters[field] = {"$ne": value}
+                # Handle OR conditions
+                if arg.is_or and arg.or_conditions:
+                    or_conditions = []
+                    for condition in arg.or_conditions:
+                        field = condition.field
+                        operator = condition.operator
+                        value = self._convert_value(condition.value)
+                        
+                        if operator == '==':
+                            or_conditions.append({field: value})
+                        elif operator == '!=':
+                            or_conditions.append({field: {"$ne": value}})
+                        elif operator == 'in':
+                            or_conditions.append({field: {"$in": value}})
+                        elif operator == 'is_not':
+                            or_conditions.append({field: {"$ne": value}})
+                        elif operator == 'contains':
+                            # Use regex for substring match
+                            or_conditions.append({field: {"$regex": str(value), "$options": "i"}})
+                        else:
+                            or_conditions.append({field: value})
+                    
+                    # Add OR conditions to filters
+                    if "$or" in self.filters:
+                        self.filters["$or"].extend(or_conditions)
+                    else:
+                        self.filters["$or"] = or_conditions
                 else:
-                    self.filters[field] = value
+                    # Handle single condition
+                    field = arg.field
+                    operator = arg.operator
+                    value = self._convert_value(arg.value)
+                    
+                    if operator == '==':
+                        self.filters[field] = value
+                    elif operator == '!=':
+                        self.filters[field] = {"$ne": value}
+                    elif operator == 'in':
+                        self.filters[field] = {"$in": value}
+                    elif operator == 'is_not':
+                        self.filters[field] = {"$ne": value}
+                    elif operator == 'contains':
+                        # Use regex for substring match
+                        self.filters[field] = {"$regex": str(value), "$options": "i"}
+                    else:
+                        self.filters[field] = value
             # Handle ColumnExpression with special methods
             elif hasattr(arg, 'field') and hasattr(arg, 'value'):
                 self.filters[arg.field] = self._convert_value(arg.value)
@@ -420,6 +452,10 @@ class ColumnExpression:
     def isnot(self, value):
         return FilterExpression(self.name, 'is_not', value)
     
+    def contains(self, value):
+        """Check if column contains value (substring match)"""
+        return FilterExpression(self.name, 'contains', value)
+    
     def desc(self):
         """Mark column for descending sort"""
         expr = ColumnExpression(self.name)
@@ -442,11 +478,33 @@ class Relationship:
 class FilterExpression:
     """Represents a filter expression"""
     def __init__(self, field, operator, value):
-        self.left = ColumnExpression(field)
+        self.left = ColumnExpression(field) if isinstance(field, str) else field
         self.right = type('Value', (), {'value': value})()
         self.operator = operator
-        self.field = field
+        self.field = field if isinstance(field, str) else None
         self.value = value
+        self.is_or = False  # Flag to indicate if this is an OR expression
+        self.or_conditions = []  # List of conditions for OR
+    
+    def __or__(self, other):
+        """Support | operator for OR conditions"""
+        or_expr = FilterExpression(None, 'or', None)
+        or_expr.is_or = True
+        
+        # Collect all conditions
+        conditions = []
+        if self.is_or:
+            conditions.extend(self.or_conditions)
+        else:
+            conditions.append(self)
+        
+        if other.is_or:
+            conditions.extend(other.or_conditions)
+        else:
+            conditions.append(other)
+        
+        or_expr.or_conditions = conditions
+        return or_expr
 
 # Model Classes
 class User:

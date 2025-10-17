@@ -99,7 +99,7 @@ pya = pyaudio.PyAudio()
 
 
 class SessionLogger:
-    def __init__(self, mongo_uri=None, mongo_host=None, mongo_port=None, db_name="voice_assistant", collection_name="sessions"):
+    def __init__(self, mongo_uri=None, mongo_host=None, mongo_port=None, db_name="voice_agent_crm", collection_name="call_sessions"):
         self.session_id = str(uuid.uuid4())
         self.session_start = datetime.now(timezone.utc)
         self.mongo_client = None
@@ -140,8 +140,8 @@ class SessionLogger:
             self.mongo_client.admin.command('ping')
             
             # Get database name from environment if not provided
-            if db_name == "voice_assistant":
-                db_name = os.getenv('MONGODB_DATABASE', 'voice_assistant')
+            if db_name == "voice_agent_crm":
+                db_name = os.getenv('MONGODB_DATABASE', 'voice_agent_crm')
             
             self.db = self.mongo_client[db_name]
             self.collection = self.db[collection_name]
