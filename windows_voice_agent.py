@@ -2155,22 +2155,60 @@ class RTPSession:
     
     def _process_output_queue(self):
         """
-        Dequeue G.711 payloads and transmit with optimized RTP pacing for real-time voice.
-        Uses 20ms packets (standard VoIP packetization).
+        Dequeue G.711 payloads and transmit with a high-precision, self-correcting
+        RTP pacing loop for smooth, real-time voice.
         """
-        ptime_ms = 20  # Standard 20ms packets for optimal real-time performance
-        frame_bytes = 160  # 20ms of G.711 μ-law (8kHz * 0.020s * 1 byte/sample)
+        import time  # Ensure time is available
+        import queue # Ensure queue is available (for queue.Empty)
+        
+        ptime_seconds = 0.020  # 20ms packet interval in seconds
+        
+        # Use perf_counter for high-resolution timing
+        try:
+            # Wait for the first packet to arrive to set the start time
+            payload = self.output_queue.get(timeout=1.0) 
+        except queue.Empty:
+            # No audio for 1 second, just start the loop
+            pass
+        except Exception:
+            pass # Handle other errors
+            
+        start_time = time.perf_counter()
+        next_packet_time = start_time
         
         while self.output_processing:
             try:
-                payload = self.output_queue.get(timeout=0.05)  # Reduced timeout for lower latency
-            except Exception:
-                # No artificial delays or comfort noise - stay completely silent
+                # Use a tighter timeout (e.g., 2-3 packet intervals)
+                payload = self.output_queue.get(timeout=0.060)
+            except queue.Empty:
+                # This is normal when the AI is not speaking
+                # Reset the pacer to avoid building up "missed" time
+                next_packet_time = time.perf_counter() + ptime_seconds
                 continue
+            except Exception:
+                continue # Other queue errors
 
-            # Transmit immediately with precise pacing
+            # Transmit the packet
             self._send_rtp(payload)
-            self._sleep_ms(ptime_ms)
+            
+            # Calculate the precise time for the next packet
+            next_packet_time += ptime_seconds
+            
+            # Calculate how long to sleep
+            sleep_duration = next_packet_time - time.perf_counter()
+            
+            if sleep_duration > 0:
+                # We have time to spare, sleep for the calculated duration
+                time.sleep(sleep_duration)
+            else:
+                # We are running late (loop took too long or sleep overslept)
+                # Do not sleep; proceed immediately to send the next packet
+                
+                # If we're severely late (by more than one packet time), 
+                # reset the timer to prevent a massive burst of packets.
+                if sleep_duration < -ptime_seconds:
+                    logger.warning(f"RTP output queue running late, resetting pacer (lag: {sleep_duration:.3f}s)")
+                    next_packet_time = time.perf_counter() + ptime_seconds
     
     def _send_rtp(self, payload: bytes):
         """Send RTP packet with payload"""
