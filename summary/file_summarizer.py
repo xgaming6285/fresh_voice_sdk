@@ -3,9 +3,16 @@ import sys
 import google.generativeai as genai
 from pathlib import Path
 import json
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Configure the API
-API_KEY = "AIzaSyCibLL34pGHp09Amzu_IBFaSlDbbKJZxm8"
+API_KEY = os.getenv("GOOGLE_API_KEY_SUMMARY")
+if not API_KEY:
+    raise ValueError("GOOGLE_API_KEY_SUMMARY not found in .env file")
+
 MODEL_NAME = "gemini-2.5-flash-lite"  # As requested
 
 genai.configure(api_key=API_KEY)
