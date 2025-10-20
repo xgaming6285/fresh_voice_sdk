@@ -2261,10 +2261,10 @@ class RTPSession:
         return audioop.mul(pcm, 2, ratio)
     
     def pcm_to_ulaw(self, pcm_data: bytes) -> bytes:
-        """Convert 16-bit PCM to μ-law with ultra-light soft limiting"""
+        """Convert 16-bit PCM to μ-law"""
         try:
             # Apply ultra-light soft limiting to prevent μ-law harshness on peaks
-            pcm_data = self.soft_limit_16bit(pcm_data, 0.95)
+            # pcm_data = self.soft_limit_16bit(pcm_data, 0.95) # REMOVED: was causing clipping distortion
             
             # Convert to μ-law
             return audioop.lin2ulaw(pcm_data, 2)
@@ -3938,18 +3938,29 @@ class WindowsVoiceSession:
     
     def convert_telephony_to_gemini(self, audio_data: bytes) -> bytes:
         """
-        Input: 16-bit mono PCM at 8000 Hz (after μ-law decode, if applicable).
+        Input: 16-bit mono PCM at 8000 Hz.
         Output: 16-bit mono PCM at 16000 Hz for the model.
-        Simple 2x upsampling - no anti-aliasing needed for upsampling.
+        Uses high-quality polyphase resampling instead of simple repetition.
         """
-        # Convert bytes to numpy array
-        in_array = np.frombuffer(audio_data, dtype=np.int16)
-        
-        # 8kHz -> 16kHz is exactly 2x upsampling - just repeat samples
-        out_array = np.repeat(in_array, 2)
-        
-        # Convert back to bytes
-        return out_array.tobytes()
+        try:
+            # Convert bytes to numpy array
+            in_array = np.frombuffer(audio_data, dtype=np.int16)
+            
+            # 8kHz -> 16kHz (2x upsample)
+            # Use resample_poly for high-quality upsampling
+            out_array = resample_poly(in_array, 2, 1) # Up=2, Down=1
+            
+            # Convert back to int16
+            out_array = np.clip(out_array, -32768, 32767).astype(np.int16)
+            
+            # Convert back to bytes
+            return out_array.tobytes()
+        except Exception as e:
+            logger.warning(f"Resample poly (8k->16k) failed: {e}, falling back to sample repetition")
+            # Fallback to the original fast (but low-quality) method
+            in_array = np.frombuffer(audio_data, dtype=np.int16)
+            out_array = np.repeat(in_array, 2)
+            return out_array.tobytes()
 
     def convert_gemini_to_telephony(self, model_pcm: bytes) -> bytes:
         """
