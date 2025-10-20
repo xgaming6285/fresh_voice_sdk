@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
 import queue
-from scipy.signal import decimate
+from scipy.signal import resample_poly
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -3902,13 +3902,12 @@ class WindowsVoiceSession:
         """
         Input: 16-bit mono PCM at 8000 Hz (after μ-law decode, if applicable).
         Output: 16-bit mono PCM at 16000 Hz for the model.
-        Simple 2x upsampling - no anti-aliasing needed.
+        Simple 2x upsampling - no anti-aliasing needed for upsampling.
         """
         # Convert bytes to numpy array
         in_array = np.frombuffer(audio_data, dtype=np.int16)
         
-        # 8kHz -> 16kHz is exactly 2x upsampling
-        # Simply repeat each sample (zero-order hold) - fast and clean for upsampling
+        # 8kHz -> 16kHz is exactly 2x upsampling - just repeat samples
         out_array = np.repeat(in_array, 2)
         
         # Convert back to bytes
@@ -3918,26 +3917,31 @@ class WindowsVoiceSession:
         """
         Input: model PCM as 16-bit mono at 24000 Hz (typical).
         Output: 16-bit mono PCM at 8000 Hz ready for μ-law encode.
-        Uses proper anti-aliasing to prevent noise/artifacts.
+        Uses resample_poly with optimized settings for speed + quality balance.
         """
-        # Convert bytes to numpy array
-        in_array = np.frombuffer(model_pcm, dtype=np.int16).astype(np.float32)
-        
-        # 24000 Hz -> 8000 Hz is exactly 3:1 decimation
-        # Use scipy.signal.decimate with proper anti-aliasing filter to prevent artifacts
-        # This applies a low-pass filter before downsampling to prevent aliasing
         try:
-            # decimate by factor of 3 with IIR filter (faster than FIR, good quality)
-            out_array = decimate(in_array, 3, ftype='iir', zero_phase=True)
+            # Convert bytes to numpy array
+            in_array = np.frombuffer(model_pcm, dtype=np.int16)
+            
+            # 24000 Hz -> 8000 Hz is exactly 3:1 decimation
+            # resample_poly(x, up, down) is optimized for integer ratios
+            # Use window=('kaiser', 5.0) for good quality with minimal latency
+            out_array = resample_poly(in_array, 1, 3, window=('kaiser', 5.0))
+            
             # Convert back to int16
             out_array = np.clip(out_array, -32768, 32767).astype(np.int16)
+            
+            return out_array.tobytes()
         except Exception as e:
-            logger.warning(f"Decimation failed, using simple method: {e}")
-            # Fallback to simple decimation if there's an error
-            out_array = in_array[::3].astype(np.int16)
-        
-        # Convert back to bytes
-        return out_array.tobytes()
+            logger.warning(f"Resample poly failed: {e}")
+            # Fallback to audioop
+            try:
+                converted, _ = audioop.ratecv(model_pcm, 2, 1, 24000, 8000, None)
+                return converted
+            except:
+                # Last resort: simple decimation
+                in_array = np.frombuffer(model_pcm, dtype=np.int16)
+                return in_array[::3].tobytes()
     
     
     def cleanup(self):
@@ -4839,11 +4843,11 @@ if __name__ == "__main__":
         logger.info("   📋 Automatic transcription disabled - available through CRM interface")
     else:
         logger.info("⚠️ Transcription: DISABLED (no method available)")
-    logger.info("🎵 Audio Processing: OPTIMIZED FOR MINIMAL LATENCY")
-    logger.info("   ⚡ Fast upsampling (zero-order hold) for 8kHz→16kHz")
-    logger.info("   ⚡ Anti-aliased decimation for 24kHz→8kHz (prevents noise/artifacts)")
-    logger.info("   ⚡ No VAD, filtering, or preprocessing - pass-through mode")
-    logger.info("   ⚡ Minimum latency with clean audio quality")
+    logger.info("🎵 Audio Processing: BALANCED QUALITY & LATENCY")
+    logger.info("   ⚡ Fast upsampling (sample repetition) for 8kHz→16kHz")
+    logger.info("   ⚡ Optimized resample_poly for 24kHz→8kHz (clean + reasonably fast)")
+    logger.info("   ⚡ Kaiser window (beta=5.0) for good anti-aliasing with minimal latency")
+    logger.info("   ⚡ No VAD or preprocessing - direct audio passthrough")
     logger.info("🔊 Greeting System: ENABLED for both incoming and outbound calls")
     logger.info("   🎙️ Plays greeting.wav file automatically when call is answered")
     logger.info("   🤖 AI responds naturally when user speaks (no artificial triggers)")
