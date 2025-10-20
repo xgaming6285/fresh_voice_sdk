@@ -23,7 +23,6 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
 import queue
-from scipy import signal
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,7 +39,6 @@ logging.getLogger('google_genai.types').setLevel(logging.ERROR)
 
 import pyaudio
 import requests
-from scipy.signal import resample
 import numpy as np
 
 # Multi-tier transcription system with Windows-compatible fallbacks
@@ -118,386 +116,29 @@ else:
     logger.warning("💡 Or for local transcription: pip install faster-whisper")
 
 class AudioPreprocessor:
-    """Advanced audio preprocessing for noise reduction and speech enhancement"""
+    """Ultra-minimal audio preprocessing for lowest latency"""
     
     def __init__(self, sample_rate: int = 8000):
         self.sample_rate = sample_rate
-        self.frame_size = int(sample_rate * 0.025)  # 25ms frames
-        self.hop_size = int(sample_rate * 0.010)   # 10ms hop
-        
-        # Noise estimation parameters
-        self.noise_estimate = None
-        self.alpha = 0.95  # Smoothing factor for noise estimation
-        self.noise_floor = 0.01  # Minimum noise floor
-        
-        # Speech enhancement parameters
-        self.pre_emphasis = 0.97
-        self.previous_sample = 0
-        
-        # Advanced Voice Activity Detection (VAD)
-        self.energy_threshold = None
-        self.energy_history = []
-        self.max_history = 50  # 500ms of history
-        self.zcr_threshold = None  # Zero crossing rate threshold
-        self.zcr_history = []
-        
-        # Speech probability tracking
-        self.speech_frames = 0
-        self.silence_frames = 0
-        self.min_speech_frames = 3  # Minimum consecutive frames to consider as speech
-        self.min_silence_frames = 10  # Minimum consecutive frames to consider as silence
-        self.is_speech_active = False
-        
-        # Aggressive noise gate for non-speech
-        self.noise_gate_threshold = 0.01  # Less aggressive threshold for better speech detection
-        self.speech_energy_multiplier = 2.0  # Speech should be 2x louder than noise
-        
-        # Dynamic range compression
-        self.compressor_threshold = 0.7
-        self.compressor_ratio = 4.0
-        self.compressor_attack = 0.003  # 3ms
-        self.compressor_release = 0.1   # 100ms
-        self.compressor_envelope = 0.0
-        
-        logger.info("🎵 AudioPreprocessor initialized with advanced VAD for speech focus")
+        logger.info("🎵 AudioPreprocessor initialized in PASS-THROUGH mode (minimal latency)")
     
     def process_audio(self, audio_data: bytes) -> bytes:
         """
-        Apply comprehensive audio preprocessing to improve transcription accuracy.
+        Pass-through mode for ultra-low latency.
+        No processing, just return the audio as-is.
         
         Args:
             audio_data: Raw PCM audio data (16-bit, mono, 8kHz)
             
         Returns:
-            Processed audio data with noise reduction and enhancement
+            Unmodified audio data for lowest latency
         """
-        try:
-            if len(audio_data) < 2:
-                return audio_data
-                
-            # Convert to numpy array
-            audio_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
-            
-            if len(audio_array) == 0:
-                return audio_data
-                
-            # Step 1: Pre-emphasis filter (enhance high frequencies)
-            audio_array = self._apply_pre_emphasis(audio_array)
-            
-            # Step 2: Bandpass filter (focus on speech frequencies)
-            audio_array = self._apply_bandpass_filter(audio_array)
-            
-            # Step 3: Voice activity detection and noise gate
-            audio_array = self._apply_noise_gate(audio_array)
-            
-            # Step 4: Spectral noise reduction
-            audio_array = self._spectral_noise_reduction(audio_array)
-            
-            # Step 5: Dynamic range compression
-            audio_array = self._apply_compression(audio_array)
-            
-            # Step 6: Normalize audio levels
-            audio_array = self._normalize_audio(audio_array)
-            
-            # Convert back to int16
-            audio_array = np.clip(audio_array * 32767, -32768, 32767).astype(np.int16)
-            
-            return audio_array.tobytes()
-            
-        except Exception as e:
-            logger.warning(f"⚠️ Audio preprocessing failed, using original: {e}")
-            return audio_data
-    
-    def _apply_pre_emphasis(self, audio: np.ndarray) -> np.ndarray:
-        """Apply pre-emphasis filter to enhance high frequencies"""
-        try:
-            if len(audio) == 0:
-                return audio
-                
-            # Simple high-pass filter: y[n] = x[n] - α * x[n-1]
-            emphasized = np.zeros_like(audio)
-            emphasized[0] = audio[0]
-            
-            for i in range(1, len(audio)):
-                emphasized[i] = audio[i] - self.pre_emphasis * audio[i-1]
-            
-            return emphasized
-            
-        except Exception as e:
-            logger.debug(f"Pre-emphasis failed: {e}")
-            return audio
-    
-    def _apply_bandpass_filter(self, audio: np.ndarray) -> np.ndarray:
-        """Apply bandpass filter for telephony speech frequencies (300-3400 Hz)"""
-        try:
-            if len(audio) < 10:  # Need minimum samples for filtering
-                return audio
-                
-            # Design bandpass filter for speech frequencies
-            nyquist = self.sample_rate / 2
-            low_freq = 300 / nyquist   # Normalize frequencies
-            high_freq = 3400 / nyquist
-            
-            # Ensure frequencies are valid
-            low_freq = max(0.01, min(low_freq, 0.99))
-            high_freq = max(low_freq + 0.01, min(high_freq, 0.99))
-            
-            # Create bandpass filter
-            b, a = signal.butter(4, [low_freq, high_freq], btype='band')
-            
-            # Apply zero-phase filtering to avoid delay
-            filtered = signal.filtfilt(b, a, audio)
-            
-            return filtered.astype(np.float32)
-            
-        except Exception as e:
-            logger.debug(f"Bandpass filtering failed: {e}")
-            return audio
-    
-    def _calculate_zero_crossing_rate(self, audio: np.ndarray) -> float:
-        """Calculate zero crossing rate for speech detection"""
-        try:
-            if len(audio) < 2:
-                return 0.0
-            
-            # Count zero crossings
-            zero_crossings = np.sum(np.abs(np.diff(np.sign(audio)))) / 2
-            zcr = zero_crossings / len(audio)
-            
-            return zcr
-        except Exception as e:
-            logger.debug(f"ZCR calculation failed: {e}")
-            return 0.0
-    
-    def _is_speech(self, audio: np.ndarray) -> bool:
-        """
-        Advanced VAD: Determine if audio contains speech using multiple features.
-        Returns True only if confident it's speech, False otherwise.
-        """
-        try:
-            if len(audio) == 0:
-                return False
-            
-            # Feature 1: Energy (RMS)
-            energy = np.sqrt(np.mean(audio ** 2))
-            
-            # Feature 2: Zero Crossing Rate
-            zcr = self._calculate_zero_crossing_rate(audio)
-            
-            # Update histories
-            self.energy_history.append(energy)
-            if len(self.energy_history) > self.max_history:
-                self.energy_history.pop(0)
-            
-            self.zcr_history.append(zcr)
-            if len(self.zcr_history) > self.max_history:
-                self.zcr_history.pop(0)
-            
-            # Initialize thresholds
-            if self.energy_threshold is None and len(self.energy_history) >= 20:
-                # More conservative initial threshold
-                noise_floor = np.percentile(self.energy_history, 30)
-                self.energy_threshold = max(noise_floor * self.speech_energy_multiplier, self.noise_gate_threshold)
-                logger.info(f"🎤 VAD initialized: energy_threshold={self.energy_threshold:.4f}")
-            
-            if self.zcr_threshold is None and len(self.zcr_history) >= 20:
-                # Speech typically has ZCR between 0.02 and 0.15
-                self.zcr_threshold = np.percentile(self.zcr_history, 70)
-                logger.debug(f"🎤 VAD ZCR threshold: {self.zcr_threshold:.4f}")
-            
-            # Need both thresholds initialized
-            if self.energy_threshold is None or self.zcr_threshold is None:
-                return False  # Don't send audio during calibration
-            
-            # Adaptive threshold update (slowly track noise floor)
-            if len(self.energy_history) >= self.max_history:
-                recent_noise_floor = np.percentile(self.energy_history, 25)
-                self.energy_threshold = 0.95 * self.energy_threshold + 0.05 * (recent_noise_floor * self.speech_energy_multiplier)
-                self.energy_threshold = max(self.energy_threshold, self.noise_gate_threshold)
-            
-            # Decision logic: Both energy AND zero-crossing rate must indicate speech
-            is_energetic = energy > self.energy_threshold
-            has_speech_zcr = zcr > (self.zcr_threshold * 0.5) and zcr < 0.2  # Speech ZCR range
-            
-            # Speech detection with hysteresis
-            if is_energetic and has_speech_zcr:
-                self.speech_frames += 1
-                self.silence_frames = 0
-                
-                # Need consecutive speech frames to activate
-                if self.speech_frames >= self.min_speech_frames:
-                    self.is_speech_active = True
-            else:
-                self.silence_frames += 1
-                self.speech_frames = 0
-                
-                # Need consecutive silence frames to deactivate
-                if self.silence_frames >= self.min_silence_frames:
-                    self.is_speech_active = False
-            
-            return self.is_speech_active
-            
-        except Exception as e:
-            logger.debug(f"Speech detection failed: {e}")
-            return False
-    
-    def _apply_noise_gate(self, audio: np.ndarray) -> np.ndarray:
-        """Apply aggressive voice activity detection and noise gating"""
-        try:
-            if len(audio) == 0:
-                return audio
-            
-            # Check if this is speech
-            is_speech = self._is_speech(audio)
-            
-            if not is_speech:
-                # COMPLETELY ZERO OUT non-speech audio (don't send noise to Gemini)
-                return np.zeros_like(audio)
-            
-            # If speech, return as-is (will be further processed)
-            return audio
-            
-        except Exception as e:
-            logger.debug(f"Noise gate failed: {e}")
-            return audio
-    
-    def _spectral_noise_reduction(self, audio: np.ndarray) -> np.ndarray:
-        """Apply spectral subtraction for noise reduction"""
-        try:
-            if len(audio) < self.frame_size:
-                return audio
-                
-            # Frame the signal
-            frames = []
-            for i in range(0, len(audio) - self.frame_size + 1, self.hop_size):
-                frame = audio[i:i + self.frame_size]
-                if len(frame) == self.frame_size:
-                    frames.append(frame)
-            
-            if not frames:
-                return audio
-                
-            enhanced_frames = []
-            
-            for frame in frames:
-                # Apply window
-                windowed = frame * np.hanning(len(frame))
-                
-                # FFT
-                fft = np.fft.rfft(windowed)
-                magnitude = np.abs(fft)
-                phase = np.angle(fft)
-                
-                # Update noise estimate (use first few frames for noise estimation)
-                if self.noise_estimate is None:
-                    self.noise_estimate = magnitude
-                else:
-                    # Adaptive noise estimation
-                    is_speech = np.mean(magnitude) > np.mean(self.noise_estimate) * 2
-                    if not is_speech:
-                        # Update noise estimate during quiet periods
-                        self.noise_estimate = self.alpha * self.noise_estimate + (1 - self.alpha) * magnitude
-                
-                # Spectral subtraction
-                enhanced_magnitude = magnitude - 0.5 * self.noise_estimate
-                enhanced_magnitude = np.maximum(enhanced_magnitude, 0.1 * magnitude)
-                
-                # Reconstruct signal
-                enhanced_fft = enhanced_magnitude * np.exp(1j * phase)
-                enhanced_frame = np.fft.irfft(enhanced_fft)
-                
-                # Remove windowing effect
-                if len(enhanced_frame) == self.frame_size:
-                    enhanced_frames.append(enhanced_frame)
-            
-            if not enhanced_frames:
-                return audio
-                
-            # Overlap-add reconstruction
-            output_length = len(frames) * self.hop_size + self.frame_size - self.hop_size
-            enhanced_audio = np.zeros(output_length)
-            
-            for i, frame in enumerate(enhanced_frames):
-                start = i * self.hop_size
-                end = start + len(frame)
-                if end <= len(enhanced_audio):
-                    enhanced_audio[start:end] += frame
-            
-            # Trim to original length
-            enhanced_audio = enhanced_audio[:len(audio)]
-            
-            return enhanced_audio.astype(np.float32)
-            
-        except Exception as e:
-            logger.debug(f"Spectral noise reduction failed: {e}")
-            return audio
-    
-    def _apply_compression(self, audio: np.ndarray) -> np.ndarray:
-        """Apply dynamic range compression to even out volume levels"""
-        try:
-            if len(audio) == 0:
-                return audio
-                
-            compressed = np.zeros_like(audio)
-            
-            for i, sample in enumerate(audio):
-                # Calculate envelope
-                input_level = abs(sample)
-                
-                if input_level > self.compressor_envelope:
-                    # Attack
-                    self.compressor_envelope += (input_level - self.compressor_envelope) * self.compressor_attack
-                else:
-                    # Release
-                    self.compressor_envelope += (input_level - self.compressor_envelope) * self.compressor_release
-                
-                # Calculate gain reduction
-                if self.compressor_envelope > self.compressor_threshold:
-                    excess = self.compressor_envelope - self.compressor_threshold
-                    gain_reduction = 1.0 - (excess * (1.0 - 1.0/self.compressor_ratio))
-                    compressed[i] = sample * gain_reduction
-                else:
-                    compressed[i] = sample
-            
-            return compressed
-            
-        except Exception as e:
-            logger.debug(f"Compression failed: {e}")
-            return audio
-    
-    def _normalize_audio(self, audio: np.ndarray) -> np.ndarray:
-        """Normalize audio levels while preserving dynamics"""
-        try:
-            if len(audio) == 0:
-                return audio
-                
-            # Calculate RMS
-            rms = np.sqrt(np.mean(audio ** 2))
-            
-            if rms > 1e-6:  # Avoid division by zero
-                # Target RMS level (around -20 dBFS)
-                target_rms = 0.1
-                gain = target_rms / rms
-                
-                # Limit gain to prevent excessive amplification
-                gain = min(gain, 10.0)  # Max 20dB gain
-                
-                normalized = audio * gain
-                
-                # Soft limiting to prevent clipping
-                normalized = np.tanh(normalized * 0.9) / 0.9
-                
-                return normalized
-            
-            return audio
-            
-        except Exception as e:
-            logger.debug(f"Normalization failed: {e}")
-            return audio
+        return audio_data
 
 # Import our existing voice agent components
 from main import SessionLogger, SEND_SAMPLE_RATE, RECEIVE_SAMPLE_RATE, FORMAT, CHANNELS
 from google import genai
+from google.genai import types
 
 # Import CRM API
 from crm_api import crm_router
@@ -1078,27 +719,27 @@ def create_voice_config(language_info: Dict[str, Any], custom_config: Dict[str, 
         if additional_prompt:
             system_text += f" Additional instructions: {additional_prompt}"
     
-    return {
-        "response_modalities": ["AUDIO"],
-        "speech_config": {
-            "voice_config": {
-                "prebuilt_voice_config": {
-                    "voice_name": "Puck"
-                }
-            }
-        },
-        "system_instruction": {
-            "parts": [
-                {
-                    "text": system_text
-                }
-            ]
-        }
-    }
+    # Return a types.LiveConnectConfig object with the new structure
+    return types.LiveConnectConfig(
+        response_modalities=["AUDIO"],
+        media_resolution="MEDIA_RESOLUTION_MEDIUM",
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
+            )
+        ),
+        system_instruction=types.Content(
+            parts=[types.Part(text=system_text)]
+        ),
+        context_window_compression=types.ContextWindowCompressionConfig(
+            trigger_tokens=25600,
+            sliding_window=types.SlidingWindow(target_tokens=12800),
+        ),
+    )
 
 # Default voice config (Bulgarian) - will be overridden dynamically
 DEFAULT_VOICE_CONFIG = create_voice_config(get_language_config('BG'))
-MODEL = "models/gemini-2.0-flash-live-001"
+MODEL = "models/gemini-2.5-flash-native-audio-preview-09-2025"
 
 class AudioTranscriber:
     """Handles audio transcription using multiple methods with Windows-compatible fallbacks"""
@@ -2258,9 +1899,21 @@ class RTPSession:
             # Convert telephony audio to Gemini format
             processed_audio = self.voice_session.convert_telephony_to_gemini(audio_chunk)
             
-            # Send audio to Gemini
+            # Log audio transmission for debugging
+            if not hasattr(self, '_audio_send_count'):
+                self._audio_send_count = 0
+                self._audio_send_bytes = 0
+            
+            self._audio_send_count += 1
+            self._audio_send_bytes += len(processed_audio)
+            
+            # Log every 50 packets to avoid log spam
+            if self._audio_send_count % 50 == 1:
+                logger.info(f"📤 Sent {self._audio_send_count} audio packets ({self._audio_send_bytes} bytes total) to Gemini")
+            
+            # Send audio to Gemini with correct MIME type format
             await self.voice_session.gemini_session.send(
-                input={"data": processed_audio, "mime_type": "audio/pcm;rate=16000"}
+                input={"data": processed_audio, "mime_type": "audio/pcm"}
             )
         except Exception as e:
             logger.error(f"Error sending audio to Gemini: {e}")
@@ -2280,63 +1933,46 @@ class RTPSession:
                         break
                         
                     try:
-                        # First check for server_content which contains the actual audio
-                        if hasattr(response, 'server_content') and response.server_content:
-                            if hasattr(response.server_content, 'model_turn') and response.server_content.model_turn:
-                                for part in response.server_content.model_turn.parts:
-                                    if hasattr(part, 'inline_data') and part.inline_data:
-                                        if hasattr(part.inline_data, 'mime_type') and 'audio' in part.inline_data.mime_type:
-                                            audio_data = part.inline_data.data
-                                            turn_had_content = True
-                                            if isinstance(audio_data, str):
-                                                # Base64 encoded audio
-                                                try:
-                                                    audio_bytes = base64.b64decode(audio_data)
-                                                    # Convert and send in smaller chunks
-                                                    telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_bytes)
-                                                    
-                                                    # Send immediately in small chunks for lowest latency
-                                                    self._send_audio_immediate(telephony_audio)
-                                                except Exception as e:
-                                                    logger.error(f"Error decoding base64 audio: {e}")
-                                            elif isinstance(audio_data, bytes):
-                                                # Convert and send in smaller chunks to avoid overwhelming the receiver
-                                                telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_data)
-                                                
-                                                # Send immediately in small chunks for lowest latency
-                                                self._send_audio_immediate(telephony_audio)
-                                    
-                                    # Also handle text parts for logging
-                                    if hasattr(part, 'text') and part.text:
-                                        turn_had_content = True
-                                        self.voice_session.session_logger.log_transcript(
-                                            "assistant_response", part.text.strip()
-                                        )
-                                        logger.info(f"AI Response: {part.text.strip()}")
-                        
-                        # Also check direct data field (older format)
-                        elif hasattr(response, 'data') and response.data:
+                        # Check for audio data in the response (new API format)
+                        if hasattr(response, 'data') and response.data:
                             turn_had_content = True
-                            if isinstance(response.data, bytes):
-                                telephony_audio = self.voice_session.convert_gemini_to_telephony(response.data)
+                            audio_bytes = response.data
+                            if isinstance(audio_bytes, bytes):
+                                # Log audio reception for debugging
+                                if not hasattr(self, '_audio_recv_count'):
+                                    self._audio_recv_count = 0
+                                    self._audio_recv_bytes = 0
+                                
+                                self._audio_recv_count += 1
+                                self._audio_recv_bytes += len(audio_bytes)
+                                
+                                # Log every 10 audio chunks received
+                                if self._audio_recv_count % 10 == 1:
+                                    logger.info(f"📥 Received {self._audio_recv_count} audio chunks ({self._audio_recv_bytes} bytes total) from Gemini")
+                                
+                                # Convert from 24kHz to 8kHz telephony format
+                                telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_bytes)
                                 # Send immediately in small chunks for lowest latency
                                 self._send_audio_immediate(telephony_audio)
-                            elif isinstance(response.data, str):
+                            elif isinstance(audio_bytes, str):
                                 try:
-                                    audio_bytes = base64.b64decode(response.data)
-                                    telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_bytes)
-                                    # Send immediately in small chunks for lowest latency
+                                    # Decode base64 if needed
+                                    decoded = base64.b64decode(audio_bytes)
+                                    telephony_audio = self.voice_session.convert_gemini_to_telephony(decoded)
                                     self._send_audio_immediate(telephony_audio)
                                 except:
                                     pass
                         
-                        # Handle text response
+                        # Handle text response (for logging only, should be minimal with audio-only mode)
                         if hasattr(response, 'text') and response.text:
                             turn_had_content = True
-                            self.voice_session.session_logger.log_transcript(
-                                "assistant_response", response.text
-                            )
-                            logger.info(f"AI Response: {response.text}")
+                            # Only log if it's not thinking/reasoning text
+                            text = response.text.strip()
+                            if text and not text.startswith('**'):  # Skip markdown thinking text
+                                self.voice_session.session_logger.log_transcript(
+                                    "assistant_response", text
+                                )
+                                logger.info(f"AI Response: {text}")
                             
                     except Exception as e:
                         if self.input_processing:
@@ -2373,12 +2009,12 @@ class RTPSession:
         logger.info("🎧 Stopped continuous response receiver")
     
     def _send_audio_immediate(self, audio_data: bytes):
-        """Send audio data immediately in ultra-small chunks for lowest latency"""
+        """Send audio data immediately in optimized chunks for real-time streaming"""
         if not audio_data:
             return
             
-        # Send in large chunks (30ms each) for maximum performance
-        chunk_size = 480  # 30ms at 8kHz = 240 samples * 2 bytes = 480 bytes
+        # Send in 20ms chunks for optimal real-time performance (standard for VoIP)
+        chunk_size = 320  # 20ms at 8kHz = 160 samples * 2 bytes = 320 bytes
         
         for i in range(0, len(audio_data), chunk_size):
             chunk = audio_data[i:i + chunk_size]
@@ -2389,14 +2025,15 @@ class RTPSession:
     
     def send_audio(self, pcm16: bytes):
         """
-        Takes 16-bit mono PCM at 8000 Hz, μ-law encodes, then enqueues in ultra-small packets for low latency.
+        Takes 16-bit mono PCM at 8000 Hz, μ-law encodes, then enqueues for real-time transmission.
+        Optimized for 20ms packets (standard VoIP packet size).
         """
         # Record outgoing audio before encoding
         if self.call_recorder:
             self.call_recorder.record_outgoing_audio(pcm16)
         
         ulaw = self.pcm_to_ulaw(pcm16)  # your existing encoder
-        packet_size = 240  # 30ms @ 8000 Hz, 1 byte/sample for G.711 - maximum stability
+        packet_size = 160  # 20ms @ 8000 Hz, 1 byte/sample for G.711 - optimal for real-time VoIP
         for i in range(0, len(ulaw), packet_size):
             self.output_queue.put(ulaw[i:i + packet_size])
     
@@ -2517,20 +2154,20 @@ class RTPSession:
     
     def _process_output_queue(self):
         """
-        Dequeue G.711 payloads and transmit with ultra-low latency RTP pacing.
-        Optimized for immediate audio delivery.
+        Dequeue G.711 payloads and transmit with optimized RTP pacing for real-time voice.
+        Uses 20ms packets (standard VoIP packetization).
         """
-        ptime_ms = 30  # Large 30ms chunks for maximum stability
-        frame_bytes = 240  # 30ms of G.711 for high performance
+        ptime_ms = 20  # Standard 20ms packets for optimal real-time performance
+        frame_bytes = 160  # 20ms of G.711 μ-law (8kHz * 0.020s * 1 byte/sample)
         
         while self.output_processing:
             try:
-                payload = self.output_queue.get(timeout=0.1)  # Larger timeout for stability
+                payload = self.output_queue.get(timeout=0.05)  # Reduced timeout for lower latency
             except Exception:
                 # No artificial delays or comfort noise - stay completely silent
                 continue
 
-            # Transmit immediately with minimal pacing
+            # Transmit immediately with precise pacing
             self._send_rtp(payload)
             self._sleep_ms(ptime_ms)
     
@@ -3980,7 +3617,11 @@ class WindowsVoiceSession:
         self._to8k_state = None   # 24k -> 8k state
         
         # Log call start with language info
-        system_text = self.voice_config.get('system_instruction', {}).get('parts', [{}])[0].get('text', '')
+        system_text = ''
+        if hasattr(self.voice_config, 'system_instruction') and self.voice_config.system_instruction:
+            if hasattr(self.voice_config.system_instruction, 'parts') and self.voice_config.system_instruction.parts:
+                system_text = self.voice_config.system_instruction.parts[0].text if self.voice_config.system_instruction.parts else ''
+        
         if 'АртроФлекс' in system_text or 'болки в ставите' in system_text:
             detected_lang = 'Bulgarian'
         elif 'ArtroFlex' in system_text and 'joint pain' in system_text:
@@ -4018,7 +3659,11 @@ class WindowsVoiceSession:
             logger.info(f"Attempting to connect to Gemini live session (attempt {self.connection_attempts}/{self.max_connection_attempts})...")
             logger.info(f"Using model: {MODEL}")
             # Extract language from voice config for logging
-            system_text = self.voice_config.get('system_instruction', {}).get('parts', [{}])[0].get('text', '')
+            system_text = ''
+            if hasattr(self.voice_config, 'system_instruction') and self.voice_config.system_instruction:
+                if hasattr(self.voice_config.system_instruction, 'parts') and self.voice_config.system_instruction.parts:
+                    system_text = self.voice_config.system_instruction.parts[0].text if self.voice_config.system_instruction.parts else ''
+            
             if 'АртроФлекс' in system_text or 'болки в ставите' in system_text:
                 detected_lang = 'Bulgarian'
             elif 'ArtroFlex' in system_text and 'joint pain' in system_text:
@@ -4256,37 +3901,33 @@ class WindowsVoiceSession:
         """
         Input: 16-bit mono PCM at 8000 Hz (after μ-law decode, if applicable).
         Output: 16-bit mono PCM at 16000 Hz for the model.
+        Ultra-fast linear interpolation for minimal latency.
         """
         # Convert bytes to numpy array
         in_array = np.frombuffer(audio_data, dtype=np.int16)
         
-        # Calculate the number of samples in the output signal
-        num_samples_in = len(in_array)
-        num_samples_out = int(num_samples_in * 16000 / 8000)
-        
-        # Resample using scipy for high quality
-        resampled_array = resample(in_array, num_samples_out)
+        # 8kHz -> 16kHz is exactly 2x upsampling - ultra fast
+        # Simply repeat each sample (zero-order hold) - fastest possible method
+        out_array = np.repeat(in_array, 2)
         
         # Convert back to bytes
-        return resampled_array.astype(np.int16).tobytes()
+        return out_array.tobytes()
 
     def convert_gemini_to_telephony(self, model_pcm: bytes) -> bytes:
         """
         Input: model PCM as 16-bit mono at 24000 Hz (typical).
         Output: 16-bit mono PCM at 8000 Hz ready for μ-law encode.
+        Ultra-fast decimation for minimal latency - optimized for real-time streaming.
         """
         # Convert bytes to numpy array
         in_array = np.frombuffer(model_pcm, dtype=np.int16)
         
-        # Calculate the number of samples in the output signal
-        num_samples_in = len(in_array)
-        num_samples_out = int(num_samples_in * 8000 / 24000)
-        
-        # Resample using scipy for high quality
-        resampled_array = resample(in_array, num_samples_out)
+        # 24000 Hz -> 8000 Hz is exactly 3:1 decimation
+        # Simply take every 3rd sample - fastest possible method
+        out_array = in_array[::3]
         
         # Convert back to bytes
-        return resampled_array.astype(np.int16).tobytes()
+        return out_array.tobytes()
     
     
     def cleanup(self):
@@ -5188,11 +4829,10 @@ if __name__ == "__main__":
         logger.info("   📋 Automatic transcription disabled - available through CRM interface")
     else:
         logger.info("⚠️ Transcription: DISABLED (no method available)")
-    logger.info("🎵 Audio Preprocessing: ENABLED (Advanced VAD + 6-stage pipeline)")
-    logger.info("   ✅ Voice Activity Detection (Energy + Zero-Crossing Rate)")
-    logger.info("   ✅ Pre-emphasis, bandpass filtering, noise reduction, compression")
-    logger.info("   🎯 Only speech sent to Gemini - silence/noise filtered out")
-    logger.info("   ⚡ Minimum latency - optimized delays and polling intervals")
+    logger.info("🎵 Audio Processing: OPTIMIZED FOR MINIMAL LATENCY")
+    logger.info("   ⚡ Ultra-fast resampling (zero-order hold/decimation)")
+    logger.info("   ⚡ No VAD, filtering, or preprocessing - direct pass-through")
+    logger.info("   ⚡ Minimum possible latency for real-time streaming")
     logger.info("🔊 Greeting System: ENABLED for both incoming and outbound calls")
     logger.info("   🎙️ Plays greeting.wav file automatically when call is answered")
     logger.info("   🤖 AI responds naturally when user speaks (no artificial triggers)")
