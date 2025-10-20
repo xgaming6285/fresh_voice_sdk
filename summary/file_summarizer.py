@@ -5,7 +5,7 @@ from pathlib import Path
 import json
 
 # Configure the API
-API_KEY = "AIzaSyBwPmLBSRGz1vG3455zOUjJur7v7BkrgaA"
+API_KEY = "AIzaSyCibLL34pGHp09Amzu_IBFaSlDbbKJZxm8"
 MODEL_NAME = "gemini-2.5-flash-lite"  # As requested
 
 genai.configure(api_key=API_KEY)
@@ -77,21 +77,30 @@ def create_prompt(files_content, language="English"):
     for filename, content in files_content.items():
         files_text += f"\n\n=== FILE: {filename} ===\n{content}\n"
     
-    prompt = f"""Please analyze the following files and provide:
-1. A comprehensive summary of what these files contain and their purpose (write in a single paragraph without line breaks)
-2. A status indicating the level of interest in this project/content
+    prompt = f"""You are analyzing a phone call session with three transcriptions:
+- incoming audio: the customer/user speaking
+- outgoing audio: the voice agent speaking  
+- mixed audio: both customer and voice agent speaking
 
-The files are:
+Directly analyze the conversation and provide:
+1. A comprehensive summary of what happened in this call - the purpose, topics discussed, outcomes, and any important details (write in a single paragraph without line breaks)
+2. A status indicating the customer's level of interest:
+   - "interested": if the customer was engaged, showed interest in the product/service, confirmed orders, asked positive questions, or had a successful outcome
+   - "not interested": if the customer declined, rejected the offer, showed disinterest, hung up early, or had a negative outcome
+
+The transcriptions are:
 {files_text}
 
 Please respond in the following JSON format:
 {{
-    "summary": "Your detailed summary here in a single paragraph",
+    "summary": "Your detailed analysis of the conversation here in a single paragraph",
     "status": "either interested OR not interested"
 }}
 
 IMPORTANT: 
+- Analyze the actual conversation content, not the files themselves
 - The status field MUST be exactly one of these two values: "interested" or "not interested"
+- Evaluate the customer's engagement and outcome to determine the status
 - Write the summary as a single flowing paragraph without line breaks
 - Use lowercase only for status and match these values exactly
 - Write the summary in {language} language"""
