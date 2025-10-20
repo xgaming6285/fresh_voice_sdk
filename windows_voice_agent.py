@@ -1844,7 +1844,7 @@ class RTPSession:
     async def _async_main_loop(self):
         """Main async loop - handles initialization, sending, and receiving"""
         try:
-            # Initialize voice session
+            # Initialize voice session in this event loop (so websocket works properly)
             if not await self.voice_session.initialize_voice_session():
                 logger.error("Failed to initialize voice session")
                 return
@@ -2682,39 +2682,67 @@ Content-Length: 0
             voice_session = active_sessions[session_id]["voice_session"]
             rtp_session = active_sessions[session_id]["rtp_session"]
             
-            # Now initialize Gemini connection and play greeting in separate thread
+            # Now start the RTP async loop which will connect to Gemini, then play greeting
             def start_voice_session():
                 try:
-                    # Initialize Gemini connection
-                    logger.info(f"🔗 Connecting to Gemini for session {session_id}...")
-                    asyncio.run(voice_session.initialize_voice_session())
+                    # Start the RTP session's async processing loop (which will initialize Gemini)
+                    if rtp_session:
+                        rtp_session.input_processing = True
+                        rtp_session.asyncio_thread = threading.Thread(target=rtp_session._run_asyncio_thread, daemon=True)
+                        rtp_session.asyncio_thread.start()
+                        logger.info(f"🎧 Started RTP async loop for session {session_id}")
                     
-                    # Mark as active once voice session is ready
+                    # Wait for Gemini to connect (check every 0.5s, timeout after 30s)
+                    logger.info(f"⏳ Waiting for Gemini to connect...")
+                    max_wait_time = 30  # seconds
+                    wait_interval = 0.5  # seconds
+                    elapsed_time = 0
+                    
+                    while elapsed_time < max_wait_time:
+                        if session_id not in active_sessions:
+                            logger.warning("⚠️ Call ended while waiting for Gemini")
+                            return
+                        
+                        # Check if Gemini session is ready
+                        if voice_session.gemini_session:
+                            logger.info(f"✅ Gemini connected after {elapsed_time:.1f}s")
+                            break
+                        
+                        time.sleep(wait_interval)
+                        elapsed_time += wait_interval
+                    
+                    if not voice_session.gemini_session:
+                        logger.error(f"❌ Gemini failed to connect within {max_wait_time}s")
+                        if session_id in active_sessions:
+                            del active_sessions[session_id]
+                        return
+                    
+                    # Mark as active *after* Gemini is ready
                     if session_id in active_sessions:
                         active_sessions[session_id]["status"] = "active"
                         logger.info(f"🎯 Voice session {session_id} is now active and ready")
+                    
+                    # Play greeting *after* Gemini is ready
+                    def play_greeting():
+                        # Small delay to ensure audio pipeline is ready
+                        time.sleep(0.5)
                         
-                        # Play greeting now that call is fully established
-                        def play_greeting():
-                            # Small delay to ensure RTP is ready
-                            time.sleep(0.5)
-                            
-                            # Check if call is still active
-                            if session_id not in active_sessions:
-                                logger.warning("⚠️ Call ended before greeting could be played")
-                                return
-                            
-                            logger.info("🎵 Playing greeting...")
-                            
-                            # Play greeting file
-                            greeting_duration = rtp_session.play_greeting_file("greeting.wav")
-                            
-                            if greeting_duration > 0:
-                                logger.info(f"✅ Greeting played ({greeting_duration:.1f}s). Ready for conversation.")
-                            else:
-                                logger.warning("⚠️ Greeting file not found or failed to play")
+                        # Check if call is still active
+                        if session_id not in active_sessions:
+                            logger.warning("⚠️ Call ended before greeting could be played")
+                            return
                         
-                        threading.Thread(target=play_greeting, daemon=True).start()
+                        logger.info("🎵 Playing greeting...")
+                        
+                        # Play greeting file
+                        greeting_duration = rtp_session.play_greeting_file("greeting.wav")
+                        
+                        if greeting_duration > 0:
+                            logger.info(f"✅ Greeting played ({greeting_duration:.1f}s). Ready for conversation.")
+                        else:
+                            logger.warning("⚠️ Greeting file not found or failed to play")
+                    
+                    threading.Thread(target=play_greeting, daemon=True).start()
                         
                 except Exception as e:
                     logger.error(f"❌ Failed to start voice session: {e}")
@@ -3413,18 +3441,46 @@ Content-Length: {len(sdp_content)}
             # NOW start voice session after ACK is sent
             def start_voice_session():
                 try:
-                    # Initialize Gemini connection
-                    logger.info(f"🔗 Connecting to Gemini for outbound session {session_id}...")
-                    asyncio.run(voice_session.initialize_voice_session())
+                    # Start the RTP session's async processing loop (which will initialize Gemini)
+                    if rtp_session:
+                        rtp_session.input_processing = True
+                        rtp_session.asyncio_thread = threading.Thread(target=rtp_session._run_asyncio_thread, daemon=True)
+                        rtp_session.asyncio_thread.start()
+                        logger.info(f"🎧 Started RTP async loop for outbound session {session_id}")
                     
+                    # Wait for Gemini to connect (check every 0.5s, timeout after 30s)
+                    logger.info(f"⏳ Waiting for Gemini to connect for outbound call...")
+                    max_wait_time = 30  # seconds
+                    wait_interval = 0.5  # seconds
+                    elapsed_time = 0
+                    
+                    while elapsed_time < max_wait_time:
+                        if session_id not in active_sessions:
+                            logger.warning("⚠️ Outbound call ended while waiting for Gemini")
+                            return
+                        
+                        # Check if Gemini session is ready
+                        if voice_session.gemini_session:
+                            logger.info(f"✅ Gemini connected for outbound call after {elapsed_time:.1f}s")
+                            break
+                        
+                        time.sleep(wait_interval)
+                        elapsed_time += wait_interval
+                    
+                    if not voice_session.gemini_session:
+                        logger.error(f"❌ Gemini failed to connect for outbound call within {max_wait_time}s")
+                        if session_id in active_sessions:
+                            del active_sessions[session_id]
+                        return
+
                     # Mark as active once voice session is ready
                     if session_id in active_sessions:
                         active_sessions[session_id]["status"] = "active"
                         logger.info(f"🎯 Outbound voice session {session_id} is now active and ready")
-                        
-                        # Play greeting now that call is fully established
+
+                        # Play greeting now that call is fully established AND Gemini is ready
                         def play_outbound_greeting():
-                            # Small delay to ensure RTP is ready
+                            # Small delay to ensure audio pipeline is ready
                             time.sleep(0.5)
                             
                             # Check if call is still active
