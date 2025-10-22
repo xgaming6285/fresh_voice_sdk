@@ -4227,17 +4227,43 @@ async def make_outbound_call(call_request: dict, current_user: User = Depends(ch
             # Save to CRM database
             db = get_session()
             try:
-                # Find lead by phone number
-                lead = db.query(Lead).filter(
-                    (Lead.phone == phone_number) |
-                    (Lead.phone == phone_number.replace('+', '')) |
-                    (Lead.phone.contains(phone_number[-10:]))  # Last 10 digits
-                ).first()
+                # Find lead by phone number - need to search all leads and match using full_phone property
+                # since phone and country_code are stored separately
+                lead = None
+                
+                # Normalize phone number for comparison (remove spaces, dashes, etc.)
+                normalized_phone = phone_number.replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
+                
+                # Try exact match on phone field first (for numbers stored without country code)
+                lead = db.query(Lead).filter(Lead.phone == phone_number).first()
+                
+                if not lead:
+                    # Try without + prefix
+                    lead = db.query(Lead).filter(Lead.phone == phone_number.replace('+', '')).first()
+                
+                if not lead:
+                    # Search for leads where the stored phone matches our number
+                    # Get last 10 digits of the phone number for comparison
+                    last_digits = normalized_phone[-10:] if len(normalized_phone) >= 10 else normalized_phone
+                    
+                    # Get all leads and check full_phone property
+                    all_leads = db.query(Lead).all()
+                    for potential_lead in all_leads:
+                        if potential_lead.full_phone:
+                            lead_normalized = potential_lead.full_phone.replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
+                            # Check if phone numbers match (exact or by last 10 digits)
+                            if lead_normalized == normalized_phone or (len(lead_normalized) >= 10 and lead_normalized[-10:] == last_digits):
+                                lead = potential_lead
+                                break
                 
                 # Update lead if found
                 if lead:
                     lead.call_count += 1
                     lead.last_called_at = datetime.utcnow()
+                    db.add(lead)  # Explicitly add to session for MongoDB
+                    logger.info(f"✅ Updated lead {lead.id} ({lead.full_name}): call_count={lead.call_count}, last_called_at={lead.last_called_at}")
+                else:
+                    logger.warning(f"⚠️ No lead found for phone number: {phone_number}")
                 
                 # Create session record with custom config
                 new_session = CallSession(

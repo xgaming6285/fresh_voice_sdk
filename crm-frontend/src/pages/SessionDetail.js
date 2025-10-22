@@ -32,6 +32,7 @@ import {
   Description as DescriptionIcon,
 } from "@mui/icons-material";
 import { sessionAPI, voiceAgentAPI } from "../services/api";
+import { formatDateTime } from "../utils/dateUtils";
 
 function TabPanel({ children, value, index, ...other }) {
   return (
@@ -448,7 +449,7 @@ function SessionDetail() {
                       sx={{ mt: 1, display: "block" }}
                     >
                       Transcribed at:{" "}
-                      {new Date(transcript.transcribed_at).toLocaleString()}
+                      {formatDateTime(transcript.transcribed_at)}
                     </Typography>
                   )}
                 </Box>
@@ -492,13 +493,13 @@ function SessionDetail() {
                 <Typography variant="body2">
                   <strong>Started:</strong>{" "}
                   {sessionData.start_time
-                    ? new Date(sessionData.start_time).toLocaleString()
+                    ? formatDateTime(sessionData.start_time)
                     : "Unknown"}
                 </Typography>
                 <Typography variant="body2">
                   <strong>Ended:</strong>{" "}
                   {sessionData.end_time
-                    ? new Date(sessionData.end_time).toLocaleString()
+                    ? formatDateTime(sessionData.end_time)
                     : "Unknown"}
                 </Typography>
                 {sessionData.campaign_id && (

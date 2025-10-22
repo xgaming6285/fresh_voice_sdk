@@ -39,6 +39,7 @@ import {
   sessionAPI,
   voiceAgentAPI,
 } from "../services/api";
+import { formatDateTime } from "../utils/dateUtils";
 
 ChartJS.register(
   CategoryScale,
@@ -663,7 +664,7 @@ function Dashboard() {
                         color="textSecondary"
                         fontWeight={500}
                       >
-                        {new Date(session.started_at).toLocaleString()}
+                        {formatDateTime(session.started_at)}
                       </Typography>
                     </Grid>
                     <Grid item xs={12} md={3}>

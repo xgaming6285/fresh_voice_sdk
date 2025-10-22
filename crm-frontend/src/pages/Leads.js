@@ -43,6 +43,7 @@ import CustomCallDialog from "../components/CustomCallDialog";
 import SubscriptionBanner from "../components/SubscriptionBanner";
 import { useAuth } from "../contexts/AuthContext";
 import { Tooltip } from "@mui/material";
+import { getRelativeTime, formatTime } from "../utils/dateUtils";
 
 function Leads() {
   const { hasActiveSubscription } = useAuth();
@@ -407,27 +408,7 @@ function Leads() {
           );
         }
 
-        const date = new Date(params.value);
-        const now = new Date();
-        const diffHours = Math.floor((now - date) / (1000 * 60 * 60));
-        const diffDays = Math.floor(diffHours / 24);
-
-        let timeAgo = "";
-        let color = "text.primary";
-
-        if (diffHours < 1) {
-          timeAgo = "Just now";
-          color = "success.main";
-        } else if (diffHours < 24) {
-          timeAgo = `${diffHours}h ago`;
-          color = "info.main";
-        } else if (diffDays < 7) {
-          timeAgo = `${diffDays}d ago`;
-          color = "warning.main";
-        } else {
-          timeAgo = date.toLocaleDateString();
-          color = "text.secondary";
-        }
+        const { timeAgo, color } = getRelativeTime(params.value);
 
         return (
           <Box>
@@ -438,7 +419,7 @@ function Leads() {
               </Typography>
             </Box>
             <Typography variant="caption" color="text.secondary">
-              {date.toLocaleTimeString()}
+              {formatTime(params.value)}
             </Typography>
           </Box>
         );

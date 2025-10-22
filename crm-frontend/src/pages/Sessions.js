@@ -33,6 +33,7 @@ import {
 } from "@mui/icons-material";
 import { DateTimePicker } from "@mui/x-date-pickers/DateTimePicker";
 import { sessionAPI, voiceAgentAPI, campaignAPI } from "../services/api";
+import { formatDateTime } from "../utils/dateUtils";
 
 function Sessions() {
   const navigate = useNavigate();
@@ -320,7 +321,7 @@ function Sessions() {
       flex: 1.2,
       minWidth: 180,
       valueFormatter: (params) => {
-        return new Date(params.value).toLocaleString();
+        return formatDateTime(params.value);
       },
     },
     {

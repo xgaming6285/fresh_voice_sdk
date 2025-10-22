@@ -11,6 +11,7 @@ import {
   TrendingUp as TrendingUpIcon,
 } from "@mui/icons-material";
 import { leadAPI, sessionAPI, voiceAgentAPI } from "../services/api";
+import { getRelativeTime, formatTime } from "../utils/dateUtils";
 
 function Conversions() {
   const [interestedLeads, setInterestedLeads] = useState([]);
@@ -318,27 +319,7 @@ function Conversions() {
       flex: 1.3,
       minWidth: 180,
       renderCell: (params) => {
-        const date = new Date(params.value);
-        const now = new Date();
-        const diffHours = Math.floor((now - date) / (1000 * 60 * 60));
-        const diffDays = Math.floor(diffHours / 24);
-
-        let timeAgo = "";
-        let color = "text.primary";
-
-        if (diffHours < 1) {
-          timeAgo = "Just now";
-          color = "success.main";
-        } else if (diffHours < 24) {
-          timeAgo = `${diffHours}h ago`;
-          color = "success.main";
-        } else if (diffDays < 7) {
-          timeAgo = `${diffDays}d ago`;
-          color = "warning.main";
-        } else {
-          timeAgo = date.toLocaleDateString();
-          color = "text.secondary";
-        }
+        const { timeAgo, color } = getRelativeTime(params.value);
 
         return (
           <Box>
@@ -346,7 +327,7 @@ function Conversions() {
               {timeAgo}
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              {date.toLocaleTimeString()}
+              {formatTime(params.value)}
             </Typography>
           </Box>
         );

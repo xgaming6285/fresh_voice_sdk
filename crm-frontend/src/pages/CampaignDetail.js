@@ -46,6 +46,7 @@ import {
 } from "@mui/icons-material";
 import { DataGrid } from "@mui/x-data-grid";
 import { campaignAPI, leadAPI } from "../services/api";
+import { formatDateTime } from "../utils/dateUtils";
 
 function TabPanel({ children, value, index, ...other }) {
   return (
@@ -432,15 +433,13 @@ function CampaignDetail() {
                 <TableBody>
                   <TableRow>
                     <TableCell>Created</TableCell>
-                    <TableCell>
-                      {new Date(campaign.created_at).toLocaleString()}
-                    </TableCell>
+                    <TableCell>{formatDateTime(campaign.created_at)}</TableCell>
                   </TableRow>
                   <TableRow>
                     <TableCell>Started</TableCell>
                     <TableCell>
                       {campaign.started_at
-                        ? new Date(campaign.started_at).toLocaleString()
+                        ? formatDateTime(campaign.started_at)
                         : "Not started"}
                     </TableCell>
                   </TableRow>
