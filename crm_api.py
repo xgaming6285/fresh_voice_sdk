@@ -148,6 +148,15 @@ class CallSessionResponse(BaseModel):
 # Helper functions
 def build_call_session_response(call_session: CallSession) -> CallSessionResponse:
     """Build CallSessionResponse from CallSession object with MongoDB data"""
+    # Extract duration from session_info if not available directly
+    duration = call_session.duration
+    session_info = getattr(call_session, 'session_info', None)
+    if duration is None and session_info and isinstance(session_info, dict):
+        duration = session_info.get('duration_seconds')
+        # Convert to integer if it's a float
+        if duration is not None:
+            duration = int(duration)
+    
     return CallSessionResponse(
         id=call_session.id,
         session_id=call_session.session_id,
@@ -160,7 +169,7 @@ def build_call_session_response(call_session: CallSession) -> CallSessionRespons
         started_at=call_session.started_at,
         answered_at=call_session.answered_at,
         ended_at=call_session.ended_at,
-        duration=call_session.duration,
+        duration=duration,
         talk_time=call_session.talk_time,
         recording_path=call_session.recording_path,
         transcript_status=call_session.transcript_status,
@@ -174,7 +183,7 @@ def build_call_session_response(call_session: CallSession) -> CallSessionRespons
         transcripts=getattr(call_session, 'transcripts', None),
         analysis=getattr(call_session, 'analysis', None),
         audio_files=getattr(call_session, 'audio_files', None),
-        session_info=getattr(call_session, 'session_info', None)
+        session_info=session_info
     )
 
 def build_lead_response(lead: Lead, session) -> LeadResponse:

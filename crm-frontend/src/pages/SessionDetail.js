@@ -195,7 +195,12 @@ function SessionDetail() {
   }
 
   const sessionData = session || recording;
-  const duration = sessionData.duration || sessionData.duration_seconds;
+  // Try to get duration from multiple sources
+  let duration = sessionData.duration || sessionData.duration_seconds;
+  // If not found, check session_info
+  if (!duration && sessionData.session_info) {
+    duration = sessionData.session_info.duration_seconds;
+  }
 
   return (
     <Box>
@@ -246,7 +251,7 @@ function SessionDetail() {
               </Box>
               <Typography variant="h5">
                 {duration
-                  ? `${Math.floor(duration / 60)}:${(duration % 60)
+                  ? `${Math.floor(duration / 60)}:${Math.floor(duration % 60)
                       .toString()
                       .padStart(2, "0")}`
                   : "N/A"}
@@ -254,7 +259,9 @@ function SessionDetail() {
               {sessionData.talk_time && (
                 <Typography variant="body2" color="text.secondary">
                   Talk time: {Math.floor(sessionData.talk_time / 60)}:
-                  {(sessionData.talk_time % 60).toString().padStart(2, "0")}
+                  {Math.floor(sessionData.talk_time % 60)
+                    .toString()
+                    .padStart(2, "0")}
                 </Typography>
               )}
             </CardContent>

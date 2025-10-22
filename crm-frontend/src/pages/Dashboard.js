@@ -82,7 +82,19 @@ function Dashboard() {
 
       // Calculate stats
       const campaigns = campaignsRes.data;
-      const sessions = sessionsRes.data;
+      let sessions = sessionsRes.data;
+
+      // Process sessions to extract duration from session_info if needed
+      sessions = sessions.map((session) => {
+        // If duration is missing but session_info has duration_seconds, use it
+        if (!session.duration && session.session_info?.duration_seconds) {
+          return {
+            ...session,
+            duration: Math.floor(session.session_info.duration_seconds),
+          };
+        }
+        return session;
+      });
 
       setStats({
         totalLeads: leadsRes.data.total || 0,
@@ -697,7 +709,13 @@ function Dashboard() {
                     <Grid item xs={12} md={2}>
                       <Typography variant="body2" fontWeight={500}>
                         Duration:{" "}
-                        {session.duration ? `${session.duration}s` : "-"}
+                        {session.duration
+                          ? `${Math.floor(session.duration / 60)}:${(
+                              session.duration % 60
+                            )
+                              .toString()
+                              .padStart(2, "0")}`
+                          : "-"}
                       </Typography>
                     </Grid>
                     <Grid item xs={12} md={2}>

@@ -83,6 +83,18 @@ function Sessions() {
       const response = await sessionAPI.getAll(params);
       let sessionsData = response.data;
 
+      // Process sessions to extract duration from session_info if needed
+      sessionsData = sessionsData.map((session) => {
+        // If duration is missing but session_info has duration_seconds, use it
+        if (!session.duration && session.session_info?.duration_seconds) {
+          return {
+            ...session,
+            duration: Math.floor(session.session_info.duration_seconds),
+          };
+        }
+        return session;
+      });
+
       // Load summaries for CRM sessions
       await loadSummariesForSessions(sessionsData);
 
