@@ -8,7 +8,6 @@ import {
   Male as MaleIcon,
   Female as FemaleIcon,
   QuestionMark as QuestionMarkIcon,
-  TrendingUp as TrendingUpIcon,
 } from "@mui/icons-material";
 import { leadAPI, sessionAPI, voiceAgentAPI } from "../services/api";
 import { getRelativeTime, formatTime } from "../utils/dateUtils";
@@ -98,22 +97,8 @@ function Conversions() {
             session_id: sessionData.session_id,
             summary: sessionData.summary,
           });
-        } else {
-          // If lead not found in database, create a minimal entry
-          interestedLeadsData.push({
-            id: phoneNumber,
-            full_name: "Unknown Lead",
-            phone: phoneNumber,
-            full_phone: phoneNumber,
-            country: "—",
-            gender: "unknown",
-            email: "",
-            interested_count: sessionData.interested_count,
-            last_interested_at: sessionData.last_interested_at,
-            session_id: sessionData.session_id,
-            summary: sessionData.summary,
-          });
         }
+        // If lead not found, skip it (don't show sessions for inaccessible leads)
       });
 
       setInterestedLeads(interestedLeadsData);
@@ -276,46 +261,8 @@ function Conversions() {
       ),
     },
     {
-      field: "interested_count",
-      headerName: "Interest Count",
-      flex: 0.8,
-      minWidth: 130,
-      align: "center",
-      headerAlign: "center",
-      renderCell: (params) => (
-        <Box
-          sx={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 0.5,
-            px: 1.5,
-            py: 0.5,
-            borderRadius: 10,
-            background: `rgba(107, 154, 90, ${Math.min(
-              params.value * 0.15,
-              0.4
-            )})`,
-            border: "1px solid",
-            borderColor: "success.light",
-          }}
-        >
-          <TrendingUpIcon sx={{ fontSize: 16, color: "success.dark" }} />
-          <Typography
-            variant="body2"
-            fontWeight={700}
-            sx={{
-              color: "success.dark",
-            }}
-          >
-            {params.value}
-          </Typography>
-        </Box>
-      ),
-    },
-    {
       field: "last_interested_at",
-      headerName: "Last Interested",
+      headerName: "Last Call",
       flex: 1.3,
       minWidth: 180,
       renderCell: (params) => {
@@ -375,7 +322,7 @@ function Conversions() {
             </Typography>
             <Typography variant="body2" color="text.secondary">
               Leads who have shown interest during call sessions. Sort by name,
-              country, gender, or interest count.
+              country, gender, or last call.
             </Typography>
           </Box>
           <Box
