@@ -250,6 +250,14 @@ const Agents = () => {
                       sx={{ mr: 1 }}
                     />
                     <Chip label="Agent" color="primary" size="small" />
+                    {agent.gate_slot && (
+                      <Chip
+                        label={`Gate Slot: ${agent.gate_slot}`}
+                        color="secondary"
+                        size="small"
+                        sx={{ ml: 1 }}
+                      />
+                    )}
                   </Box>
 
                   {agent.last_login && (

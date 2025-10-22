@@ -991,6 +991,16 @@ async def execute_campaign(campaign_id: int):
                 logger.info(f"Campaign {campaign_id} is no longer running")
                 break
             
+            # Get campaign owner (agent) to use their gate slot
+            user_manager = UserManager(session)
+            campaign_owner = user_manager.get_user_by_id(campaign.owner_id)
+            gate_slot = None
+            if campaign_owner and campaign_owner.gate_slot:
+                gate_slot = campaign_owner.gate_slot
+                logger.info(f"📞 Using gate slot {gate_slot} for agent {campaign_owner.username}")
+            else:
+                logger.warning(f"⚠️ Campaign owner has no assigned gate slot, will use default")
+            
             # Get next lead to call
             campaign_lead = campaign_manager.get_next_lead_to_call(campaign_id)
             if not campaign_lead:
@@ -1008,7 +1018,7 @@ async def execute_campaign(campaign_id: int):
                 session_id=f"campaign_{campaign_id}_lead_{lead.id}_{int(datetime.utcnow().timestamp())}",
                 campaign_id=campaign_id,
                 lead_id=lead.id,
-                owner_id=current_user.id,  # Set owner to the user who started the campaign
+                owner_id=campaign.owner_id,  # Set owner to the campaign owner
                 caller_id="+359898995151",  # From config
                 called_number=lead.full_phone,
                 status=CallStatus.DIALING
@@ -1016,9 +1026,9 @@ async def execute_campaign(campaign_id: int):
             session.add(call_session)
             session.commit()
             
-            # Make the call using the voice agent
+            # Make the call using the voice agent with the agent's gate slot
             try:
-                voice_session_id = sip_handler.make_outbound_call(lead.full_phone)
+                voice_session_id = sip_handler.make_outbound_call(lead.full_phone, gate_slot=gate_slot)
                 
                 if voice_session_id:
                     # Update call session with voice agent session ID

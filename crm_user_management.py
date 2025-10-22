@@ -47,6 +47,7 @@ class AgentResponse(BaseModel):
     created_at: datetime
     created_by_id: int
     last_login: Optional[datetime]
+    gate_slot: Optional[int]
 
 # User Management endpoints
 @user_router.get("/agents", response_model=List[AgentResponse])
@@ -70,7 +71,8 @@ async def get_my_agents(current_admin: User = Depends(get_current_admin)):
                 is_active=agent.is_active,
                 created_at=agent.created_at,
                 created_by_id=agent.created_by_id,
-                last_login=agent.last_login
+                last_login=agent.last_login,
+                gate_slot=agent.gate_slot
             )
             for agent in agents
         ]
@@ -128,6 +130,18 @@ async def create_agent(agent_data: AgentCreate, current_admin: User = Depends(ge
             last_name=agent_data.last_name
         )
         
+        # Automatically assign a gate slot to the new agent
+        assigned_slot = user_manager.assign_gate_slot(new_agent.id)
+        if not assigned_slot:
+            # If no slots available, delete the agent and raise error
+            user_manager.delete_user(new_agent.id)
+            raise HTTPException(
+                status_code=500,
+                detail="No available gate slots (9-19). All slots are currently assigned."
+            )
+        
+        logger.info(f"✅ Assigned gate slot {assigned_slot} to agent {new_agent.username}")
+        
         return AgentResponse(
             id=new_agent.id,
             username=new_agent.username,
@@ -139,7 +153,8 @@ async def create_agent(agent_data: AgentCreate, current_admin: User = Depends(ge
             is_active=new_agent.is_active,
             created_at=new_agent.created_at,
             created_by_id=new_agent.created_by_id,
-            last_login=new_agent.last_login
+            last_login=new_agent.last_login,
+            gate_slot=new_agent.gate_slot
         )
     except HTTPException:
         raise
@@ -179,7 +194,8 @@ async def get_agent(agent_id: int, current_admin: User = Depends(get_current_adm
             is_active=agent.is_active,
             created_at=agent.created_at,
             created_by_id=agent.created_by_id,
-            last_login=agent.last_login
+            last_login=agent.last_login,
+            gate_slot=agent.gate_slot
         )
     except HTTPException:
         raise
@@ -223,7 +239,8 @@ async def update_agent(agent_id: int, agent_update: AgentUpdate, current_admin: 
             is_active=updated_agent.is_active,
             created_at=updated_agent.created_at,
             created_by_id=updated_agent.created_by_id,
-            last_login=updated_agent.last_login
+            last_login=updated_agent.last_login,
+            gate_slot=updated_agent.gate_slot
         )
     except HTTPException:
         raise
@@ -251,6 +268,11 @@ async def delete_agent(agent_id: int, current_admin: User = Depends(get_current_
                 status_code=403,
                 detail="You can only delete agents you created"
             )
+        
+        # Free up the gate slot before deleting the agent
+        if agent.gate_slot:
+            user_manager.free_gate_slot(agent_id)
+            logger.info(f"🔓 Freed gate slot {agent.gate_slot} from agent {agent.username}")
         
         # Delete agent (this will cascade delete their leads and campaigns)
         user_manager.delete_user(agent_id)

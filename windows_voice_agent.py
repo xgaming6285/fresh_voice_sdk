@@ -2901,8 +2901,17 @@ Content-Length: {len(sdp_content)}
 """
         return response
     
-    def make_outbound_call(self, phone_number: str, custom_config: dict = None) -> Optional[str]:
-        """Initiate outbound call as registered Extension 200"""
+    def make_outbound_call(self, phone_number: str, custom_config: dict = None, gate_slot: int = None) -> Optional[str]:
+        """Initiate outbound call as registered Extension 200
+        
+        Args:
+            phone_number: Phone number to call
+            custom_config: Optional custom configuration for the call
+            gate_slot: Gate slot number (9-19) to use for this call. If None, defaults to 10
+        
+        Returns:
+            Session ID if successful, None otherwise
+        """
         try:
             # Check if extension is registered
             if not self.extension_registered:
@@ -2910,14 +2919,22 @@ Content-Length: {len(sdp_content)}
                 logger.error("💡 Wait for extension registration to complete")
                 return None
             
-            # Add "9" prefix for SIM gate port 9 routing
-            # Remove '+' and add '9' prefix
+            # Determine which gate slot to use
+            if gate_slot is None:
+                gate_slot = 10  # Default to slot 10
+                logger.info(f"⚠️ No gate slot specified, using default slot {gate_slot}")
+            elif gate_slot < 9 or gate_slot > 19:
+                logger.error(f"❌ Invalid gate slot {gate_slot}. Must be between 9 and 19")
+                return None
+            
+            # Add gate slot prefix for SIM gate routing
+            # Remove '+' and add gate slot prefix
             dialed_number = phone_number.replace('+', '').replace(' ', '').replace('-', '')
-            if not dialed_number.startswith('9'):
-                dialed_number = '9' + dialed_number
+            if not dialed_number.startswith(str(gate_slot)):
+                dialed_number = str(gate_slot) + dialed_number
             
             logger.info(f"📞 Initiating outbound call to {phone_number} (dialing: {dialed_number}) as Extension 200")
-            logger.info(f"📞 Call will be routed through Gate VoIP → {self.config.get('outbound_trunk', 'gsm2')} trunk → Port 9")
+            logger.info(f"📞 Call will be routed through Gate VoIP → {self.config.get('outbound_trunk', 'gsm2')} trunk → Port {gate_slot}")
             
             session_id = str(uuid.uuid4())
             username = self.config.get('username', '200')
@@ -4220,8 +4237,16 @@ async def make_outbound_call(call_request: dict, current_user: User = Depends(ch
             custom_config['greeting_file'] = greeting_file
             logger.info(f"🎵 Using custom greeting: {greeting_file}")
         
-        # Make call through Gate VoIP with custom config
-        session_id = sip_handler.make_outbound_call(phone_number, custom_config)
+        # Get the agent's gate slot
+        gate_slot = None
+        if current_user and current_user.gate_slot:
+            gate_slot = current_user.gate_slot
+            logger.info(f"📞 Using gate slot {gate_slot} for agent {current_user.username}")
+        else:
+            logger.warning(f"⚠️ User has no assigned gate slot, will use default")
+        
+        # Make call through Gate VoIP with custom config and agent's gate slot
+        session_id = sip_handler.make_outbound_call(phone_number, custom_config, gate_slot=gate_slot)
         
         if session_id:
             # Save to CRM database

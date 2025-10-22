@@ -526,6 +526,7 @@ class User:
     created_at = Column('created_at')
     updated_at = Column('updated_at')
     last_login = Column('last_login')
+    gate_slot = Column('gate_slot')
     
     def __init__(self, **kwargs):
         self.id = kwargs.get('id')
@@ -548,6 +549,7 @@ class User:
         self.created_at = kwargs.get('created_at', datetime.utcnow())
         self.updated_at = kwargs.get('updated_at', datetime.utcnow())
         self.last_login = kwargs.get('last_login')
+        self.gate_slot = kwargs.get('gate_slot')  # Gate slot number (9-19) for outbound calls
     
     @property
     def full_name(self):
@@ -596,7 +598,8 @@ class User:
             "is_active": self.is_active,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
-            "last_login": self.last_login
+            "last_login": self.last_login,
+            "gate_slot": self.gate_slot
         }
     
     @classmethod
@@ -1322,6 +1325,45 @@ class UserManager:
             # Also delete their leads and campaigns
             self.db.leads.delete_many({"owner_id": user_id})
             self.db.campaigns.delete_many({"owner_id": user_id})
+            return True
+        return False
+    
+    def get_available_gate_slots(self):
+        """Get list of available gate slots (9-19)"""
+        # Get all assigned gate slots
+        assigned_slots = set()
+        agents = self.db.users.find({"role": UserRole.AGENT.value, "gate_slot": {"$ne": None}})
+        for agent in agents:
+            if agent.get('gate_slot'):
+                assigned_slots.add(agent['gate_slot'])
+        
+        # Available slots are 9-19 (inclusive)
+        all_slots = set(range(9, 20))  # 9 to 19 inclusive
+        available_slots = sorted(all_slots - assigned_slots)
+        return available_slots
+    
+    def assign_gate_slot(self, user_id):
+        """Automatically assign a free gate slot to an agent"""
+        available_slots = self.get_available_gate_slots()
+        
+        if not available_slots:
+            return None  # No available slots
+        
+        # Assign the first available slot
+        slot = available_slots[0]
+        user = self.get_user_by_id(user_id)
+        if user:
+            user.gate_slot = slot
+            user.save()
+            return slot
+        return None
+    
+    def free_gate_slot(self, user_id):
+        """Free up the gate slot assigned to an agent"""
+        user = self.get_user_by_id(user_id)
+        if user and user.gate_slot:
+            user.gate_slot = None
+            user.save()
             return True
         return False
 
