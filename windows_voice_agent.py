@@ -2371,6 +2371,12 @@ class WindowsSIPHandler:
                     message_type = "INFO (Call Update)"
                 elif first_line.startswith('REGISTER'):
                     message_type = "REGISTER (Registration)"
+                elif first_line.startswith('SIP/2.0 100'):
+                    message_type = "100 Trying (Call Initiated)"
+                elif first_line.startswith('SIP/2.0 180'):
+                    message_type = "180 Ringing (Phone Ringing)"
+                elif first_line.startswith('SIP/2.0 183'):
+                    message_type = "183 Session Progress (Ringing with Media)"
                 elif first_line.startswith('SIP/2.0 200'):
                     message_type = "200 OK (Success Response)"
                 elif first_line.startswith('SIP/2.0 401'):
@@ -2397,7 +2403,8 @@ class WindowsSIPHandler:
                     self._handle_ack(message, addr)
                 elif first_line.startswith('REGISTER'):
                     self._handle_register(message, addr)
-                elif first_line.startswith('SIP/2.0') and ('200 OK' in first_line or '401 Unauthorized' in first_line or '403 Forbidden' in first_line):
+                elif first_line.startswith('SIP/2.0'):
+                    # Handle all SIP responses (100, 180, 183, 200, 401, 403, 404, etc.)
                     self._handle_sip_response(message, addr)
                 else:
                     logger.warning(f"⚠️  Unhandled SIP message type: {first_line}")
@@ -3561,11 +3568,68 @@ Content-Length: 0
             logger.error(f"Traceback: {traceback.format_exc()}")
     
     def _handle_sip_response(self, message: str, addr):
-        """Handle SIP responses (200 OK, 401 Unauthorized, etc.)"""
+        """Handle SIP responses (100 Trying, 180 Ringing, 183 Session Progress, 200 OK, 401 Unauthorized, etc.)"""
         try:
             first_line = message.split('\n')[0].strip()
             
-            if '200 OK' in first_line:
+            if '100 Trying' in first_line:
+                # Handle 100 Trying response for outbound calls
+                if 'INVITE' in message or 'CSeq:' in message:
+                    # Extract Call-ID to find the pending invite
+                    call_id = None
+                    for line in message.split('\n'):
+                        line = line.strip()
+                        if line.startswith('Call-ID:'):
+                            call_id = line.split(':', 1)[1].strip()
+                            break
+                    
+                    if call_id and call_id in self.pending_invites:
+                        phone_number = self.pending_invites[call_id]['phone_number']
+                        logger.info(f"📞 Call initiated - processing call to {phone_number}")
+                    else:
+                        logger.debug("📞 Received 100 Trying response")
+                else:
+                    logger.debug(f"Received 100 Trying response: {first_line}")
+            
+            elif '180 Ringing' in first_line:
+                # Handle 180 Ringing response for outbound calls
+                if 'INVITE' in message or 'CSeq:' in message:
+                    # Extract Call-ID to find the pending invite
+                    call_id = None
+                    for line in message.split('\n'):
+                        line = line.strip()
+                        if line.startswith('Call-ID:'):
+                            call_id = line.split(':', 1)[1].strip()
+                            break
+                    
+                    if call_id and call_id in self.pending_invites:
+                        phone_number = self.pending_invites[call_id]['phone_number']
+                        logger.info(f"🔔 Phone ringing - outbound call to {phone_number}")
+                    else:
+                        logger.info("🔔 Phone ringing - waiting for answer")
+                else:
+                    logger.debug(f"Received 180 Ringing response: {first_line}")
+            
+            elif '183 Session Progress' in first_line:
+                # Handle 183 Session Progress response (ringing with early media)
+                if 'INVITE' in message or 'CSeq:' in message:
+                    # Extract Call-ID to find the pending invite
+                    call_id = None
+                    for line in message.split('\n'):
+                        line = line.strip()
+                        if line.startswith('Call-ID:'):
+                            call_id = line.split(':', 1)[1].strip()
+                            break
+                    
+                    if call_id and call_id in self.pending_invites:
+                        phone_number = self.pending_invites[call_id]['phone_number']
+                        logger.info(f"🔔 Phone ringing with early media - outbound call to {phone_number}")
+                    else:
+                        logger.info("🔔 Phone ringing with early media - waiting for answer")
+                else:
+                    logger.debug(f"Received 183 Session Progress response: {first_line}")
+            
+            elif '200 OK' in first_line:
                 if 'REGISTER' in message:
                     # Check if this is extension registration based on Call-ID
                     call_id_line = [line for line in message.split('\n') if line.strip().startswith('Call-ID:')]
@@ -3581,26 +3645,6 @@ Content-Length: 0
                     self._handle_outbound_call_success(message)
                 else:
                     logger.debug(f"Received 200 OK response: {first_line}")
-            
-            elif '180 Ringing' in first_line:
-                # Handle 180 Ringing response for outbound calls
-                if 'INVITE' in message:
-                    # Extract Call-ID to find the pending invite
-                    call_id = None
-                    for line in message.split('\n'):
-                        line = line.strip()
-                        if line.startswith('Call-ID:'):
-                            call_id = line.split(':', 1)[1].strip()
-                            break
-                    
-                    if call_id and call_id in self.pending_invites:
-                        phone_number = self.pending_invites[call_id]['phone_number']
-                        logger.info(f"🔔 Outbound call to {phone_number} is ringing...")
-                        logger.info("📞 Waiting for answer - greeting will play 1 second after call is answered")
-                    else:
-                        logger.info("🔔 Received 180 Ringing response")
-                else:
-                    logger.debug(f"Received 180 Ringing response: {first_line}")
             
             elif '401 Unauthorized' in first_line:
                 if 'REGISTER' in message:
