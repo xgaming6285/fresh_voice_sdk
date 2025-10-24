@@ -116,6 +116,111 @@ else:
     logger.warning("💡 To enable transcription, install: pip install google-genai")
     logger.warning("💡 Or for local transcription: pip install faster-whisper")
 
+class VoiceActivityDetector:
+    """Voice Activity Detector to distinguish speech from background noise"""
+    
+    def __init__(self, sample_rate: int = 8000, energy_threshold: float = 500.0):
+        self.sample_rate = sample_rate
+        self.energy_threshold = energy_threshold
+        self.speech_frame_count = 0
+        self.silence_frame_count = 0
+        self.min_speech_frames = 3  # Minimum consecutive frames to consider it speech
+        logger.info(f"🎤 VoiceActivityDetector initialized (sample_rate={sample_rate}, threshold={energy_threshold})")
+    
+    def is_speech(self, audio_data: bytes) -> bool:
+        """
+        Detect if audio contains speech (not just background noise/music)
+        Uses energy-based detection with frame counting for stability
+        """
+        try:
+            # Convert bytes to numpy array for analysis
+            audio_array = np.frombuffer(audio_data, dtype=np.int16)
+            
+            # Calculate RMS energy
+            rms = np.sqrt(np.mean(audio_array.astype(np.float32) ** 2))
+            
+            # Calculate zero crossing rate (speech has higher ZCR than music/noise)
+            zero_crossings = np.sum(np.abs(np.diff(np.sign(audio_array)))) / 2
+            zcr = zero_crossings / len(audio_array)
+            
+            # Speech typically has:
+            # - Moderate to high energy (RMS > threshold)
+            # - Higher zero crossing rate (0.02 - 0.15 for speech at 8kHz)
+            # - Short bursts with pauses
+            
+            is_energetic = rms > self.energy_threshold
+            is_speech_like_zcr = 0.015 < zcr < 0.20  # Adjusted for 8kHz
+            
+            # Current frame has speech-like characteristics
+            if is_energetic and is_speech_like_zcr:
+                self.speech_frame_count += 1
+                self.silence_frame_count = 0
+            else:
+                self.speech_frame_count = max(0, self.speech_frame_count - 1)
+                self.silence_frame_count += 1
+            
+            # Require multiple consecutive speech frames to avoid false positives
+            return self.speech_frame_count >= self.min_speech_frames
+            
+        except Exception as e:
+            logger.warning(f"⚠️ VAD error: {e}")
+            return False  # Assume no speech on error
+
+
+class GoodbyeDetector:
+    """Detects goodbye phrases from either side and triggers graceful hangup"""
+    
+    POS = re.compile(r"\b(good\s?bye|bye\b|bye-?bye|thanks[, ]*bye|talk to you later|have a (nice|good) (day|one))\b", re.I)
+    NEG = re.compile(r"(before we say goodbye|don'?t say goodbye|if you say goodbye)", re.I)
+
+    def __init__(self, grace_ms: int = 1200):
+        self.user_said = False
+        self.agent_said = False
+        self._timer = None
+        self._grace_ms = grace_ms
+        self._lock = threading.Lock()
+
+    def feed(self, text: str, who: str, on_trigger, on_cancel):
+        t = (text or "").strip()
+        if not t: return
+        
+        # Debug logging
+        logger.debug(f"🔍 Goodbye detector: checking '{t}' from {who}")
+        
+        if self.POS.search(t) and not self.NEG.search(t):
+            logger.info(f"👋 Goodbye detected in text from {who}: '{t}'")
+            with self._lock:
+                if who == "user":
+                    self.user_said = True
+                    logger.info(f"👋 User said goodbye - arming hangup timer ({self._grace_ms}ms grace period)")
+                    self._arm(on_trigger)   # grace window
+                elif who == "agent":
+                    self.agent_said = True
+                    logger.info("👋 Agent said goodbye - triggering immediate hangup")
+                    self._arm(on_trigger, immediate=True)
+        else:
+            # Only cancel pending hangup if USER says something new (not agent continuing to speak)
+            if self._timer and who == "user":
+                logger.debug(f"🔄 Canceling goodbye timer due to new user speech: '{t}'")
+                with self._lock:
+                    self._disarm(on_cancel)
+            elif self._timer and who == "agent":
+                logger.debug(f"🔇 Agent still speaking ('{t[:50]}...'), keeping goodbye timer armed")
+
+    def _arm(self, on_trigger, immediate=False):
+        self._disarm(None)
+        delay = 0.0 if immediate else self._grace_ms / 1000.0
+        self._timer = threading.Timer(delay, on_trigger)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _disarm(self, on_cancel):
+        if self._timer:
+            self._timer.cancel()
+            self._timer = None
+            if on_cancel: on_cancel()
+
+
 class AudioPreprocessor:
     """Ultra-minimal audio preprocessing for lowest latency"""
     
@@ -721,7 +826,7 @@ def create_voice_config(language_info: Dict[str, Any], custom_config: Dict[str, 
             system_text += f" Additional instructions: {additional_prompt}"
     
     # Return a types.LiveConnectConfig object with the new structure
-    return types.LiveConnectConfig(
+    live_cfg = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         media_resolution="MEDIA_RESOLUTION_MEDIUM",
         speech_config=types.SpeechConfig(
@@ -737,6 +842,26 @@ def create_voice_config(language_info: Dict[str, Any], custom_config: Dict[str, 
             sliding_window=types.SlidingWindow(target_tokens=12800),
         ),
     )
+    
+    # ✅ Try to enable server-side transcripts for both directions.
+    # The SDK has 'input_audio_transcription' and 'output_audio_transcription' fields
+    # which both use AudioTranscriptionConfig
+    try:
+        from google.genai import types as gtypes
+        
+        # Check if AudioTranscriptionConfig exists
+        if hasattr(gtypes, "AudioTranscriptionConfig"):
+            # Enable both input (user) and output (agent) transcription
+            live_cfg.input_audio_transcription = gtypes.AudioTranscriptionConfig()
+            live_cfg.output_audio_transcription = gtypes.AudioTranscriptionConfig()
+            logger.info("✅ Enabled live audio transcription for both input (user) and output (agent)")
+        else:
+            logger.warning("⚠️ AudioTranscriptionConfig not found in SDK - live transcription not available")
+            
+    except Exception as e:
+        logger.warning(f"⚠️ Could not enable live transcripts: {e}. Continuing with AUDIO only.")
+    
+    return live_cfg
 
 # Default voice config (Bulgarian) - will be overridden dynamically
 DEFAULT_VOICE_CONFIG = create_voice_config(get_language_config('BG'))
@@ -1760,11 +1885,31 @@ class RTPSession:
         self.audio_preprocessor = AudioPreprocessor(sample_rate=8000)
         logger.info(f"🎵 Audio preprocessor initialized for session {session_id} - noise filtering enabled")
         
+        # Voice Activity Detection for timeout monitoring
+        self.vad = VoiceActivityDetector(sample_rate=8000)
+        self.last_voice_activity_time = time.time()
+        self.voice_timeout_seconds = 30.0  # 30 seconds of no voice = end call
+        self.timeout_monitor_thread = None
+        self.timeout_monitoring = True
+        self._cleanup_lock = threading.Lock()  # Prevent concurrent cleanup
+        self._cleanup_done = False  # Track if cleanup has been performed
+        logger.info(f"⏱️ Voice activity timeout monitoring enabled: {self.voice_timeout_seconds}s")
+        
+        # Goodbye detection for graceful hangup
+        self.goodbye = GoodbyeDetector(grace_ms=1200)
+        self._bye_sent = False  # Track if we already sent BYE
+        logger.info("👋 Goodbye detection enabled for graceful hangup")
+        
         # Start output processing thread immediately for greeting playback
         self.output_thread = threading.Thread(target=self._process_output_queue, daemon=True)
         self.output_thread.start()
         logger.info(f"🎵 Started output queue processing for session {session_id}")
         logger.info(f"🎵 RTP session initialized: output_processing={self.output_processing}, remote_addr={remote_addr}")
+        
+        # Start timeout monitoring thread
+        self.timeout_monitor_thread = threading.Thread(target=self._monitor_voice_timeout, daemon=True)
+        self.timeout_monitor_thread.start()
+        logger.info(f"⏱️ Started voice timeout monitoring for session {session_id}")
         
         # Keep processing flag for backward compatibility with other parts of the code
         self.processing = self.output_processing
@@ -1784,6 +1929,13 @@ class RTPSession:
             # Record the ORIGINAL audio (before preprocessing) for authentic recordings
             if self.call_recorder:
                 self.call_recorder.record_incoming_audio(pcm_data)
+            
+            # Check for voice activity (update last activity time if speech detected)
+            if self.vad.is_speech(pcm_data):
+                self.last_voice_activity_time = time.time()
+                if not hasattr(self, '_last_voice_log_time') or (time.time() - self._last_voice_log_time) > 5.0:
+                    self._last_voice_log_time = time.time()
+                    logger.debug(f"🗣️ Voice activity detected in session {self.session_id}")
             
             # VAD DISABLED - Send ALL audio to Gemini for testing
             # Apply basic audio preprocessing WITHOUT VAD filtering
@@ -1838,7 +1990,12 @@ class RTPSession:
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
         finally:
-            self.asyncio_loop.close()
+            # Close loop safely (check for None)
+            if self.asyncio_loop and not self.asyncio_loop.is_closed():
+                try:
+                    self.asyncio_loop.close()
+                except Exception as e:
+                    logger.warning(f"Error closing asyncio loop: {e}")
             self.input_processing = False
     
     async def _async_main_loop(self):
@@ -1925,13 +2082,44 @@ class RTPSession:
         
         while self.input_processing and self.voice_session.gemini_session:
             try:
+                # Double-check session is still active before receiving
+                if not self.input_processing or not self.voice_session.gemini_session:
+                    break
+                
                 # Get response from Gemini - this is a continuous stream
                 turn = self.voice_session.gemini_session.receive()
                 
                 turn_had_content = False
+                # Debug flag to log response attributes once
+                if not hasattr(self, '_response_attrs_logged'):
+                    self._response_attrs_logged = False
+                    
                 async for response in turn:
                     if not self.input_processing:
                         break
+                    
+                    # Log response attributes once for debugging
+                    if not self._response_attrs_logged:
+                        attrs = [attr for attr in dir(response) if not attr.startswith('_')]
+                        logger.info(f"🔍 Response object attributes: {', '.join(attrs[:20])}")  # First 20 to avoid clutter
+                        
+                        # Deep inspection of the response object
+                        logger.info(f"🔬 Response type: {type(response)}")
+                        logger.info(f"🔬 Response.__dict__ keys: {list(response.__dict__.keys()) if hasattr(response, '__dict__') else 'No __dict__'}")
+                        
+                        # Try to dump the whole response
+                        try:
+                            if hasattr(response, 'model_dump'):
+                                dump = response.model_dump()
+                                logger.info(f"🔬 Response.model_dump() keys: {list(dump.keys())}")
+                                # Show first few items of each key
+                                for key, value in dump.items():
+                                    if value is not None:
+                                        logger.info(f"🔬   {key}: {str(value)[:200]}")
+                        except Exception as e:
+                            logger.debug(f"Could not dump response: {e}")
+                        
+                        self._response_attrs_logged = True
                         
                     try:
                         # Check for audio data in the response (new API format)
@@ -1974,6 +2162,40 @@ class RTPSession:
                                     "assistant_response", text
                                 )
                                 logger.info(f"AI Response: {text}")
+                        
+                        # Feed transcripts to goodbye detector
+                        # Transcripts are in server_content.input_transcription and server_content.output_transcription
+                        try:
+                            # Check if we have server_content with transcriptions
+                            if hasattr(response, "server_content") and response.server_content:
+                                sc = response.server_content
+                                
+                                # 1) User (input) transcript
+                                if hasattr(sc, "input_transcription") and sc.input_transcription:
+                                    if hasattr(sc.input_transcription, "text") and sc.input_transcription.text:
+                                        user_txt = sc.input_transcription.text.strip()
+                                        if user_txt and user_txt != '.':  # Filter out noise/silence markers
+                                            logger.info(f"🎤 User transcript: {user_txt}")
+                                            self.goodbye.feed(user_txt, "user", self._trigger_hangup, self._cancel_hangup)
+                                
+                                # 2) Agent (output) transcript
+                                if hasattr(sc, "output_transcription") and sc.output_transcription:
+                                    if hasattr(sc.output_transcription, "text") and sc.output_transcription.text:
+                                        agent_txt = sc.output_transcription.text.strip()
+                                        # Filter out thinking text (starts with **) and noise markers
+                                        if agent_txt and not agent_txt.startswith('**') and agent_txt != '.':
+                                            logger.info(f"🗣️ Agent transcript: {agent_txt}")
+                                            self.goodbye.feed(agent_txt, "agent", self._trigger_hangup, self._cancel_hangup)
+                                        elif agent_txt and agent_txt.startswith('**'):
+                                            logger.debug(f"💭 Agent thinking: {agent_txt[:100]}...")
+                                
+                                # 3) Check for interruptions to cancel hangup timer
+                                if hasattr(sc, "interrupted") and sc.interrupted:
+                                    self._cancel_hangup()
+                                    logger.debug("🔄 Agent interrupted by user")
+                                    
+                        except Exception as e:
+                            logger.debug(f"Error checking transcripts: {e}")
                             
                     except Exception as e:
                         if self.input_processing:
@@ -1996,8 +2218,8 @@ class RTPSession:
                 if self.input_processing:  # Only log if we're still processing
                     # Check if it's a connection close error (expected during shutdown)
                     error_str = str(e).lower()
-                    if 'close frame' in error_str or 'connection closed' in error_str:
-                        logger.debug(f"Connection closing: {e}")
+                    if 'close frame' in error_str or 'connection closed' in error_str or 'concurrency' in error_str:
+                        logger.debug(f"Connection closing or concurrent access: {e}")
                         break  # Exit gracefully
                     else:
                         logger.error(f"Error receiving from Gemini: {e}")
@@ -2273,6 +2495,155 @@ class RTPSession:
             # Fallback to simple conversion
             return audioop.lin2ulaw(pcm_data, 2)
     
+    def _monitor_voice_timeout(self):
+        """Monitor voice activity and end call if no voice detected for timeout period"""
+        logger.info(f"⏱️ Voice timeout monitor started for session {self.session_id}")
+        
+        while self.timeout_monitoring and self.output_processing:
+            try:
+                # Check how long since last voice activity
+                time_since_voice = time.time() - self.last_voice_activity_time
+                
+                # Log periodically for debugging
+                if int(time_since_voice) % 10 == 0 and int(time_since_voice) > 0:
+                    remaining = self.voice_timeout_seconds - time_since_voice
+                    if remaining > 0:
+                        logger.debug(f"⏳ No voice for {int(time_since_voice)}s, timeout in {int(remaining)}s")
+                
+                # Check if timeout exceeded
+                if time_since_voice > self.voice_timeout_seconds:
+                    logger.warning(f"⏱️ No voice activity detected for {int(time_since_voice)}s in session {self.session_id}")
+                    logger.warning(f"🔚 Ending call due to voice inactivity timeout")
+                    
+                    # Stop monitoring to prevent multiple BYE messages
+                    self.timeout_monitoring = False
+                    
+                    # Send BYE to end the call
+                    self._send_bye_to_gate()
+                    break
+                
+                # Check every 1 second
+                time.sleep(1.0)
+                
+            except Exception as e:
+                logger.error(f"Error in voice timeout monitor: {e}")
+                time.sleep(1.0)
+        
+        logger.info(f"⏱️ Voice timeout monitor stopped for session {self.session_id}")
+    
+    def _trigger_hangup(self):
+        """Trigger graceful hangup when goodbye is detected"""
+        if self._bye_sent:
+            return
+        self._bye_sent = True
+        logger.info("👋 Goodbye confirmed → sending SIP BYE")
+        self._send_bye_to_gate()
+
+    def _cancel_hangup(self):
+        """Cancel pending hangup due to new speech"""
+        # called if barge-in or clarifying speech happens
+        logger.debug("🛑 Hangup grace window canceled due to new speech")
+    
+    def _send_bye_to_gate(self):
+        """Send SIP BYE message to Gate to terminate the call"""
+        try:
+            # Use cleanup lock to prevent concurrent cleanup
+            with self._cleanup_lock:
+                # Check if cleanup already done
+                if self._cleanup_done:
+                    logger.debug(f"Cleanup already performed for session {self.session_id}, skipping")
+                    return
+                
+                # Mark cleanup as in progress
+                self._cleanup_done = True
+                
+                logger.info(f"📞 Sending SIP BYE to terminate session {self.session_id}")
+                
+                # Check if we have stored SIP details in the voice session
+                if not self.voice_session or not self.voice_session.sip_handler:
+                    # Try to get from active_sessions as fallback
+                    from __main__ import active_sessions
+                    
+                    session_data = active_sessions.get(self.session_id)
+                    if not session_data:
+                        logger.warning(f"⚠️ Session {self.session_id} not found - cannot send BYE (already terminated)")
+                        # Session already removed, just stop local processing
+                        self.input_processing = False
+                        self.output_processing = False
+                        self.processing = False
+                        self.timeout_monitoring = False
+                        
+                        # Close Gemini session if it exists
+                        if self.voice_session and hasattr(self.voice_session, 'gemini_session'):
+                            try:
+                                if self.voice_session.gemini_session:
+                                    logger.info("🔌 Closing Gemini session")
+                                    self.voice_session.gemini_session = None
+                            except Exception as e:
+                                logger.debug(f"Error closing Gemini session: {e}")
+                        
+                        return
+                    
+                    # Get SIP details from session data
+                    sip_handler = session_data.get('sip_handler')
+                    call_id = session_data.get('call_id', self.session_id)
+                    from_tag = session_data.get('from_tag', 'voice-agent')
+                    to_tag = session_data.get('to_tag', '')
+                    called_number = session_data.get('called_number', 'unknown')
+                else:
+                    # Use stored SIP details from voice session
+                    sip_handler = self.voice_session.sip_handler
+                    call_id = self.voice_session.call_id
+                    from_tag = self.voice_session.from_tag
+                    to_tag = self.voice_session.to_tag
+                    called_number = self.voice_session.called_number
+                
+                if not sip_handler:
+                    logger.warning(f"⚠️ No SIP handler found for session {self.session_id}")
+                    # Try to clean up locally anyway
+                    self.input_processing = False
+                    self.output_processing = False
+                    self.processing = False
+                    self.timeout_monitoring = False
+                    return
+                
+                # Create BYE message
+                username = sip_handler.config.get('username', '200')
+                bye_message = f"""BYE sip:{called_number}@{sip_handler.gate_ip}:{sip_handler.sip_port} SIP/2.0
+Via: SIP/2.0/UDP {sip_handler.local_ip}:{sip_handler.sip_port};branch=z9hG4bK-bye-{uuid.uuid4().hex[:8]}
+From: <sip:{username}@{sip_handler.gate_ip}>;tag={from_tag}
+To: <sip:{called_number}@{sip_handler.gate_ip}>;tag={to_tag}
+Call-ID: {call_id}
+CSeq: 999 BYE
+Max-Forwards: 70
+User-Agent: WindowsVoiceAgent/1.0
+Content-Length: 0
+
+"""
+                
+                # Send BYE message
+                gate_addr = (sip_handler.gate_ip, sip_handler.sip_port)
+                sip_handler.socket.sendto(bye_message.encode(), gate_addr)
+                logger.info(f"✅ BYE message sent to {gate_addr} for session {self.session_id}")
+                
+                # Clean up session
+                self.input_processing = False
+                self.output_processing = False
+                self.processing = False
+                self.timeout_monitoring = False
+                
+                # Let the SIP handler's _handle_bye process the cleanup
+                
+        except Exception as e:
+            logger.error(f"Error sending BYE message: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            # Clean up locally on error
+            self.input_processing = False
+            self.output_processing = False
+            self.processing = False
+            self.timeout_monitoring = False
+    
 
 def get_default_owner_id() -> int:
     """Get the default owner ID for incoming calls (first admin user)"""
@@ -2446,6 +2817,9 @@ class WindowsSIPHandler:
             # Generate session ID
             session_id = str(uuid.uuid4())
             
+            # Generate to_tag for this session (used in SIP responses)
+            to_tag = session_id[:8]  # Use first 8 chars of session_id
+            
             # Send 180 Ringing first
             ringing_response = self._create_sip_ringing_response(message, session_id)
             self.socket.sendto(ringing_response.encode(), addr)
@@ -2501,6 +2875,12 @@ class WindowsSIPHandler:
             # Create voice session with language-specific configuration
             voice_session = WindowsVoiceSession(session_id, caller_id, self.phone_number, voice_config, custom_config=None)
             
+            # Store SIP details in voice session for sending BYE later
+            voice_session.sip_handler = self
+            voice_session.from_tag = from_tag
+            voice_session.to_tag = to_tag
+            voice_session.call_id = call_id
+            
             # Create RTP session for audio
             rtp_session = self.rtp_server.create_session(session_id, addr, voice_session, voice_session.call_recorder)
             
@@ -2510,7 +2890,12 @@ class WindowsSIPHandler:
                 "caller_addr": addr,
                 "status": "waiting_for_ack",
                 "call_start": datetime.now(timezone.utc),
-                "call_id": call_id
+                "call_id": call_id,
+                "sip_handler": self,
+                "from_tag": from_tag,
+                "to_tag": to_tag,
+                "caller_id": caller_id,
+                "called_number": self.phone_number
             }
             
             logger.info(f"⏳ Waiting for ACK to establish call {session_id}...")
@@ -2585,62 +2970,112 @@ Content-Length: 0
                     session_found = True
                     logger.info(f"📞 Call termination received for session {session_id}")
                     
-                    # Send 200 OK response immediately
-                    ok_response = "SIP/2.0 200 OK\r\n\r\n"
-                    self.socket.sendto(ok_response.encode(), addr)
-                    logger.info(f"✅ Sent BYE 200 OK response")
-                    
-                    # Immediate session cleanup for next call readiness
-                    voice_session = session_data["voice_session"]
                     rtp_session = session_data.get("rtp_session")
                     
-                    # Stop all processing immediately
-                    if rtp_session:
-                        rtp_session.input_processing = False
-                        rtp_session.output_processing = False
-                        rtp_session.processing = False
-                        logger.info(f"🛑 RTP processing stopped for session {session_id}")
-                    
-                    # Remove from active sessions immediately
-                    del active_sessions[session_id]
-                    logger.info(f"🗑️ Session {session_id} removed from active sessions")
-                    
-                    # Cleanup RTP session
-                    self.rtp_server.remove_session(session_id)
-                    
-                    # Voice session cleanup (non-blocking)
-                    try:
-                        if hasattr(voice_session, 'cleanup'):
-                            voice_session.cleanup()
-                    except Exception as e:
-                        logger.warning(f"Voice session cleanup warning (non-critical): {e}")
-                    
-                    # Update CRM database asynchronously to avoid blocking
-                    def update_crm_async():
-                        try:
-                            db = get_session()
+                    # Use cleanup lock to prevent concurrent cleanup with timeout monitor
+                    if rtp_session and hasattr(rtp_session, '_cleanup_lock'):
+                        with rtp_session._cleanup_lock:
+                            # Check if cleanup already done
+                            if hasattr(rtp_session, '_cleanup_done') and rtp_session._cleanup_done:
+                                logger.debug(f"Cleanup already performed for session {session_id}, skipping")
+                                # Still send OK response
+                                ok_response = "SIP/2.0 200 OK\r\n\r\n"
+                                self.socket.sendto(ok_response.encode(), addr)
+                                return
+                            
+                            # Mark cleanup as done
+                            if hasattr(rtp_session, '_cleanup_done'):
+                                rtp_session._cleanup_done = True
+                            
+                            # Send 200 OK response immediately
+                            ok_response = "SIP/2.0 200 OK\r\n\r\n"
+                            self.socket.sendto(ok_response.encode(), addr)
+                            logger.info(f"✅ Sent BYE 200 OK response")
+                            
+                            # Immediate session cleanup for next call readiness
+                            voice_session = session_data["voice_session"]
+                            
+                            # Stop all processing immediately
+                            if rtp_session:
+                                rtp_session.input_processing = False
+                                rtp_session.output_processing = False
+                                rtp_session.processing = False
+                                rtp_session.timeout_monitoring = False  # Stop timeout monitoring
+                                logger.info(f"🛑 RTP processing stopped for session {session_id}")
+                            
+                            # Remove from active sessions immediately
+                            del active_sessions[session_id]
+                            logger.info(f"🗑️ Session {session_id} removed from active sessions")
+                            
+                            # Cleanup RTP session
+                            self.rtp_server.remove_session(session_id)
+                            
+                            # Voice session cleanup (non-blocking)
                             try:
-                                crm_session = db.query(CallSession).filter(CallSession.session_id == session_id).first()
-                                if crm_session:
-                                    crm_session.status = "COMPLETED"
-                                    crm_session.ended_at = datetime.utcnow()
-                                    if crm_session.started_at and crm_session.ended_at:
-                                        crm_session.duration = int((crm_session.ended_at - crm_session.started_at).total_seconds())
-                                    db.commit()
-                                    logger.info(f"📋 CRM database updated for session {session_id}")
+                                if hasattr(voice_session, 'cleanup'):
+                                    voice_session.cleanup()
                             except Exception as e:
-                                logger.error(f"Error updating CRM session: {e}")
-                            finally:
-                                db.close()
+                                logger.warning(f"Voice session cleanup warning (non-critical): {e}")
+                            
+                            # Update CRM database asynchronously to avoid blocking
+                            def update_crm_async():
+                                try:
+                                    db = get_session()
+                                    try:
+                                        crm_session = db.query(CallSession).filter(CallSession.session_id == session_id).first()
+                                        if crm_session:
+                                            crm_session.status = "COMPLETED"
+                                            crm_session.ended_at = datetime.utcnow()
+                                            if crm_session.started_at and crm_session.ended_at:
+                                                crm_session.duration = int((crm_session.ended_at - crm_session.started_at).total_seconds())
+                                            db.commit()
+                                            logger.info(f"📋 CRM database updated for session {session_id}")
+                                    except Exception as e:
+                                        logger.error(f"Error updating CRM session: {e}")
+                                    finally:
+                                        db.close()
+                                except Exception as e:
+                                    logger.error(f"Error in CRM update thread: {e}")
+                            
+                            # Run CRM update in background thread to avoid blocking
+                            threading.Thread(target=update_crm_async, daemon=True).start()
+                            
+                            # System ready for next call
+                            logger.info(f"✅ Call cleanup completed - system ready for next call")
+                            logger.info(f"📞 Active sessions: {len(active_sessions)}")
+                    else:
+                        # No cleanup lock (old session), do regular cleanup
+                        # Send 200 OK response immediately
+                        ok_response = "SIP/2.0 200 OK\r\n\r\n"
+                        self.socket.sendto(ok_response.encode(), addr)
+                        logger.info(f"✅ Sent BYE 200 OK response")
+                        
+                        # Immediate session cleanup for next call readiness
+                        voice_session = session_data["voice_session"]
+                        
+                        # Stop all processing immediately
+                        if rtp_session:
+                            rtp_session.input_processing = False
+                            rtp_session.output_processing = False
+                            rtp_session.processing = False
+                            if hasattr(rtp_session, 'timeout_monitoring'):
+                                rtp_session.timeout_monitoring = False  # Stop timeout monitoring
+                            logger.info(f"🛑 RTP processing stopped for session {session_id}")
+                        
+                        # Remove from active sessions immediately
+                        del active_sessions[session_id]
+                        logger.info(f"🗑️ Session {session_id} removed from active sessions")
+                        
+                        # Cleanup RTP session
+                        self.rtp_server.remove_session(session_id)
+                        
+                        # Voice session cleanup (non-blocking)
+                        try:
+                            if hasattr(voice_session, 'cleanup'):
+                                voice_session.cleanup()
                         except Exception as e:
-                            logger.error(f"Error in CRM update thread: {e}")
+                            logger.warning(f"Voice session cleanup warning (non-critical): {e}")
                     
-                    # Run CRM update in background thread to avoid blocking
-                    threading.Thread(target=update_crm_async, daemon=True).start()
-                    
-                    # System ready for next call
-                    logger.info(f"✅ Call cleanup completed - system ready for next call")
-                    logger.info(f"📞 Active sessions: {len(active_sessions)}")
                     break
             
             if not session_found:
@@ -2985,7 +3420,8 @@ Content-Length: {len(sdp_content)}
                 'username': username,
                 'sdp_content': sdp_content,
                 'cseq': 1,
-                'custom_config': custom_config  # Store custom config for use in success handler
+                'custom_config': custom_config,  # Store custom config for use in success handler
+                'from_tag': session_id[:8]  # Store our own from_tag for sending BYE later
             }
             
             # Send INVITE
@@ -3385,7 +3821,6 @@ Content-Length: {len(sdp_content)}
             # Extract Call-ID to find the pending invite
             call_id = None
             to_tag = None
-            from_tag = None
             
             for line in message.split('\n'):
                 line = line.strip()
@@ -3399,14 +3834,6 @@ Content-Length: {len(sdp_content)}
                     if tag_end == -1:
                         tag_end = len(line)
                     to_tag = line[tag_start:tag_end].strip()
-                elif line.startswith('From:') and 'tag=' in line:
-                    tag_start = line.find('tag=') + 4
-                    tag_end = line.find(';', tag_start)
-                    if tag_end == -1:
-                        tag_end = line.find('>', tag_start)
-                    if tag_end == -1:
-                        tag_end = len(line)
-                    from_tag = line[tag_start:tag_end].strip()
             
             if not call_id or call_id not in self.pending_invites:
                 logger.warning("❌ Cannot find pending INVITE for successful response")
@@ -3416,6 +3843,7 @@ Content-Length: {len(sdp_content)}
             phone_number = invite_info['phone_number']
             original_number = invite_info.get('original_number', phone_number)  # Get original number without prefix
             session_id = invite_info['session_id']
+            from_tag = invite_info['from_tag']  # Use our stored from_tag, not from the 200 OK
             
             logger.info(f"✅ Outbound call to {phone_number} answered!")
             
@@ -3439,6 +3867,12 @@ Content-Length: {len(sdp_content)}
                 custom_config=custom_config
             )
             
+            # Store SIP details in voice session for sending BYE later
+            voice_session.sip_handler = self
+            voice_session.from_tag = from_tag
+            voice_session.to_tag = to_tag
+            voice_session.call_id = call_id
+            
             # Create RTP session - for outbound calls, we need to get the remote address from SDP
             # For now, we'll use the Gate VoIP address as the RTP destination
             remote_addr = (self.gate_ip, 5004)  # Default RTP port
@@ -3452,7 +3886,12 @@ Content-Length: {len(sdp_content)}
                 "status": "connecting",
                 "call_start": datetime.now(timezone.utc),
                 "call_id": call_id,
-                "call_type": "outbound"
+                "call_type": "outbound",
+                "sip_handler": self,
+                "from_tag": from_tag,
+                "to_tag": to_tag,
+                "caller_id": self.phone_number,
+                "called_number": phone_number
             }
             
             # Send ACK to complete the call setup BEFORE initializing Gemini
@@ -3754,6 +4193,12 @@ class WindowsVoiceSession:
         
         # Store custom config for later use
         self.custom_config = custom_config
+        
+        # SIP details for sending BYE (will be set after call is established)
+        self.sip_handler = None
+        self.from_tag = None
+        self.to_tag = None
+        self.call_id = None
         
         # Initialize call recorder
         self.call_recorder = CallRecorder(session_id, caller_id, called_number)
