@@ -16,8 +16,14 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Password hashing - with proper configuration for bcrypt
+pwd_context = CryptContext(
+    schemes=["bcrypt"],
+    deprecated="auto",
+    bcrypt__min_rounds=4,
+    bcrypt__max_rounds=12,
+    bcrypt__default_rounds=12
+)
 
 # Helper function for safe enum value extraction
 def get_enum_value(enum_or_str):
@@ -558,12 +564,22 @@ class User:
         return " ".join(parts) if parts else self.username
     
     def verify_password(self, password: str) -> bool:
-        """Verify password"""
+        """Verify password - truncate to 72 bytes for bcrypt compatibility"""
+        # Bcrypt only supports passwords up to 72 bytes
+        # Truncate the password if it's longer (encode to bytes first to handle UTF-8 correctly)
+        password_bytes = password.encode('utf-8')
+        if len(password_bytes) > 72:
+            password = password_bytes[:72].decode('utf-8', errors='ignore')
         return pwd_context.verify(password, self.hashed_password)
     
     @staticmethod
     def hash_password(password: str) -> str:
-        """Hash password"""
+        """Hash password - truncate to 72 bytes for bcrypt compatibility"""
+        # Bcrypt only supports passwords up to 72 bytes
+        # Truncate the password if it's longer (encode to bytes first to handle UTF-8 correctly)
+        password_bytes = password.encode('utf-8')
+        if len(password_bytes) > 72:
+            password = password_bytes[:72].decode('utf-8', errors='ignore')
         return pwd_context.hash(password)
     
     def is_subscription_active(self) -> bool:

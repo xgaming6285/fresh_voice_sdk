@@ -2,9 +2,9 @@
 echo Starting Voice Agent CRM System...
 echo.
 
-REM Start backend in new window
+REM Start backend in new window with virtual environment
 echo Starting Voice Agent Backend...
-start "Voice Agent Backend" cmd /k "python windows_voice_agent.py"
+start "Voice Agent Backend" cmd /k "call venv\Scripts\activate && python windows_voice_agent.py"
 
 REM Wait a bit for backend to start
 timeout /t 5 /nobreak > nul

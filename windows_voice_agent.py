@@ -1900,6 +1900,14 @@ class RTPSession:
         self._bye_sent = False  # Track if we already sent BYE
         logger.info("👋 Goodbye detection enabled for graceful hangup")
         
+        # Echo suppression / state management
+        self.assistant_speaking = False  # Track when assistant is speaking
+        self.assistant_stop_time = 0  # Track when assistant stopped speaking
+        self.echo_suppression_delay = 0.15  # 150ms grace period after assistant stops (reduced for faster response)
+        self.audio_output_active = False  # Track if we're actively outputting audio
+        self.last_output_time = 0  # Track last time we sent output audio
+        logger.info("🔇 Echo suppression enabled with 150ms post-speech grace period")
+        
         # Start output processing thread immediately for greeting playback
         self.output_thread = threading.Thread(target=self._process_output_queue, daemon=True)
         self.output_thread.start()
@@ -1915,7 +1923,7 @@ class RTPSession:
         self.processing = self.output_processing
         
     def process_incoming_audio(self, audio_data: bytes, payload_type: int, timestamp: int):
-        """Process incoming RTP audio packet with advanced VAD - only send speech to Gemini"""
+        """Process incoming RTP audio packet with echo suppression"""
         try:
             # Convert payload based on type
             if payload_type == 0:  # PCMU/μ-law
@@ -1937,16 +1945,35 @@ class RTPSession:
                     self._last_voice_log_time = time.time()
                     logger.debug(f"🗣️ Voice activity detected in session {self.session_id}")
             
-            # VAD DISABLED - Send ALL audio to Gemini for testing
-            # Apply basic audio preprocessing WITHOUT VAD filtering
+            # Echo suppression: Check if assistant is speaking or just finished
+            current_time = time.time()
+            time_since_output = current_time - self.last_output_time
+            
+            # Suppress audio if:
+            # 1. Assistant is actively speaking (audio_output_active)
+            # 2. Within grace period after assistant stopped (echo_suppression_delay)
+            if self.audio_output_active or time_since_output < self.echo_suppression_delay:
+                if not hasattr(self, '_suppression_logged') or current_time - self._suppression_logged > 1.0:
+                    self._suppression_logged = current_time
+                    if self.audio_output_active:
+                        logger.debug(f"🔇 Suppressing incoming audio - assistant is speaking")
+                    else:
+                        logger.debug(f"🔇 Suppressing incoming audio - grace period ({time_since_output:.1f}s < {self.echo_suppression_delay}s)")
+                return  # Don't process this audio
+            
+            # Clear suppression log flag when we start processing again
+            if hasattr(self, '_suppression_logged'):
+                delattr(self, '_suppression_logged')
+                logger.info(f"🎤 Resuming audio processing after echo suppression (delay: {time_since_output:.2f}s)")
+            
+            # Process audio normally
             try:
-                # Use simpler preprocessing without aggressive VAD
-                processed_pcm = pcm_data  # Skip preprocessing entirely for now
+                processed_pcm = pcm_data  # Skip preprocessing for now
                 
                 # Log once to show audio is flowing
                 if not hasattr(self, '_audio_packet_count'):
                     self._audio_packet_count = 0
-                    logger.info(f"🎤 VAD DISABLED - Sending ALL audio to Gemini")
+                    logger.info(f"🎤 Echo suppression enabled - processing user audio")
                     
             except Exception as preprocess_error:
                 logger.warning(f"⚠️ Audio preprocessing failed, using original: {preprocess_error}")
@@ -2193,6 +2220,15 @@ class RTPSession:
                                 if hasattr(sc, "interrupted") and sc.interrupted:
                                     self._cancel_hangup()
                                     logger.debug("🔄 Agent interrupted by user")
+                                    # Clear echo suppression immediately on interruption
+                                    self.audio_output_active = False
+                                    self.last_output_time = 0  # Reset to allow immediate input
+                                    # Clear output queue to stop any pending audio
+                                    try:
+                                        while not self.output_queue.empty():
+                                            self.output_queue.get_nowait()
+                                    except:
+                                        pass
                                     
                         except Exception as e:
                             logger.debug(f"Error checking transcripts: {e}")
@@ -2388,7 +2424,10 @@ class RTPSession:
         # Use perf_counter for high-resolution timing
         try:
             # Wait for the first packet to arrive to set the start time
-            payload = self.output_queue.get(timeout=1.0) 
+            payload = self.output_queue.get(timeout=1.0)
+            # Mark that we're actively outputting audio
+            self.audio_output_active = True
+            self.last_output_time = time.time()
         except queue.Empty:
             # No audio for 1 second, just start the loop
             pass
@@ -2402,8 +2441,30 @@ class RTPSession:
             try:
                 # Use a tighter timeout (e.g., 2-3 packet intervals)
                 payload = self.output_queue.get(timeout=0.060)
+                # We got audio - mark as active
+                self.audio_output_active = True
+                self.last_output_time = time.time()
             except queue.Empty:
-                # This is normal when the AI is not speaking
+                # No audio in queue - assistant stopped speaking
+                if self.audio_output_active:
+                    self.audio_output_active = False
+                    self.assistant_stop_time = time.time()
+                    logger.debug(f"🔊 Assistant stopped speaking - enabling grace period")
+                    # Clear any buffered audio to prevent processing stale data
+                    with self.buffer_lock:
+                        if self.audio_buffer:
+                            logger.debug(f"🧹 Clearing {len(self.audio_buffer)} bytes of buffered audio")
+                            self.audio_buffer = b""
+                    # Also clear the input queue
+                    try:
+                        cleared_count = 0
+                        while not self.audio_input_queue.empty():
+                            self.audio_input_queue.get_nowait()
+                            cleared_count += 1
+                        if cleared_count > 0:
+                            logger.debug(f"🧹 Cleared {cleared_count} queued audio chunks")
+                    except:
+                        pass
                 # Reset the pacer to avoid building up "missed" time
                 next_packet_time = time.perf_counter() + ptime_seconds
                 continue

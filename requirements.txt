@@ -59,6 +59,7 @@ pyjwt>=2.8.0
 
 # Password Hashing
 passlib[bcrypt]>=1.7.4
+bcrypt==4.1.2
 
 # ============================================
 # Video/Image Processing (Optional - Camera Mode)
