@@ -163,9 +163,19 @@ function Leads() {
     setCallDialog(true);
   };
 
-  const handleMakeCustomCall = async (lead, callConfig, greetingFile) => {
+  const handleMakeCustomCall = async (
+    lead,
+    callConfig,
+    greetingFile,
+    greetingTranscript
+  ) => {
     try {
-      await voiceAgentAPI.makeCall(lead.full_phone, callConfig, greetingFile);
+      await voiceAgentAPI.makeCall(
+        lead.full_phone,
+        callConfig,
+        greetingFile,
+        greetingTranscript
+      );
       showSnackbar(
         `Custom call initiated to ${lead.full_name} at ${lead.full_phone}`,
         "success"

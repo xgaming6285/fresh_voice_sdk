@@ -146,8 +146,14 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
         console.log("Greeting generated:", greetingData);
         setGreetingStatus("ready");
 
-        // Step 2: Make call with custom greeting
-        await onMakeCall(lead, callConfig, greetingData.greeting_file);
+        // Step 2: Make call with custom greeting AND greeting transcript for context
+        // ✅ Pass greeting transcript so Gemini knows what was already said
+        await onMakeCall(
+          lead,
+          callConfig,
+          greetingData.greeting_file,
+          greetingData.transcript || greetingData.greeting_text
+        );
       }
 
       onClose();

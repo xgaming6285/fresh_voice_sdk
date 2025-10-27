@@ -113,13 +113,22 @@ export const voiceAgentAPI = {
   generateSummary: (sessionId, language = "English") =>
     api.post(`/api/transcripts/${sessionId}/generate_summary`, { language }),
   getSummary: (sessionId) => api.get(`/api/transcripts/${sessionId}/summary`),
-  makeCall: (phoneNumber, callConfig = null, greetingFile = null) => {
+  makeCall: (
+    phoneNumber,
+    callConfig = null,
+    greetingFile = null,
+    greetingTranscript = null
+  ) => {
     const payload = { phone_number: phoneNumber };
     if (callConfig) {
       payload.call_config = callConfig;
     }
     if (greetingFile) {
       payload.greeting_file = greetingFile;
+    }
+    // ✅ Pass greeting transcript so Gemini knows what was already said
+    if (greetingTranscript) {
+      payload.greeting_transcript = greetingTranscript;
     }
     return api.post("/api/make_call", payload);
   },

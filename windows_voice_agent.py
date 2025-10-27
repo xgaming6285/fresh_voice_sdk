@@ -682,6 +682,7 @@ def create_voice_config(language_info: Dict[str, Any], custom_config: Dict[str, 
         main_benefits = custom_config.get('main_benefits', '')
         special_offer = custom_config.get('special_offer', '')
         objection_strategy = custom_config.get('objection_strategy', 'understanding')
+        greeting_transcript = custom_config.get('greeting_transcript', '')  # ✅ Get greeting text
     else:
         # Minimal defaults when no custom config is provided
         company_name = 'QuantumAI'
@@ -693,10 +694,15 @@ def create_voice_config(language_info: Dict[str, Any], custom_config: Dict[str, 
         main_benefits = ''
         special_offer = ''
         objection_strategy = 'understanding'
+        greeting_transcript = ''  # ✅ No greeting by default
     
     # Create system instruction in the detected language
     if lang_name == 'English':
         system_text = f"You are {caller_name} from {company_name}, a professional sales representative for {product_name}. "
+        
+        # ✅ Add greeting context if available
+        if greeting_transcript:
+            system_text += f"IMPORTANT: You have ALREADY played this greeting to the caller: \"{greeting_transcript}\". DO NOT repeat this greeting. DO NOT introduce yourself again. The caller has already heard your introduction. Wait for the caller to speak first, then respond naturally to what they say. "
         
         # Add objective-specific instructions
         if call_objective == "sales":
@@ -741,6 +747,10 @@ def create_voice_config(language_info: Dict[str, Any], custom_config: Dict[str, 
     elif lang_name == 'Bulgarian':
         system_text = f"Вие сте {caller_name} от {company_name}, професионален търговски представител на {product_name}. "
         
+        # ✅ Add greeting context if available (in Bulgarian)
+        if greeting_transcript:
+            system_text += f"ВАЖНО: Вече сте изпратили това приветствие на обаждащия се: \"{greeting_transcript}\". НЕ повтаряйте това приветствие. НЕ се представяйте отново. Обаждащият се вече е чул вашето представяне. Изчакайте обаждащият се първо да говори, след това отговорете естествено на това, което казва. "
+        
         # Add objective-specific instructions in Bulgarian
         if call_objective == "sales":
             system_text += "Вие правите търговски обаждания за продажба на този продукт. Фокусирайте се върху превръщането на потенциалните клиенти в купувачи, като подчертавате ползите от продукта и затваряте продажбата. "
@@ -784,6 +794,10 @@ def create_voice_config(language_info: Dict[str, Any], custom_config: Dict[str, 
     else:
         # For other languages, use English template but mention the language
         system_text = f"You are {caller_name} from {company_name}, a professional sales representative for {product_name}, speaking in {lang_name}. "
+        
+        # ✅ Add greeting context if available
+        if greeting_transcript:
+            system_text += f"IMPORTANT: You have ALREADY played this greeting to the caller: \"{greeting_transcript}\". DO NOT repeat this greeting. DO NOT introduce yourself again. The caller has already heard your introduction. Wait for the caller to speak first, then respond naturally to what they say. "
         
         # Add objective-specific instructions
         if call_objective == "sales":
@@ -4750,7 +4764,8 @@ async def generate_greeting(greeting_request: dict):
                 "transcript": result["transcript"],
                 "language": result["language"],
                 "language_code": result["language_code"],
-                "voice": result.get("voice", voice_name)
+                "voice": result.get("voice", voice_name),
+                "greeting_text": result["transcript"]  # ✅ Include greeting text for context
             }
         else:
             raise HTTPException(
@@ -4771,6 +4786,7 @@ async def make_outbound_call(call_request: dict, current_user: User = Depends(ch
         phone_number = call_request.get("phone_number")
         call_config = call_request.get("call_config", {})
         greeting_file = call_request.get("greeting_file")  # Optional custom greeting
+        greeting_transcript = call_request.get("greeting_transcript")  # ✅ Greeting text for context
         
         if not phone_number:
             raise HTTPException(status_code=400, detail="Phone number required")
@@ -4802,6 +4818,11 @@ async def make_outbound_call(call_request: dict, current_user: User = Depends(ch
         if greeting_file:
             custom_config['greeting_file'] = greeting_file
             logger.info(f"🎵 Using custom greeting: {greeting_file}")
+        
+        # ✅ Store greeting transcript for context (so Gemini knows what was already said)
+        if greeting_transcript:
+            custom_config['greeting_transcript'] = greeting_transcript
+            logger.info(f"📝 Greeting transcript: {greeting_transcript[:100]}...")
         
         # Get the agent's gate slot
         gate_slot = None
