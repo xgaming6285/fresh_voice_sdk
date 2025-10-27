@@ -1888,12 +1888,12 @@ class RTPSession:
         # Voice Activity Detection for timeout monitoring
         self.vad = VoiceActivityDetector(sample_rate=8000)
         self.last_voice_activity_time = time.time()
-        self.voice_timeout_seconds = 30.0  # 30 seconds of no voice = end call
+        self.voice_timeout_seconds = 15.0  # 15 seconds of no USER voice = end call
         self.timeout_monitor_thread = None
         self.timeout_monitoring = True
         self._cleanup_lock = threading.Lock()  # Prevent concurrent cleanup
         self._cleanup_done = False  # Track if cleanup has been performed
-        logger.info(f"⏱️ Voice activity timeout monitoring enabled: {self.voice_timeout_seconds}s")
+        logger.info(f"⏱️ Voice activity timeout monitoring enabled: {self.voice_timeout_seconds}s (user turn only)")
         
         # Goodbye detection for graceful hangup
         self.goodbye = GoodbyeDetector(grace_ms=1200)
@@ -2428,6 +2428,8 @@ class RTPSession:
             # Mark that we're actively outputting audio
             self.audio_output_active = True
             self.last_output_time = time.time()
+            # Reset inactivity timer when agent starts speaking
+            self.last_voice_activity_time = time.time()
         except queue.Empty:
             # No audio for 1 second, just start the loop
             pass
@@ -2441,9 +2443,11 @@ class RTPSession:
             try:
                 # Use a tighter timeout (e.g., 2-3 packet intervals)
                 payload = self.output_queue.get(timeout=0.060)
-                # We got audio - mark as active
+                # We got audio - mark as active and reset inactivity timer
                 self.audio_output_active = True
                 self.last_output_time = time.time()
+                # Reset inactivity timer when agent speaks (so we only count user inactivity)
+                self.last_voice_activity_time = time.time()
             except queue.Empty:
                 # No audio in queue - assistant stopped speaking
                 if self.audio_output_active:
@@ -2557,31 +2561,43 @@ class RTPSession:
             return audioop.lin2ulaw(pcm_data, 2)
     
     def _monitor_voice_timeout(self):
-        """Monitor voice activity and end call if no voice detected for timeout period"""
+        """Monitor voice activity and end call if no USER voice detected for timeout period
+        
+        Only counts inactivity when it's the user's turn to speak (not during agent responses).
+        Timer is reset when:
+        - User speaks (real voice detected, not background noise)
+        - Agent starts speaking (so we don't count agent response time)
+        """
         logger.info(f"⏱️ Voice timeout monitor started for session {self.session_id}")
         
         while self.timeout_monitoring and self.output_processing:
             try:
-                # Check how long since last voice activity
-                time_since_voice = time.time() - self.last_voice_activity_time
-                
-                # Log periodically for debugging
-                if int(time_since_voice) % 10 == 0 and int(time_since_voice) > 0:
-                    remaining = self.voice_timeout_seconds - time_since_voice
-                    if remaining > 0:
-                        logger.debug(f"⏳ No voice for {int(time_since_voice)}s, timeout in {int(remaining)}s")
-                
-                # Check if timeout exceeded
-                if time_since_voice > self.voice_timeout_seconds:
-                    logger.warning(f"⏱️ No voice activity detected for {int(time_since_voice)}s in session {self.session_id}")
-                    logger.warning(f"🔚 Ending call due to voice inactivity timeout")
+                # Only count inactivity when it's user's turn (agent not speaking)
+                if not self.audio_output_active:
+                    # Check how long since last voice activity
+                    time_since_voice = time.time() - self.last_voice_activity_time
                     
-                    # Stop monitoring to prevent multiple BYE messages
-                    self.timeout_monitoring = False
+                    # Log periodically for debugging (only when it's user's turn)
+                    if int(time_since_voice) % 10 == 0 and int(time_since_voice) > 0:
+                        remaining = self.voice_timeout_seconds - time_since_voice
+                        if remaining > 0:
+                            logger.debug(f"⏳ No user voice for {int(time_since_voice)}s (user's turn), timeout in {int(remaining)}s")
                     
-                    # Send BYE to end the call
-                    self._send_bye_to_gate()
-                    break
+                    # Check if timeout exceeded
+                    if time_since_voice > self.voice_timeout_seconds:
+                        logger.warning(f"⏱️ No user voice activity for {int(time_since_voice)}s in session {self.session_id}")
+                        logger.warning(f"🔚 Ending call due to user inactivity timeout")
+                        
+                        # Stop monitoring to prevent multiple BYE messages
+                        self.timeout_monitoring = False
+                        
+                        # Send BYE to end the call
+                        self._send_bye_to_gate()
+                        break
+                else:
+                    # Agent is speaking - don't count this time as inactivity
+                    # The timer is already being reset in _process_output_queue
+                    pass
                 
                 # Check every 1 second
                 time.sleep(1.0)
