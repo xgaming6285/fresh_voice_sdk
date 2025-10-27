@@ -1851,10 +1851,22 @@ class RTPServer:
         return rtp_session
     
     def remove_session(self, session_id: str):
-        """Remove RTP session"""
+        """Remove RTP session and cleanup its resources"""
         if session_id in self.sessions:
+            rtp_session = self.sessions[session_id]
+            
+            # Call cleanup method to stop all threads
+            if hasattr(rtp_session, 'cleanup_threads'):
+                try:
+                    rtp_session.cleanup_threads()
+                    logger.info(f"✅ RTP session {session_id} threads cleaned up")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error cleaning up RTP session threads: {e}")
+            
             del self.sessions[session_id]
             logger.info(f"🎵 Removed RTP session {session_id}")
+        else:
+            logger.debug(f"RTP session {session_id} already removed")
     
     def stop(self):
         """Stop RTP server"""
@@ -2659,20 +2671,7 @@ class RTPSession:
                     if not session_data:
                         logger.warning(f"⚠️ Session {self.session_id} not found - cannot send BYE (already terminated)")
                         # Session already removed, just stop local processing
-                        self.input_processing = False
-                        self.output_processing = False
-                        self.processing = False
-                        self.timeout_monitoring = False
-                        
-                        # Close Gemini session if it exists
-                        if self.voice_session and hasattr(self.voice_session, 'gemini_session'):
-                            try:
-                                if self.voice_session.gemini_session:
-                                    logger.info("🔌 Closing Gemini session")
-                                    self.voice_session.gemini_session = None
-                            except Exception as e:
-                                logger.debug(f"Error closing Gemini session: {e}")
-                        
+                        self.cleanup_threads()
                         return
                     
                     # Get SIP details from session data
@@ -2691,11 +2690,8 @@ class RTPSession:
                 
                 if not sip_handler:
                     logger.warning(f"⚠️ No SIP handler found for session {self.session_id}")
-                    # Try to clean up locally anyway
-                    self.input_processing = False
-                    self.output_processing = False
-                    self.processing = False
-                    self.timeout_monitoring = False
+                    # Clean up locally
+                    self.cleanup_threads()
                     return
                 
                 # Create BYE message
@@ -2717,23 +2713,86 @@ Content-Length: 0
                 sip_handler.socket.sendto(bye_message.encode(), gate_addr)
                 logger.info(f"✅ BYE message sent to {gate_addr} for session {self.session_id}")
                 
-                # Clean up session
-                self.input_processing = False
-                self.output_processing = False
-                self.processing = False
-                self.timeout_monitoring = False
+                # Remove from active sessions
+                from __main__ import active_sessions
+                if self.session_id in active_sessions:
+                    del active_sessions[self.session_id]
+                    logger.info(f"🗑️ Session {self.session_id} removed from active sessions")
                 
-                # Let the SIP handler's _handle_bye process the cleanup
+                # Remove RTP session (this will call cleanup_threads automatically)
+                sip_handler.rtp_server.remove_session(self.session_id)
+                
+                logger.info(f"✅ Session {self.session_id} full cleanup complete after sending BYE")
                 
         except Exception as e:
             logger.error(f"Error sending BYE message: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             # Clean up locally on error
-            self.input_processing = False
-            self.output_processing = False
-            self.processing = False
-            self.timeout_monitoring = False
+            self.cleanup_threads()
+    
+    def cleanup_threads(self):
+        """Properly cleanup all RTP session threads and resources"""
+        logger.info(f"🧹 Cleaning up RTP session {self.session_id} threads...")
+        
+        # Stop all processing flags first
+        self.input_processing = False
+        self.output_processing = False
+        self.processing = False
+        self.timeout_monitoring = False
+        
+        # Clear queues to unblock threads
+        try:
+            while not self.audio_input_queue.empty():
+                self.audio_input_queue.get_nowait()
+        except:
+            pass
+        
+        try:
+            while not self.output_queue.empty():
+                self.output_queue.get_nowait()
+        except:
+            pass
+        
+        # Close asyncio loop if it exists
+        if self.asyncio_loop and not self.asyncio_loop.is_closed():
+            try:
+                # Schedule loop closure in the loop's thread
+                if self.asyncio_loop.is_running():
+                    self.asyncio_loop.call_soon_threadsafe(self.asyncio_loop.stop)
+                    time.sleep(0.1)  # Give it time to stop
+                self.asyncio_loop.close()
+                logger.info(f"✅ Closed asyncio loop for session {self.session_id}")
+            except Exception as e:
+                logger.warning(f"⚠️ Error closing asyncio loop: {e}")
+        
+        # Wait briefly for threads to finish (with timeout)
+        threads_to_check = []
+        if self.output_thread and self.output_thread.is_alive():
+            threads_to_check.append(("output", self.output_thread))
+        if self.asyncio_thread and self.asyncio_thread.is_alive():
+            threads_to_check.append(("asyncio", self.asyncio_thread))
+        if self.timeout_monitor_thread and self.timeout_monitor_thread.is_alive():
+            threads_to_check.append(("timeout", self.timeout_monitor_thread))
+        
+        # Give threads 500ms total to finish
+        start_time = time.time()
+        while threads_to_check and (time.time() - start_time) < 0.5:
+            threads_to_check = [(name, thread) for name, thread in threads_to_check if thread.is_alive()]
+            if threads_to_check:
+                time.sleep(0.05)
+        
+        if threads_to_check:
+            logger.warning(f"⚠️ {len(threads_to_check)} thread(s) still running after cleanup: {[name for name, _ in threads_to_check]}")
+        else:
+            logger.info(f"✅ All threads stopped for session {self.session_id}")
+        
+        # Clear references
+        self.voice_session = None
+        self.call_recorder = None
+        self.rtp_socket = None  # Don't close the socket, just remove reference
+        
+        logger.info(f"✅ RTP session {self.session_id} cleanup complete")
     
 
 def get_default_owner_id() -> int:
@@ -3086,19 +3145,16 @@ Content-Length: 0
                             # Immediate session cleanup for next call readiness
                             voice_session = session_data["voice_session"]
                             
-                            # Stop all processing immediately
+                            # Stop all processing immediately using cleanup_threads
                             if rtp_session:
-                                rtp_session.input_processing = False
-                                rtp_session.output_processing = False
-                                rtp_session.processing = False
-                                rtp_session.timeout_monitoring = False  # Stop timeout monitoring
-                                logger.info(f"🛑 RTP processing stopped for session {session_id}")
+                                # Note: cleanup_threads will stop all processing and clean up resources
+                                logger.info(f"🛑 Initiating RTP cleanup for session {session_id}")
                             
                             # Remove from active sessions immediately
                             del active_sessions[session_id]
                             logger.info(f"🗑️ Session {session_id} removed from active sessions")
                             
-                            # Cleanup RTP session
+                            # Cleanup RTP session (this calls cleanup_threads)
                             self.rtp_server.remove_session(session_id)
                             
                             # Voice session cleanup (non-blocking)
@@ -3146,18 +3202,13 @@ Content-Length: 0
                         
                         # Stop all processing immediately
                         if rtp_session:
-                            rtp_session.input_processing = False
-                            rtp_session.output_processing = False
-                            rtp_session.processing = False
-                            if hasattr(rtp_session, 'timeout_monitoring'):
-                                rtp_session.timeout_monitoring = False  # Stop timeout monitoring
-                            logger.info(f"🛑 RTP processing stopped for session {session_id}")
+                            logger.info(f"🛑 Initiating RTP cleanup for session {session_id} (legacy path)")
                         
                         # Remove from active sessions immediately
                         del active_sessions[session_id]
                         logger.info(f"🗑️ Session {session_id} removed from active sessions")
                         
-                        # Cleanup RTP session
+                        # Cleanup RTP session (this calls cleanup_threads if available)
                         self.rtp_server.remove_session(session_id)
                         
                         # Voice session cleanup (non-blocking)
