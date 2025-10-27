@@ -170,7 +170,70 @@ class VoiceActivityDetector:
 class GoodbyeDetector:
     """Detects goodbye phrases from either side and triggers graceful hangup"""
     
-    POS = re.compile(r"\b(good\s?bye|bye\b|bye-?bye|thanks[, ]*bye|talk to you later|have a (nice|good) (day|one))\b", re.I)
+    POS = re.compile(r"""
+        \b(
+            # English
+            good\s?bye|
+            bye-?bye|
+            thanks[, ]*bye|
+            talk to you later|
+            have a (nice|good) (day|one)|
+            bye|
+
+            # Spanish
+            adiós|
+            hasta luego|
+
+            # French
+            au revoir|
+            à bientôt|
+
+            # German
+            auf Wiedersehen|
+            tschüss|
+
+            # Italian
+            arrivederci|
+            ciao|
+
+            # Portuguese
+            adeus|
+            até logo|
+
+            # Dutch
+            tot ziens|
+
+            # Russian
+            до свидания|
+
+            # Hindi
+            alvida|
+
+            # Japanese
+            さようなら|
+
+            # Mandarin
+            再见|
+
+            # Bulgarian
+            довиждане|
+            чао|
+            приятен ден|
+            лека нощ|
+
+            # Polish
+            do widzenia|
+
+            # Turkish
+            hoşçakal|
+
+            # Arabic
+            مع السلامة|
+
+            # Korean
+            안녕히 가세요
+        )\b
+    """, re.I | re.VERBOSE)
     NEG = re.compile(r"(before we say goodbye|don'?t say goodbye|if you say goodbye)", re.I)
 
     def __init__(self, grace_ms: int = 1200):
