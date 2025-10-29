@@ -3556,16 +3556,17 @@ Content-Length: 0
                             # Update CRM database asynchronously to avoid blocking
                             def update_crm_async():
                                 try:
+                                    from crm_database import CallStatus as CRMCallStatus
                                     db = get_session()
                                     try:
                                         crm_session = db.query(CallSession).filter(CallSession.session_id == session_id).first()
                                         if crm_session:
-                                            crm_session.status = "COMPLETED"
+                                            crm_session.status = CRMCallStatus.COMPLETED
                                             crm_session.ended_at = datetime.utcnow()
                                             if crm_session.started_at and crm_session.ended_at:
                                                 crm_session.duration = int((crm_session.ended_at - crm_session.started_at).total_seconds())
-                                            db.commit()
-                                            logger.info(f"📋 CRM database updated for session {session_id}")
+                                            crm_session.save()  # MongoDB requires explicit save
+                                            logger.info(f"📋 CRM database updated for session {session_id}: status={crm_session.status}, duration={crm_session.duration}s")
                                     except Exception as e:
                                         logger.error(f"Error updating CRM session: {e}")
                                     finally:
@@ -4729,11 +4730,15 @@ Content-Length: 0
                     
                     if call_id and call_id in self.pending_invites:
                         phone_number = self.pending_invites[call_id]['phone_number']
+                        session_id = self.pending_invites[call_id]['session_id']
                         logger.error(f"❌ Outbound call to {phone_number} failed: {first_line}")
                         logger.error("💡 This usually means the outgoing route is misconfigured")
                         logger.error("💡 CRITICAL: Check Gate VoIP outgoing route uses GSM2 trunk (not voice-agent trunk)")
                         logger.error("💡 Go to: http://192.168.50.50 > PBX Settings > Outgoing Routes")
                         logger.error("💡 Change trunk from 'voice-agent' to 'gsm2' and save")
+                        
+                        # Update call session status
+                        self._update_call_session_status(session_id, CallStatus.FAILED)
                         
                         # Clean up the failed call
                         del self.pending_invites[call_id]
@@ -4742,6 +4747,69 @@ Content-Length: 0
                 else:
                     logger.error(f"❌ User not found: {first_line}")
                     logger.error("💡 Check if extension 200 exists in Gate VoIP configuration")
+            
+            elif '486 Busy Here' in first_line or '600 Busy Everywhere' in first_line:
+                # User is busy - can't answer
+                if 'INVITE' in message:
+                    call_id = None
+                    for line in message.split('\n'):
+                        line = line.strip()
+                        if line.startswith('Call-ID:'):
+                            call_id = line.split(':', 1)[1].strip()
+                            break
+                    
+                    if call_id and call_id in self.pending_invites:
+                        phone_number = self.pending_invites[call_id]['phone_number']
+                        session_id = self.pending_invites[call_id]['session_id']
+                        logger.info(f"📞 Call to {phone_number} - user busy")
+                        
+                        # Update call session status
+                        self._update_call_session_status(session_id, CallStatus.REJECTED)
+                        
+                        # Clean up
+                        del self.pending_invites[call_id]
+            
+            elif '487 Request Terminated' in first_line:
+                # Call was cancelled/terminated (usually by caller)
+                if 'INVITE' in message:
+                    call_id = None
+                    for line in message.split('\n'):
+                        line = line.strip()
+                        if line.startswith('Call-ID:'):
+                            call_id = line.split(':', 1)[1].strip()
+                            break
+                    
+                    if call_id and call_id in self.pending_invites:
+                        phone_number = self.pending_invites[call_id]['phone_number']
+                        session_id = self.pending_invites[call_id]['session_id']
+                        logger.info(f"📞 Call to {phone_number} - request terminated")
+                        
+                        # Update call session status  
+                        self._update_call_session_status(session_id, CallStatus.FAILED)
+                        
+                        # Clean up
+                        del self.pending_invites[call_id]
+            
+            elif '603 Decline' in first_line or '480 Temporarily Unavailable' in first_line:
+                # User declined the call or temporarily unavailable
+                if 'INVITE' in message:
+                    call_id = None
+                    for line in message.split('\n'):
+                        line = line.strip()
+                        if line.startswith('Call-ID:'):
+                            call_id = line.split(':', 1)[1].strip()
+                            break
+                    
+                    if call_id and call_id in self.pending_invites:
+                        phone_number = self.pending_invites[call_id]['phone_number']
+                        session_id = self.pending_invites[call_id]['session_id']
+                        logger.info(f"📞 Call to {phone_number} - declined/unavailable")
+                        
+                        # Update call session status
+                        self._update_call_session_status(session_id, CallStatus.REJECTED)
+                        
+                        # Clean up
+                        del self.pending_invites[call_id]
                 
             else:
                 logger.info(f"📨 SIP Response: {first_line}")
@@ -4752,6 +4820,27 @@ Content-Length: 0
             logger.error(f"Error handling SIP response: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
+    
+    def _update_call_session_status(self, session_id: str, status):
+        """Update call session status in database"""
+        try:
+            from crm_database import CallStatus as CRMCallStatus
+            db = get_session()
+            try:
+                crm_session = db.query(CallSession).filter(CallSession.session_id == session_id).first()
+                if crm_session:
+                    crm_session.status = status
+                    crm_session.ended_at = datetime.utcnow()
+                    if crm_session.started_at and crm_session.ended_at:
+                        crm_session.duration = int((crm_session.ended_at - crm_session.started_at).total_seconds())
+                    crm_session.save()  # MongoDB requires explicit save
+                    logger.info(f"📋 Updated call session {session_id} status to {status}")
+            except Exception as e:
+                logger.error(f"Error updating call session status: {e}")
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"Error in _update_call_session_status: {e}")
     
     def stop(self):
         """Stop SIP handler"""

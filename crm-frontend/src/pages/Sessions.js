@@ -39,7 +39,6 @@ function Sessions() {
   const navigate = useNavigate();
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [activeVoiceSessions, setActiveVoiceSessions] = useState([]);
   const [summaries, setSummaries] = useState({});
   const [selectedRows, setSelectedRows] = useState([]);
 
@@ -69,7 +68,6 @@ function Sessions() {
 
   useEffect(() => {
     loadSessions();
-    loadActiveVoiceSessions();
     loadCampaigns();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [campaignFilter, countryFilter, interestFilter, startDate, endDate]);
@@ -181,15 +179,6 @@ function Sessions() {
 
     // Merge with existing summaries
     setSummaries((prev) => ({ ...prev, ...summariesData }));
-  };
-
-  const loadActiveVoiceSessions = async () => {
-    try {
-      const response = await voiceAgentAPI.activeSessions();
-      setActiveVoiceSessions(response.data.sessions);
-    } catch (error) {
-      console.error("Error loading active sessions:", error);
-    }
   };
 
   const handleBulkTranscript = async () => {
@@ -600,58 +589,6 @@ function Sessions() {
           </Grid>
         </Grid>
       </Paper>
-
-      {/* Active Sessions */}
-      {activeVoiceSessions.length > 0 && (
-        <Paper
-          className="glass-effect-colored ios-blur-container"
-          sx={{
-            p: 3,
-            mb: 4,
-            background:
-              "linear-gradient(135deg, rgba(107, 154, 90, 0.08) 0%, rgba(107, 154, 90, 0.03) 100%)",
-            border: "1px solid rgba(107, 154, 90, 0.2)",
-            animation:
-              "pulse 2s ease-in-out infinite, slideUp 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)",
-          }}
-        >
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
-            <Typography variant="h6">🔴</Typography>
-            <Typography variant="h6" fontWeight={700}>
-              Active Voice Sessions
-            </Typography>
-          </Box>
-          <Box>
-            {activeVoiceSessions.map((session) => (
-              <Box
-                key={session.session_id}
-                sx={{
-                  p: 2,
-                  borderBottom: "1px solid",
-                  borderColor: "divider",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  "&:last-child": { borderBottom: 0 },
-                }}
-              >
-                <Box display="flex" alignItems="center" gap={2}>
-                  <PhoneIcon color="primary" />
-                  <Box>
-                    <Typography variant="body1">
-                      {session.caller_id} → {session.called_number}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      Duration: {Math.round(session.duration_seconds)}s
-                    </Typography>
-                  </Box>
-                </Box>
-                <Chip label="Active" color="success" size="small" />
-              </Box>
-            ))}
-          </Box>
-        </Paper>
-      )}
 
       {/* CRM Sessions */}
       <Paper

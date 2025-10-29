@@ -1131,10 +1131,10 @@ async def execute_campaign(campaign_id: int):
                     logger.info(f"✅ Call initiated: {voice_session_id}")
                     
                     # Wait for call to complete (sequential calling)
-                    # Monitor call status from voice agent
+                    # Monitor call status from voice agent with shorter intervals for faster detection
                     max_wait_time = 300  # 5 minutes max per call
                     wait_time = 0
-                    poll_interval = 5
+                    poll_interval = 2  # Check every 2 seconds for faster detection
                     
                     while wait_time < max_wait_time:
                         await asyncio.sleep(poll_interval)
@@ -1155,6 +1155,9 @@ async def execute_campaign(campaign_id: int):
                                 session_id=voice_session_id,
                                 status=call_session.status
                             )
+                            
+                            # Wait a short moment for cleanup to complete before next call
+                            await asyncio.sleep(2)
                             break
                     
                     if wait_time >= max_wait_time:
@@ -1183,8 +1186,9 @@ async def execute_campaign(campaign_id: int):
                 campaign_lead.save()  # MongoDB requires explicit save
             
             # Wait between calls (configurable in dialing_config)
+            # Default is reduced since we already wait 2s after call completion for cleanup
             dialing_config = campaign.dialing_config or {}
-            wait_between_calls = dialing_config.get('wait_between_calls', 10)
+            wait_between_calls = dialing_config.get('wait_between_calls', 3)  # Reduced from 10 to 3
             logger.info(f"⏳ Waiting {wait_between_calls}s before next call...")
             await asyncio.sleep(wait_between_calls)
             
@@ -1238,7 +1242,9 @@ def build_prompt_from_config(call_config: dict, lead) -> str:
         basePrompt += "3) WAIT for their response. Do NOT continue talking.\n"
         basePrompt += "4) Based on their answer, present ONE key benefit from these options:\n"
         basePrompt += f"   - {main_benefits}\n"
-        basePrompt += "5) Offer the demo: 'We can show you in a quick 15-minute demo how this works.'\n"
+        basePrompt += "   - IMPORTANT: Specifically mention that the AI can automate COLD CALLING to potential buyers/sellers, qualifying leads automatically 24/7\n"
+        basePrompt += "   - Emphasize: No more manual cold calling - the AI handles outbound prospecting calls\n"
+        basePrompt += "5) Offer the demo: 'We can show you in a quick 15-minute demo how this works, including live cold calling automation.'\n"
         basePrompt += "6) If interested, suggest a specific time: 'Would tomorrow afternoon or Friday morning work better for you?'\n"
         basePrompt += "7) If they have concerns, address them one at a time.\n"
         basePrompt += "\n\n⚠️ CRITICAL RULES:\n"
@@ -1247,6 +1253,7 @@ def build_prompt_from_config(call_config: dict, lead) -> str:
         basePrompt += "- Keep responses under 2-3 sentences\n"
         basePrompt += "- Be professional and consultative, NOT pushy\n"
         basePrompt += "- Listen actively to their needs\n"
+        basePrompt += "- Always mention cold calling automation as a key differentiator\n"
         basePrompt += "- If they're not interested, thank them politely and end the call\n"
         
         if special_offer:
