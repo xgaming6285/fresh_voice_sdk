@@ -33,6 +33,7 @@ import {
 import { campaignAPI } from "../services/api";
 import { useAuth } from "../contexts/AuthContext";
 import SubscriptionBanner from "../components/SubscriptionBanner";
+import CampaignCallConfigDialog from "../components/CampaignCallConfigDialog";
 import { Tooltip } from "@mui/material";
 
 function Campaigns() {
@@ -47,6 +48,8 @@ function Campaigns() {
     message: "",
     severity: "success",
   });
+  const [callConfigDialog, setCallConfigDialog] = useState(false);
+  const [selectedCampaign, setSelectedCampaign] = useState(null);
 
   const [formData, setFormData] = useState({
     name: "",
@@ -132,8 +135,27 @@ function Campaigns() {
 
   const handleStartCampaign = async (id) => {
     try {
-      await campaignAPI.start(id);
+      // Find campaign first to show dialog
+      const campaign = campaigns.find((c) => c.id === id);
+      if (!campaign) {
+        showSnackbar("Campaign not found", "error");
+        return;
+      }
+      setSelectedCampaign(campaign);
+      setCallConfigDialog(true);
+    } catch (error) {
+      console.error("Error preparing campaign start:", error);
+      showSnackbar("Error preparing campaign", "error");
+    }
+  };
+
+  const handleStartCampaignWithConfig = async (callConfig) => {
+    try {
+      // Start campaign with call configuration
+      await campaignAPI.start(selectedCampaign.id, callConfig);
       showSnackbar("Campaign started", "success");
+      setCallConfigDialog(false);
+      setSelectedCampaign(null);
       loadCampaigns();
     } catch (error) {
       console.error("Error starting campaign:", error);
@@ -782,6 +804,17 @@ function Campaigns() {
           {snackbar.message}
         </Alert>
       </Snackbar>
+
+      {/* Campaign Call Config Dialog */}
+      <CampaignCallConfigDialog
+        open={callConfigDialog}
+        onClose={() => {
+          setCallConfigDialog(false);
+          setSelectedCampaign(null);
+        }}
+        campaign={selectedCampaign}
+        onStartCampaign={handleStartCampaignWithConfig}
+      />
     </Box>
   );
 }

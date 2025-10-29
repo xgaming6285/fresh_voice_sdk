@@ -47,6 +47,7 @@ import {
 import { DataGrid } from "@mui/x-data-grid";
 import { campaignAPI, leadAPI } from "../services/api";
 import { formatDateTime } from "../utils/dateUtils";
+import CampaignCallConfigDialog from "../components/CampaignCallConfigDialog";
 
 function TabPanel({ children, value, index, ...other }) {
   return (
@@ -73,6 +74,7 @@ function CampaignDetail() {
   const [openAddLeadsDialog, setOpenAddLeadsDialog] = useState(false);
   const [openFilterDialog, setOpenFilterDialog] = useState(false);
   const [openEditDialog, setOpenEditDialog] = useState(false);
+  const [callConfigDialog, setCallConfigDialog] = useState(false);
   const [availableLeads, setAvailableLeads] = useState([]);
   const [selectedLeadIds, setSelectedLeadIds] = useState([]);
   const [page, setPage] = useState(0);
@@ -145,8 +147,14 @@ function CampaignDetail() {
   };
 
   const handleStartCampaign = async () => {
+    // Show call config dialog before starting
+    setCallConfigDialog(true);
+  };
+
+  const handleStartCampaignWithConfig = async (callConfig) => {
     try {
-      await campaignAPI.start(id);
+      await campaignAPI.start(id, callConfig);
+      setCallConfigDialog(false);
       loadCampaignData();
     } catch (error) {
       console.error("Error starting campaign:", error);
@@ -830,6 +838,14 @@ function CampaignDetail() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Campaign Call Config Dialog */}
+      <CampaignCallConfigDialog
+        open={callConfigDialog}
+        onClose={() => setCallConfigDialog(false)}
+        campaign={campaign}
+        onStartCampaign={handleStartCampaignWithConfig}
+      />
     </Box>
   );
 }

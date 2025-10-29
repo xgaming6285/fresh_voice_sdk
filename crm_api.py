@@ -111,6 +111,9 @@ class AddLeadsToCampaign(BaseModel):
     lead_ids: List[int]
     priority: int = 0
 
+class CampaignStartRequest(BaseModel):
+    call_config: Optional[Dict[str, Any]] = None
+
 class LeadFilter(BaseModel):
     countries: Optional[List[str]] = None
     min_call_count: Optional[int] = None
@@ -382,9 +385,8 @@ async def update_lead(lead_id: int, lead_update: LeadUpdate, current_user: User 
                     value = Gender(value)
                 setattr(lead, field, value)
         
-        # Add to session to mark for update
-        session.add(lead)
-        session.commit()
+        # Save the lead (MongoDB requires explicit save)
+        lead.save()
         
         return build_lead_response(lead, session)
     except HTTPException:
@@ -410,8 +412,7 @@ async def delete_lead(lead_id: int, current_user: User = Depends(check_subscript
         if lead.id not in accessible_lead_ids:
             raise HTTPException(status_code=403, detail="Access denied")
         
-        session.delete(lead)
-        session.commit()
+        lead.delete()  # MongoDB requires explicit delete
         
         return {"status": "success", "message": "Lead deleted"}
     except HTTPException:
@@ -496,7 +497,7 @@ async def create_campaign(campaign: CampaignCreate, current_user: User = Depends
             db_campaign.dialing_config = campaign.dialing_config
         if campaign.schedule_config:
             db_campaign.schedule_config = campaign.schedule_config
-        session.commit()
+        db_campaign.save()  # MongoDB requires explicit save
         
         return build_campaign_response(db_campaign, session)
     except Exception as e:
@@ -574,9 +575,8 @@ async def update_campaign(campaign_id: int, campaign_update: CampaignUpdate, cur
                     value = CampaignStatus(value)
                 setattr(campaign, field, value)
         
-        # Add to session to mark for update
-        session.add(campaign)
-        session.commit()
+        # Save the campaign (MongoDB requires explicit save)
+        campaign.save()
         
         return build_campaign_response(campaign, session)
     except HTTPException:
@@ -754,8 +754,13 @@ async def get_campaign_leads(
         session.close()
 
 @crm_router.post("/campaigns/{campaign_id}/start", response_model=Dict[str, Any])
-async def start_campaign(campaign_id: int, background_tasks: BackgroundTasks, current_user: User = Depends(check_subscription)):
-    """Start a campaign"""
+async def start_campaign(
+    campaign_id: int, 
+    request: Optional[CampaignStartRequest] = None,
+    background_tasks: BackgroundTasks = BackgroundTasks(), 
+    current_user: User = Depends(check_subscription)
+):
+    """Start a campaign with optional call configuration"""
     try:
         session = get_session()
         campaign = session.query(Campaign).get(campaign_id)
@@ -782,10 +787,17 @@ async def start_campaign(campaign_id: int, background_tasks: BackgroundTasks, cu
         if lead_count == 0:
             raise HTTPException(status_code=400, detail="Campaign has no leads")
         
+        # Store call config in bot_config if provided
+        if request and request.call_config:
+            if not campaign.bot_config:
+                campaign.bot_config = {}
+            campaign.bot_config['call_config'] = request.call_config
+            logger.info(f"📞 Campaign {campaign_id} will use custom call config: {request.call_config.get('call_objective', 'N/A')}")
+        
         # Update campaign status
         campaign.status = CampaignStatus.RUNNING
         campaign.started_at = datetime.utcnow()
-        session.commit()
+        campaign.save()  # MongoDB requires explicit save
         
         # Start campaign execution in background
         background_tasks.add_task(execute_campaign, campaign_id)
@@ -794,7 +806,8 @@ async def start_campaign(campaign_id: int, background_tasks: BackgroundTasks, cu
             "status": "success",
             "campaign_id": campaign_id,
             "message": "Campaign started",
-            "total_leads": lead_count
+            "total_leads": lead_count,
+            "has_call_config": bool(request and request.call_config)
         }
     except HTTPException:
         raise
@@ -826,7 +839,7 @@ async def pause_campaign(campaign_id: int, current_user: User = Depends(get_curr
             )
         
         campaign.status = CampaignStatus.PAUSED
-        session.commit()
+        campaign.save()  # MongoDB requires explicit save
         
         return {"status": "success", "message": "Campaign paused"}
     except HTTPException:
@@ -854,7 +867,7 @@ async def stop_campaign(campaign_id: int, current_user: User = Depends(get_curre
         
         campaign.status = CampaignStatus.CANCELLED
         campaign.completed_at = datetime.utcnow()
-        session.commit()
+        campaign.save()  # MongoDB requires explicit save
         
         return {"status": "success", "message": "Campaign stopped"}
     except HTTPException:
@@ -942,9 +955,7 @@ async def get_call_session(session_id: str, current_user: User = Depends(get_cur
                     started_at=datetime.utcnow(),
                     ended_at=datetime.utcnow()
                 )
-                session.add(call_session)
-                session.commit()
-                session.refresh(call_session)
+                call_session.save()  # MongoDB requires explicit save
             else:
                 raise HTTPException(status_code=404, detail="Call session not found")
         
@@ -974,32 +985,89 @@ async def get_call_session(session_id: str, current_user: User = Depends(get_cur
 
 # Campaign execution function
 async def execute_campaign(campaign_id: int):
-    """Execute a campaign - make calls to leads"""
+    """Execute a campaign - make calls to leads sequentially"""
     logger.info(f"Starting campaign execution for campaign {campaign_id}")
     
     # Import here to avoid circular imports
     from windows_voice_agent import sip_handler
+    from crm_database import UserManager
+    import requests
     
     session = get_session()
     campaign_manager = CampaignManager(session)
     
     try:
+        # Get campaign and check for call config
+        campaign = session.query(Campaign).get(campaign_id)
+        if not campaign:
+            logger.error(f"Campaign {campaign_id} not found")
+            return
+            
+        call_config = None
+        cached_greeting_file = None  # Pre-generated greeting for all leads
+        cached_greeting_transcript = None
+        
+        if campaign.bot_config and 'call_config' in campaign.bot_config:
+            call_config = campaign.bot_config['call_config']
+            logger.info(f"📞 Campaign has custom call config: {call_config.get('call_objective', 'N/A')}")
+            
+            # Pre-generate greeting ONCE for the entire campaign
+            # All leads with same language will reuse this greeting
+            try:
+                from greeting_generator_gemini import generate_greeting_for_lead
+                from windows_voice_agent import detect_caller_country, get_language_config
+                
+                # Get first lead to detect language
+                first_lead_query = session.query(CampaignLead).filter(
+                    CampaignLead.campaign_id == campaign_id,
+                    CampaignLead.status == CallStatus.PENDING
+                ).first()
+                
+                if first_lead_query:
+                    first_lead = first_lead_query.lead
+                    logger.info(f"🎤 Pre-generating greeting for campaign (will be reused for all leads)...")
+                    
+                    # Detect language from first lead
+                    caller_country = detect_caller_country(first_lead.full_phone)
+                    language_info = get_language_config(caller_country)
+                    
+                    # Generate greeting
+                    greeting_result = await generate_greeting_for_lead(
+                        language=language_info['lang'],
+                        language_code=language_info['code'],
+                        call_config=call_config
+                    )
+                    
+                    if greeting_result and greeting_result.get('success'):
+                        cached_greeting_file = greeting_result.get('greeting_file')
+                        cached_greeting_transcript = greeting_result.get('transcript')
+                        logger.info(f"✅ Campaign greeting pre-generated and cached: {cached_greeting_file}")
+                        logger.info(f"   This greeting will be reused for all {campaign.total_leads} leads")
+                    else:
+                        logger.warning("⚠️ Failed to pre-generate campaign greeting, will generate per-call")
+            except Exception as e:
+                logger.warning(f"⚠️ Error pre-generating campaign greeting: {e}. Will generate per-call.")
+        
+        # Get campaign owner (agent) to use their gate slot
+        user_manager = UserManager(session)
+        campaign_owner = user_manager.get_user_by_id(campaign.owner_id)
+        gate_slot = None
+        if campaign_owner and campaign_owner.gate_slot:
+            gate_slot = campaign_owner.gate_slot
+            logger.info(f"📞 Using gate slot {gate_slot} for agent {campaign_owner.username}")
+        else:
+            logger.warning(f"⚠️ Campaign owner has no assigned gate slot, will use default")
+        
+        # Get caller ID from agent/campaign owner
+        caller_id = campaign_owner.gate_slot if campaign_owner and campaign_owner.gate_slot else "+359898995151"
+        
         while True:
             # Check campaign status
             campaign = session.query(Campaign).get(campaign_id)
+            logger.info(f"Campaign object: {campaign}, status: {campaign.status if campaign else 'None'}")
             if not campaign or campaign.status != CampaignStatus.RUNNING:
-                logger.info(f"Campaign {campaign_id} is no longer running")
+                logger.info(f"Campaign {campaign_id} is no longer running (status: {campaign.status if campaign else 'Not found'})")
                 break
-            
-            # Get campaign owner (agent) to use their gate slot
-            user_manager = UserManager(session)
-            campaign_owner = user_manager.get_user_by_id(campaign.owner_id)
-            gate_slot = None
-            if campaign_owner and campaign_owner.gate_slot:
-                gate_slot = campaign_owner.gate_slot
-                logger.info(f"📞 Using gate slot {gate_slot} for agent {campaign_owner.username}")
-            else:
-                logger.warning(f"⚠️ Campaign owner has no assigned gate slot, will use default")
             
             # Get next lead to call
             campaign_lead = campaign_manager.get_next_lead_to_call(campaign_id)
@@ -1007,11 +1075,11 @@ async def execute_campaign(campaign_id: int):
                 logger.info(f"No more leads to call in campaign {campaign_id}")
                 campaign.status = CampaignStatus.COMPLETED
                 campaign.completed_at = datetime.utcnow()
-                session.commit()
+                campaign.save()  # MongoDB requires explicit save
                 break
             
             lead = campaign_lead.lead
-            logger.info(f"Calling lead {lead.id}: {lead.full_phone}")
+            logger.info(f"🎯 Calling lead {lead.id}: {lead.full_name} at {lead.full_phone}")
             
             # Create call session record
             call_session = CallSession(
@@ -1019,63 +1087,236 @@ async def execute_campaign(campaign_id: int):
                 campaign_id=campaign_id,
                 lead_id=lead.id,
                 owner_id=campaign.owner_id,  # Set owner to the campaign owner
-                caller_id="+359898995151",  # From config
+                caller_id=caller_id,
                 called_number=lead.full_phone,
                 status=CallStatus.DIALING
             )
-            session.add(call_session)
-            session.commit()
+            call_session.save()  # MongoDB requires explicit save
+            
+            # Prepare custom config for the call
+            # Use cached greeting if available, otherwise generate per-call
+            custom_config = {}
+            if call_config:
+                # Build the prompt from call config (same logic as CustomCallDialog)
+                custom_config = {
+                    'custom_prompt': build_prompt_from_config(call_config, lead),
+                    'voice_name': call_config.get('voice_name', 'Puck'),
+                }
+                
+                # If we have a cached greeting, use it directly (instant playback, no delay)
+                if cached_greeting_file:
+                    custom_config['greeting_file'] = cached_greeting_file
+                    custom_config['greeting_transcript'] = cached_greeting_transcript
+                    logger.info(f"📝 Using custom prompt with voice: {custom_config['voice_name']} + cached greeting")
+                else:
+                    # Otherwise, pass call_config for dynamic generation (has delay)
+                    custom_config['call_config'] = call_config
+                    custom_config['phone_number'] = lead.full_phone
+                    logger.info(f"📝 Using custom prompt with voice: {custom_config['voice_name']} (will generate greeting per-call)")
             
             # Make the call using the voice agent with the agent's gate slot
             try:
-                voice_session_id = sip_handler.make_outbound_call(lead.full_phone, gate_slot=gate_slot)
+                voice_session_id = sip_handler.make_outbound_call(
+                    lead.full_phone, 
+                    custom_config=custom_config if custom_config else None,
+                    gate_slot=gate_slot
+                )
                 
                 if voice_session_id:
                     # Update call session with voice agent session ID
                     call_session.session_id = voice_session_id
                     call_session.status = CallStatus.RINGING
-                    session.commit()
+                    call_session.save()  # MongoDB requires explicit save
                     
-                    # Wait for call to complete (simplified - in production you'd monitor call status)
-                    await asyncio.sleep(5)  # Give time for call to establish
+                    logger.info(f"✅ Call initiated: {voice_session_id}")
                     
-                    # TODO: Monitor actual call status from voice agent
-                    # For now, we'll simulate success
-                    call_session.status = CallStatus.ANSWERED
-                    call_session.answered_at = datetime.utcnow()
+                    # Wait for call to complete (sequential calling)
+                    # Monitor call status from voice agent
+                    max_wait_time = 300  # 5 minutes max per call
+                    wait_time = 0
+                    poll_interval = 5
                     
-                    # Update campaign lead status
-                    campaign_manager.update_call_result(
-                        campaign_id=campaign_id,
-                        lead_id=lead.id,
-                        session_id=voice_session_id,
-                        status=CallStatus.ANSWERED
-                    )
+                    while wait_time < max_wait_time:
+                        await asyncio.sleep(poll_interval)
+                        wait_time += poll_interval
+                        
+                        # Refresh call session to check status (re-query from DB)
+                        call_session = session.query(CallSession).filter(
+                            CallSession.session_id == voice_session_id
+                        ).first()
+                        
+                        if call_session and call_session.status in [CallStatus.COMPLETED, CallStatus.FAILED, CallStatus.REJECTED, CallStatus.NO_ANSWER]:
+                            logger.info(f"📞 Call ended with status: {get_enum_value(call_session.status)}")
+                            
+                            # Update campaign lead status
+                            campaign_manager.update_call_result(
+                                campaign_id=campaign_id,
+                                lead_id=lead.id,
+                                session_id=voice_session_id,
+                                status=call_session.status
+                            )
+                            break
+                    
+                    if wait_time >= max_wait_time:
+                        logger.warning(f"⚠️ Call timeout reached for {lead.full_phone}")
+                        call_session.status = CallStatus.FAILED
+                        call_session.save()
+                        campaign_manager.update_call_result(
+                            campaign_id=campaign_id,
+                            lead_id=lead.id,
+                            session_id=voice_session_id,
+                            status=CallStatus.FAILED
+                        )
                 else:
                     # Call failed to initiate
+                    logger.error(f"❌ Failed to initiate call to {lead.full_phone}")
                     call_session.status = CallStatus.FAILED
                     campaign_lead.status = CallStatus.FAILED
-                    session.commit()
+                    call_session.save()  # MongoDB requires explicit save
+                    campaign_lead.save()  # MongoDB requires explicit save
                     
             except Exception as e:
-                logger.error(f"Error making call to {lead.full_phone}: {e}")
+                logger.error(f"❌ Error making call to {lead.full_phone}: {e}")
                 call_session.status = CallStatus.FAILED
                 campaign_lead.status = CallStatus.FAILED
-                session.commit()
+                call_session.save()  # MongoDB requires explicit save
+                campaign_lead.save()  # MongoDB requires explicit save
             
-            # Wait before next call (configurable in dialing_config)
+            # Wait between calls (configurable in dialing_config)
             dialing_config = campaign.dialing_config or {}
-            wait_between_calls = dialing_config.get('wait_between_calls', 5)
+            wait_between_calls = dialing_config.get('wait_between_calls', 10)
+            logger.info(f"⏳ Waiting {wait_between_calls}s before next call...")
             await asyncio.sleep(wait_between_calls)
             
     except Exception as e:
-        logger.error(f"Error executing campaign {campaign_id}: {e}")
+        logger.error(f"❌ Error executing campaign {campaign_id}: {e}", exc_info=True)
         campaign = session.query(Campaign).get(campaign_id)
         if campaign:
             campaign.status = CampaignStatus.CANCELLED
-            session.commit()
+            campaign.save()  # MongoDB requires explicit save
     finally:
         session.close()
+
+
+def build_prompt_from_config(call_config: dict, lead) -> str:
+    """Build custom prompt from call config (similar to CustomCallDialog logic)"""
+    company_name = call_config.get('company_name', '')
+    caller_name = call_config.get('caller_name', '')
+    product_name = call_config.get('product_name', '')
+    call_objective = call_config.get('call_objective', 'sales')
+    main_benefits = call_config.get('main_benefits', '')
+    special_offer = call_config.get('special_offer', '')
+    objection_strategy = call_config.get('objection_strategy', 'understanding')
+    additional_prompt = call_config.get('additional_prompt', '')
+    
+    basePrompt = ""
+    
+    # Handle confirm_order differently - it's customer support, not sales
+    if call_objective == "confirm_order":
+        basePrompt = f"You are {caller_name} from {company_name}, a customer support representative. "
+        basePrompt += f"You are calling to confirm a customer's existing order. The customer has ordered {product_name}. "
+        basePrompt += "FOLLOW THIS FLOW EXACTLY: "
+        basePrompt += f"1) Greet and introduce yourself: 'Hello, I'm calling from {company_name}.' "
+        basePrompt += "2) Ask if you're speaking with the right person by their full name. If they say NO, apologize and say you're looking for [customer name], then end call politely. If YES, continue. "
+        basePrompt += f"3) Inform about the order: 'You have an order for {product_name}.' Ask if they confirm this order. "
+        basePrompt += "4) If they confirm, say 'Okay, we will make a delivery in 3 business days.' Then confirm ALL details: 'Just to confirm, you are [full name] with phone number [phone], and the delivery address is [address]?' "
+        basePrompt += "5) Wait for their confirmation of details. If correct, thank them and end call. If incorrect, ask for correct information. "
+        basePrompt += "Be professional, clear, courteous, and helpful throughout the call. "
+        
+        if special_offer:
+            basePrompt += f"Additional information: {special_offer}. "
+        
+        basePrompt += "If they have questions or concerns, answer them patiently and professionally."
+    
+    # Special handling for AI Real Estate Services - Professional B2B sales
+    elif call_objective == "ai_sales_services":
+        basePrompt = f"You are {caller_name} from {company_name}, a professional B2B sales consultant specializing in AI automation solutions for real estate agencies. "
+        basePrompt += f"Your product is {product_name}. "
+        basePrompt += "\n\n🎯 CALL STRUCTURE - FOLLOW STRICTLY:\n"
+        basePrompt += "1) After the greeting, introduce yourself briefly and state your purpose in ONE sentence\n"
+        basePrompt += "2) Ask ONE qualifying question: 'Do you currently handle property inquiries manually?'\n"
+        basePrompt += "3) WAIT for their response. Do NOT continue talking.\n"
+        basePrompt += "4) Based on their answer, present ONE key benefit from these options:\n"
+        basePrompt += f"   - {main_benefits}\n"
+        basePrompt += "5) Offer the demo: 'We can show you in a quick 15-minute demo how this works.'\n"
+        basePrompt += "6) If interested, suggest a specific time: 'Would tomorrow afternoon or Friday morning work better for you?'\n"
+        basePrompt += "7) If they have concerns, address them one at a time.\n"
+        basePrompt += "\n\n⚠️ CRITICAL RULES:\n"
+        basePrompt += "- ASK ONLY ONE QUESTION AT A TIME\n"
+        basePrompt += "- WAIT for their response before speaking again\n"
+        basePrompt += "- Keep responses under 2-3 sentences\n"
+        basePrompt += "- Be professional and consultative, NOT pushy\n"
+        basePrompt += "- Listen actively to their needs\n"
+        basePrompt += "- If they're not interested, thank them politely and end the call\n"
+        
+        if special_offer:
+            basePrompt += f"\n\n💡 SPECIAL OFFER (mention only if they show interest): {special_offer}\n"
+        
+        if objection_strategy == "educational":
+            basePrompt += "\nWhen handling objections: Provide educational information with facts. Share industry statistics or success stories. "
+        elif objection_strategy == "understanding":
+            basePrompt += "\nWhen handling objections: Show empathy and understanding. Acknowledge their concerns before addressing them. "
+    
+    # Special handling for companions services
+    elif call_objective == "companions_services":
+        basePrompt = f"You are {caller_name} from {company_name}, a professional client relations specialist. "
+        basePrompt += f"Your service is {product_name}. "
+        basePrompt += "\n\n🎯 CALL STRUCTURE - FOLLOW STRICTLY:\n"
+        basePrompt += "1) After greeting, introduce yourself and verify you're speaking to the right person\n"
+        basePrompt += "2) State your purpose professionally in ONE sentence\n"
+        basePrompt += "3) Ask ONE question: 'Are you interested in learning about our premium services?'\n"
+        basePrompt += "4) WAIT for response. Do NOT continue talking.\n"
+        basePrompt += "5) If interested, briefly mention ONE key benefit, then offer to send information\n"
+        basePrompt += "6) Suggest a meeting time if appropriate\n"
+        basePrompt += "\n\n⚠️ CRITICAL RULES:\n"
+        basePrompt += "- ASK ONLY ONE QUESTION AT A TIME\n"
+        basePrompt += "- Be discreet and professional at all times\n"
+        basePrompt += "- Keep responses brief (1-2 sentences)\n"
+        basePrompt += "- WAIT for their response before continuing\n"
+        basePrompt += "- Respect their privacy and discretion\n"
+        
+        if main_benefits:
+            basePrompt += f"\n\nKey benefits to mention (one at a time): {main_benefits}\n"
+        
+        if special_offer:
+            basePrompt += f"\n\nSpecial offer (mention only if interested): {special_offer}\n"
+    
+    else:
+        # For standard sales-oriented calls
+        basePrompt = f"You are {caller_name} from {company_name}, a professional sales representative for {product_name}. "
+        
+        if call_objective == "sales":
+            basePrompt += "You are making sales calls to sell this product. Focus on converting prospects into customers by highlighting product benefits and closing the sale. "
+        elif call_objective == "followup":
+            basePrompt += "You are following up on a previous interaction. Be friendly and check on their interest while guiding toward a purchase decision. "
+        elif call_objective == "survey":
+            basePrompt += "You are conducting a survey but also identifying sales opportunities. Ask relevant questions while presenting the product benefits. "
+        elif call_objective == "appointment":
+            basePrompt += "You are cold calling to set appointments or qualify leads. Focus on building rapport, understanding their needs, and scheduling a follow-up meeting or call. "
+        elif call_objective == "promotion_offer":
+            basePrompt += "You are calling to present a special promotional offer. Be enthusiastic but not pushy. "
+        
+        basePrompt += "\n\n⚠️ IMPORTANT: ASK ONE QUESTION AT A TIME and WAIT for responses. Keep your statements brief and conversational.\n\n"
+        
+        if main_benefits:
+            basePrompt += f"Key benefits to emphasize: {main_benefits}. "
+        
+        if special_offer:
+            basePrompt += f"Current offers: {special_offer}. "
+        
+        if objection_strategy == "understanding":
+            basePrompt += "Handle objections with empathy and understanding. Listen to their concerns and address them thoughtfully. "
+        elif objection_strategy == "educational":
+            basePrompt += "Handle objections by providing educational information and facts to overcome doubts. "
+        elif objection_strategy == "aggressive":
+            basePrompt += "Handle objections persistently. Push back on concerns and maintain strong sales pressure. "
+        
+        basePrompt += "Always try to close the sale and handle objections professionally."
+    
+    if additional_prompt:
+        basePrompt += f"\n\nAdditional Instructions: {additional_prompt}"
+    
+    return basePrompt
 
 # Export router
 __all__ = ['crm_router']

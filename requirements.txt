@@ -9,6 +9,10 @@
 
 # Google AI / Gemini Live API
 google-genai>=0.2.0
+# Google Generative AI (for summary generation)
+google-generativeai>=0.8.0
+# Packaging utilities (required by google-api-core)
+packaging>=25.0
 
 # Web Framework & API
 fastapi>=0.104.1

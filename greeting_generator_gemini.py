@@ -184,10 +184,12 @@ class GeminiGreetingGenerator:
                 # Save as WAV
                 self._save_as_wav(telephony_audio, filepath)
                 
-                logger.info(f"✅ Saved greeting audio: {filepath}")
+                # Return absolute path for the greeting file
+                absolute_path = str(filepath.absolute())
+                logger.info(f"✅ Saved greeting audio: {absolute_path}")
                 logger.info(f"🎤 Voice: Puck (same as voice calls)")
                 
-                return str(filepath), greeting_text
+                return absolute_path, greeting_text
                 
         except Exception as e:
             logger.error(f"❌ Error generating greeting: {e}")

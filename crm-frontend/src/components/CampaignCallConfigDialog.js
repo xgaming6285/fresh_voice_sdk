@@ -27,10 +27,15 @@ import {
   ShoppingCart as ProductIcon,
   Settings as SettingsIcon,
   Phone as PhoneIcon,
-  Language as LanguageIcon,
+  Campaign as CampaignIcon,
 } from "@mui/icons-material";
 
-const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
+const CampaignCallConfigDialog = ({
+  open,
+  onClose,
+  campaign,
+  onStartCampaign,
+}) => {
   const [callConfig, setCallConfig] = useState({
     company_name: "",
     caller_name: "",
@@ -45,7 +50,6 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
   });
 
   const [loading, setLoading] = useState(false);
-  const [greetingStatus, setGreetingStatus] = useState(""); // "generating", "ready", ""
 
   // Apply hardcoded demo configurations for specific objectives
   const applyDemoConfig = (objective) => {
@@ -128,57 +132,12 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
     });
   };
 
-  const handleMakeCall = async () => {
+  const handleStartCampaign = async () => {
     setLoading(true);
-    setGreetingStatus("generating");
 
     try {
-      // Step 1: Generate custom greeting
-      console.log("Generating custom greeting...");
-      const greetingResponse = await fetch(
-        "http://localhost:8000/api/generate_greeting",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            phone_number: lead.full_phone,
-            call_config: callConfig,
-          }),
-        }
-      );
-
-      if (!greetingResponse.ok) {
-        const error = await greetingResponse.json();
-        console.error("Failed to generate greeting:", error);
-
-        // Check if it's because greeting generator is not available
-        if (greetingResponse.status === 503) {
-          // Proceed without custom greeting
-          console.log(
-            "Greeting generator not available, using default greeting"
-          );
-          await onMakeCall(lead, callConfig);
-        } else {
-          throw new Error(error.detail || "Failed to generate greeting");
-        }
-      } else {
-        // Greeting generated successfully
-        const greetingData = await greetingResponse.json();
-        console.log("Greeting generated:", greetingData);
-        setGreetingStatus("ready");
-
-        // Step 2: Make call with custom greeting AND greeting transcript for context
-        // ✅ Pass greeting transcript so Gemini knows what was already said
-        await onMakeCall(
-          lead,
-          callConfig,
-          greetingData.greeting_file,
-          greetingData.transcript || greetingData.greeting_text
-        );
-      }
-
+      // Start campaign with custom call config
+      await onStartCampaign(callConfig);
       onClose();
       // Reset form
       setCallConfig({
@@ -194,11 +153,10 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
         greeting_instruction: "",
       });
     } catch (error) {
-      console.error("Error making call:", error);
-      alert("Failed to make call: " + error.message);
+      console.error("Error starting campaign:", error);
+      alert("Failed to start campaign: " + error.message);
     } finally {
       setLoading(false);
-      setGreetingStatus("");
     }
   };
 
@@ -215,26 +173,6 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
       default:
         return <PhoneIcon />;
     }
-  };
-
-  // Detect country/language from lead phone number for preview
-  const getDetectedLanguage = (phone) => {
-    if (!phone) return "Unknown";
-
-    // Simple phone prefix detection for preview
-    if (phone.startsWith("+359") || phone.includes("359"))
-      return "Bulgarian 🇧🇬";
-    if (phone.startsWith("+40") && !phone.startsWith("+401"))
-      return "Romanian 🇷🇴";
-    if (phone.startsWith("+30")) return "Greek 🇬🇷";
-    if (phone.startsWith("+49")) return "German 🇩🇪";
-    if (phone.startsWith("+33")) return "French 🇫🇷";
-    if (phone.startsWith("+34")) return "Spanish 🇪🇸";
-    if (phone.startsWith("+39")) return "Italian 🇮🇹";
-    if (phone.startsWith("+1")) return "English 🇺🇸";
-    if (phone.startsWith("+44")) return "English 🇬🇧";
-
-    return "Auto-detect 🌍";
   };
 
   const generatePromptPreview = () => {
@@ -316,7 +254,7 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
     return basePrompt;
   };
 
-  if (!lead) return null;
+  if (!campaign) return null;
 
   return (
     <Dialog
@@ -340,13 +278,13 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
           gap: 1,
         }}
       >
-        <PhoneIcon />
+        <CampaignIcon />
         <Box>
           <Typography variant="h6" component="div">
-            Custom Call Setup
+            Campaign Call Configuration
           </Typography>
           <Typography variant="body2" sx={{ opacity: 0.9 }}>
-            Calling {lead.full_name} at {lead.full_phone}
+            Configure calls for "{campaign.name}" - {campaign.total_leads} leads
           </Typography>
         </Box>
       </DialogTitle>
@@ -380,124 +318,27 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
           </Alert>
         )}
 
-        {/* Order Confirmation Flow Info */}
-        {callConfig.call_objective === "confirm_order" && (
-          <Alert severity="info" sx={{ mb: 2, borderRadius: 2 }}>
-            <Box>
-              <Typography variant="body2" fontWeight={600}>
-                📋 Order Confirmation Call Flow
-              </Typography>
-              <Typography
-                variant="caption"
-                color="text.secondary"
-                component="div"
-              >
-                The AI will follow this sequence:
-                <br />
-                1️⃣ Verify identity: "Are you [Lead Name]?"
-                <br />
-                2️⃣ Mention order: Microwave "Jira" #6845175
-                <br />
-                3️⃣ Confirm details: Name, phone, and delivery address
-                <br />
-                4️⃣ Inform delivery: 3 business days
-                <br />
-                <br />
-                💡 The lead's name and phone from your database will be used
-                automatically.
-              </Typography>
-            </Box>
-          </Alert>
-        )}
-
-        {/* AI Sales Services Flow Info */}
-        {callConfig.call_objective === "ai_sales_services" && (
-          <Alert severity="info" sx={{ mb: 2, borderRadius: 2 }}>
-            <Box>
-              <Typography variant="body2" fontWeight={600}>
-                🏠 AI Real Estate Automation Cold Call Flow
-              </Typography>
-              <Typography
-                variant="caption"
-                color="text.secondary"
-                component="div"
-              >
-                Professional cold calling script for real estate agents in
-                Bulgarian:
-                <br />
-                1️⃣ Pattern Interrupt: Professional intro, mention real estate AI
-                <br />
-                2️⃣ Pain Points: Lost leads, manual property descriptions, missed
-                calls
-                <br />
-                3️⃣ Solution: 24/7 AI assistant, auto property descriptions,
-                buyer qualification
-                <br />
-                4️⃣ Qualify: Ask about their current lead volume and response
-                time
-                <br />
-                5️⃣ Schedule: Book 15-minute demo showing 10x more leads handled
-                <br />
-                6️⃣ Handle Objections: "Too expensive", "Already have assistant",
-                "No time"
-                <br />
-                <br />
-                🎁 Special Offer: First 30 days free for early adopters
-                <br />
-                📅 If interested and appointment is agreed, the AI will save the
-                appointment time (e.g. "tomorrow afternoon", "Friday 10am") in
-                the session notes.
-              </Typography>
-            </Box>
-          </Alert>
-        )}
-
-        {/* Companions Services Flow Info */}
-        {callConfig.call_objective === "companions_services" && (
-          <Alert severity="info" sx={{ mb: 2, borderRadius: 2 }}>
-            <Box>
-              <Typography variant="body2" fontWeight={600}>
-                💎 Premium Companions Services Call Flow
-              </Typography>
-              <Typography
-                variant="caption"
-                color="text.secondary"
-                component="div"
-              >
-                Professional and discreet approach:
-                <br />
-                1️⃣ Greeting: Polite, discreet introduction
-                <br />
-                2️⃣ Service Overview: Premium escort services, VIP events
-                <br />
-                3️⃣ Benefits: Discretion, elegance, professionalism, 24/7
-                availability
-                <br />
-                4️⃣ Booking: Flexible scheduling, tonight or tomorrow
-                <br />
-                5️⃣ Portfolio: Offer to send photos discreetly
-                <br />
-                <br />
-                🔒 Emphasis on privacy, safety, and professionalism throughout
-                the conversation.
-              </Typography>
-            </Box>
-          </Alert>
-        )}
-
-        {/* Language Detection Info */}
-        <Alert
-          severity="info"
-          icon={<LanguageIcon />}
-          sx={{ mb: 3, borderRadius: 2 }}
-        >
+        {/* Campaign Info */}
+        <Alert severity="info" sx={{ mb: 3, borderRadius: 2 }}>
           <Box>
             <Typography variant="body2" fontWeight={600}>
-              Detected Language: {getDetectedLanguage(lead.full_phone)}
+              📋 Campaign Calling Mode
             </Typography>
-            <Typography variant="caption" color="text.secondary">
-              The AI will automatically speak in the appropriate language based
-              on the phone number
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              component="div"
+            >
+              • The same call configuration will be used for all{" "}
+              {campaign.total_leads} leads
+              <br />
+              • Leads will be called one at a time, in queue
+              <br />
+              • Next lead will be called only after the current call completes
+              <br />
+              • Your agent's assigned phone number will be used
+              <br />• The greeting will be generated for each lead based on
+              their language
             </Typography>
           </Box>
         </Alert>
@@ -527,15 +368,7 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
                     <BusinessIcon sx={{ mr: 1, color: "text.secondary" }} />
                   ),
                 }}
-                helperText={
-                  callConfig.call_objective === "promotion_offer" ||
-                  callConfig.call_objective === "confirm_order" ||
-                  callConfig.call_objective === "appointment" ||
-                  callConfig.call_objective === "ai_sales_services" ||
-                  callConfig.call_objective === "companions_services"
-                    ? "Demo configuration applied - you can edit if needed"
-                    : "The company you're representing"
-                }
+                helperText="The company you're representing"
               />
             </Grid>
             <Grid item xs={12} md={6}>
@@ -551,15 +384,7 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
                     <PersonIcon sx={{ mr: 1, color: "text.secondary" }} />
                   ),
                 }}
-                helperText={
-                  callConfig.call_objective === "promotion_offer" ||
-                  callConfig.call_objective === "confirm_order" ||
-                  callConfig.call_objective === "appointment" ||
-                  callConfig.call_objective === "ai_sales_services" ||
-                  callConfig.call_objective === "companions_services"
-                    ? "Demo configuration applied - you can edit if needed"
-                    : "Your name (e.g., 'John', 'Sarah')"
-                }
+                helperText="Your name (e.g., 'John', 'Sarah')"
               />
             </Grid>
             <Grid item xs={12}>
@@ -575,15 +400,7 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
                     <ProductIcon sx={{ mr: 1, color: "text.secondary" }} />
                   ),
                 }}
-                helperText={
-                  callConfig.call_objective === "promotion_offer" ||
-                  callConfig.call_objective === "confirm_order" ||
-                  callConfig.call_objective === "appointment" ||
-                  callConfig.call_objective === "ai_sales_services" ||
-                  callConfig.call_objective === "companions_services"
-                    ? "Demo configuration applied - you can edit if needed"
-                    : "What you're selling (e.g., 'ArtroFlex joint pain relief cream')"
-                }
+                helperText="What you're selling"
               />
             </Grid>
             <Grid item xs={12}>
@@ -688,7 +505,7 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
             <Grid item xs={12}>
               <TextField
                 fullWidth
-                label="Custom Greeting Text"
+                label="Custom Greeting Template (Optional)"
                 multiline
                 rows={3}
                 value={callConfig.greeting_instruction}
@@ -698,8 +515,8 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
                     greeting_instruction: e.target.value,
                   })
                 }
-                helperText="Enter the exact greeting the bot should say (leave empty for auto-generated greeting based on language and product)"
-                placeholder="e.g., 'Здравейте! Аз съм Maria от компания QuantumAI. Обаждам се във връзка с АртроФлекс. Интересувате ли се да научите повече?'"
+                helperText="Template for greeting. Will be auto-translated to each lead's language. Leave empty for auto-generation."
+                placeholder="e.g., 'Hello! I'm [caller_name] from [company_name]. I'm calling about [product_name]. Are you interested in learning more?'"
               />
             </Grid>
           </Grid>
@@ -728,15 +545,7 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
                     main_benefits: e.target.value,
                   })
                 }
-                helperText={
-                  callConfig.call_objective === "promotion_offer" ||
-                  callConfig.call_objective === "confirm_order" ||
-                  callConfig.call_objective === "appointment" ||
-                  callConfig.call_objective === "ai_sales_services" ||
-                  callConfig.call_objective === "companions_services"
-                    ? "Demo configuration applied - you can edit if needed"
-                    : "Key selling points to emphasize (e.g., 'natural ingredients, fast pain relief, no side effects')"
-                }
+                helperText="Key selling points to emphasize"
                 placeholder="natural ingredients, fast pain relief, no side effects"
               />
             </Grid>
@@ -751,15 +560,7 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
                     special_offer: e.target.value,
                   })
                 }
-                helperText={
-                  callConfig.call_objective === "promotion_offer" ||
-                  callConfig.call_objective === "confirm_order" ||
-                  callConfig.call_objective === "appointment" ||
-                  callConfig.call_objective === "ai_sales_services" ||
-                  callConfig.call_objective === "companions_services"
-                    ? "Demo configuration applied - you can edit if needed"
-                    : "Current promotions and deals to mention"
-                }
+                helperText="Current promotions and deals to mention"
                 placeholder="50% off today only, free shipping, 30-day guarantee"
               />
             </Grid>
@@ -824,7 +625,7 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
                 })
               }
               helperText="Add specific instructions, talking points, or special offers (optional)"
-              placeholder="e.g., 'Mention the 50% discount expires tonight', 'Ask about their previous experience with joint pain', 'Focus on natural ingredients'"
+              placeholder="e.g., 'Mention the 50% discount expires tonight', 'Ask about their previous experience', 'Focus on natural ingredients'"
             />
           </AccordionDetails>
         </Accordion>
@@ -870,8 +671,8 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
             color="text.secondary"
             sx={{ mt: 1, display: "block" }}
           >
-            Note: This will be automatically translated to{" "}
-            {getDetectedLanguage(lead.full_phone)} when the call is made
+            Note: This will be automatically translated to each lead's language
+            based on their phone number
           </Typography>
         </Box>
       </DialogContent>
@@ -881,7 +682,7 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
           Cancel
         </Button>
         <Button
-          onClick={handleMakeCall}
+          onClick={handleStartCampaign}
           variant="contained"
           disabled={
             loading ||
@@ -892,41 +693,24 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
             !callConfig.special_offer
           }
           startIcon={
-            greetingStatus === "generating" ? (
+            loading ? (
               <CircularProgress size={20} color="inherit" />
             ) : (
               getObjectiveIcon(callConfig.call_objective)
             )
           }
           sx={{
-            background:
-              greetingStatus === "generating"
-                ? "linear-gradient(135deg, #666 0%, #444 100%)"
-                : "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
-            minWidth: 180,
+            background: "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+            minWidth: 200,
           }}
         >
-          {loading && greetingStatus === "generating"
-            ? "Generating Greeting..."
-            : loading
-            ? "Calling..."
-            : `Make ${
-                callConfig.call_objective === "appointment"
-                  ? "Appointment"
-                  : callConfig.call_objective === "confirm_order"
-                  ? "Confirm Order"
-                  : callConfig.call_objective === "promotion_offer"
-                  ? "Promotion"
-                  : callConfig.call_objective === "ai_sales_services"
-                  ? "Real Estate AI"
-                  : callConfig.call_objective === "companions_services"
-                  ? "Companions"
-                  : callConfig.call_objective
-              } Call`}
+          {loading
+            ? "Starting Campaign..."
+            : `Start Campaign (${campaign.total_leads} leads)`}
         </Button>
       </DialogActions>
     </Dialog>
   );
 };
 
-export default CustomCallDialog;
+export default CampaignCallConfigDialog;

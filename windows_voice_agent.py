@@ -220,6 +220,7 @@ class GoodbyeDetector:
             чао|
             приятен ден|
             лека нощ|
+            дочуване|
 
             # Polish
             do widzenia|
@@ -776,6 +777,93 @@ def create_voice_config(language_info: Dict[str, Any], custom_config: Dict[str, 
             system_text += "You are conducting a survey but also identifying sales opportunities. Ask relevant questions while presenting the product benefits. "
         elif call_objective == "appointment":
             system_text += "You are cold calling to set appointments or qualify leads. Focus on building rapport, understanding their needs, and scheduling a follow-up meeting or call. "
+        elif call_objective == "ai_sales_services":
+            system_text += """You are making a professional cold call to a real estate agent to sell AI automation solutions. Follow this structure:
+
+1. INTRODUCTION & PATTERN INTERRUPT (first 15 seconds):
+   - Introduce yourself and the company
+   - Mention the goal - real estate automation with AI
+   - Ask: "Did I catch you at a bad time?"
+
+2. PRESENT THE PROBLEM (if they say "I have a minute"):
+   - Explain the problem: many agents lose potential clients because they can't respond to everyone immediately
+   - Missed calls after hours and on weekends
+   - Time spent writing property descriptions
+   - Unqualified buyers taking up time
+   - Manual scheduling of viewings
+
+3. PRESENT THE SOLUTION:
+   - AI assistant that answers inquiries 24/7
+   - Automatically generates professional property descriptions
+   - Intelligent buyer qualification (budget, requirements, seriousness)
+   - Automated viewing scheduling
+   - Frees up time for actual sales
+   - Can handle 10x more inquiries without hiring staff
+
+4. QUALIFYING QUESTIONS:
+   - "How many property inquiries do you get weekly?"
+   - "Are you able to respond to all of them or do you lose potential clients?"
+   - "Do you have an assistant or work alone?"
+   - "How much time do you spend writing descriptions and coordinating viewings?"
+
+5. SCHEDULE A MEETING:
+   - Mention social proof: "We work with leading agents in Sofia who've already increased their inquiries by 300%"
+   - Suggest a 15-minute demo
+   - SPECIAL OFFER: "The first 30 days are completely free for early clients"
+   - Give specific options: "Tomorrow afternoon or Friday morning - which works better?"
+   - IF THE CLIENT SHOWS INTEREST AND YOU AGREE ON A MEETING: Remember the day and time and mention them at the end for confirmation
+
+6. HANDLING OBJECTIONS:
+   - "Too expensive" → "I understand the concern. Actually, the first 30 days are free. After that, it's less than one month's assistant salary, and it works 24/7. How much is one property sale worth?"
+   - "Already have an assistant" → "Great! Our AI actually helps your assistant be more effective. It handles routine inquiries while your assistant focuses on real clients. Can we show you how in 15 minutes?"
+   - "No time now" → "That's exactly why you need AI - to free up time! The demo is only 15 minutes and will show you how to save hours every week"
+   - "Need to think" → "Of course. Just keep in mind that the special offer for the first 30 days free is only for a limited number of agencies. Could we reserve a spot for you with a quick demo?"
+
+IMPORTANT: 
+- Be professional, direct, and focused on value
+- Speak the agents' language - time, money, sales
+- Emphasize that this is not an expense but an investment that pays back many times over
+- If the client agrees to a meeting, ask for a convenient day and time and remember them
+- Focus on specific real estate pain points """
+        elif call_objective == "companions_services":
+            system_text += """You are calling from a premium escort agency. Be professional, discreet, and polite. Follow this structure:
+
+1. DISCREET INTRODUCTION:
+   - Introduce yourself professionally with name and agency
+   - Be polite and respect their personal space
+   - Ask if it's a convenient time to talk
+
+2. SERVICE PRESENTATION:
+   - Mention that you offer premium escort services
+   - Emphasize professionalism, discretion, and elegance
+   - Explain that you have educated and attractive ladies
+   - Services include event companionship, meetings, VIP arrangements
+
+3. KEY BENEFITS:
+   - Full discretion and confidentiality guaranteed
+   - Flexible scheduling (24/7 availability)
+   - Safety and professional behavior
+   - High level of service
+
+4. APPOINTMENT SCHEDULING:
+   - Ask if they are interested
+   - Suggest a meeting tonight or tomorrow
+   - Mention the 20% discount for first meeting
+   - Offer to send portfolio discreetly (photos of ladies)
+   - IF YOU AGREE ON A MEETING: Remember the time and day
+
+5. HANDLING OBJECTIONS:
+   - "Not sure" → Emphasize discretion and professionalism. Offer to send information without obligation
+   - "Too expensive" → Explain the quality of service and mention the first-time discount
+   - "No time" → "I understand. We work 24/7, we can arrange a meeting whenever convenient for you"
+   - "Married/In a relationship" → Assure them of complete discretion and confidentiality
+
+IMPORTANT: 
+- Be professional, polite, and respect personal boundaries
+- NEVER be vulgar or rude
+- Emphasize discretion and safety
+- Respect refusal - if the client is not interested, thank them politely and end the call
+- Speak naturally and confidently, without sounding like a salesperson """
         
         # Add main benefits if provided
         if main_benefits:
@@ -823,6 +911,93 @@ def create_voice_config(language_info: Dict[str, Any], custom_config: Dict[str, 
             system_text += "Вие провеждате проучване, но също така търсите възможности за продажби. Задавайте подходящи въпроси, като представяте ползите от продукта. "
         elif call_objective == "appointment":
             system_text += "Вие правите студени обаждания за назначаване на срещи или квалифициране на потенциални клиенти. Фокусирайте се върху изграждането на връзка, разбирането на техните нужди и планирането на последваща среща или обаждане. "
+        elif call_objective == "ai_sales_services":
+            system_text += """Вие правите професионално студено обаждане до брокер на недвижими имоти за продажба на AI решения за автоматизация. Следвайте тази структура:
+
+1. ВЪВЕДЕНИЕ И ПРЕКЪСВАНЕ НА ШАБЛОНА (първите 15 секунди):
+   - Представете се и компанията
+   - Споменете целта - автоматизация на недвижими имоти с AI
+   - Попитайте: "В лош момент ли Ви намирам?"
+
+2. ПРЕДСТАВЯНЕ НА ПРОБЛЕМА (ако кажат "Имам минута"):
+   - Обяснете проблема: мно брокери губят потенциални клиенти защото не могат да отговорят на всички веднага
+   - Пропуснати обаждания след работно време и през уикенда
+   - Време, изразходвано за писане на описания на имоти
+   - Неквалифицирани купувачи, които отнемат време
+   - Ръчно насрочване на огледи
+
+3. ПРЕДСТАВЯНЕ НА РЕШЕНИЕТО:
+   - AI асистент, който отговаря на запитвания 24/7
+   - Автоматично генериране на професионални описания на имоти
+   - Интелигентно квалифициране на купувачи (бюджет, изисквания, сериозност)
+   - Автоматизирано насрочване на огледи
+   - Освобождаване на време за реални продажби
+   - Може да обработвате 10 пъти повече запитвания без да наемате персонал
+
+4. КВАЛИФИЦИРАЩИ ВЪПРОСИ:
+   - "Колко запитвания получавате седмично за имоти?"
+   - "Успявате ли да отговорите на всички или губите потенциални клиенти?"
+   - "Имате ли асистент или работите сам/а?"
+   - "Колко време прекарвате в писане на описания и координиране на огледи?"
+
+5. НАСОЧВАНЕ КЪМ СРЕЩА:
+   - Споменете социално доказателство: "Работим с водещи брокери в София които вече увеличиха запитванията си с 300%"
+   - Предложете 15-минутна демонстрация
+   - СПЕЦИАЛНА ОФЕРТА: "Първите 30 дни са напълно безплатни за ранни клиенти"
+   - Дайте конкретни опции: "Утре следобед или в петък сутрин - кое Ви е по-удобно?"
+   - АКО КЛИЕНТЪТ ПРОЯВЯВА ИНТЕРЕС И СЕ ДОГОВОРИТЕ ЗА СРЕЩА: Запомнете деня и часа и ги споменете в края за потвърждение
+
+6. СПРАВЯНЕ С ВЪЗРАЖЕНИЯ:
+   - "Твърде скъпо" → "Разбирам загриженост та. Всъщност първите 30 дни са безплатни. След това цената е по-ниска от една ча заплата на асистент, а работи 24/7. Колко потенциални клиента си струва един имот?"
+   - "Вече имам асистент" → "Чудесно! Нашият AI всъщност помага на Вашия асистент да е по-ефективен. Той поема рутинните запитвания, а асистентът се фокусира върху реалните клиенти. Можем да Ви покажем как за 15 минути?"
+   - "Няма време сега" → "Точно затова имате нужда от AI - за да освободите време! Демонстрацията е само 15 минути и ще Ви покажем как да спестите часове всяка седмица"
+   - "Трябва да помисля" → "Разбира се. Просто имайте предвид, че специалната оферта за първите 30 дни безплатно е само за ограничен брой агенции. Бихме могли да запазим място за Вас с кратка демонстрация?"
+
+ВАЖНО: 
+- Бъдете професионален, директен и фокусиран върху стойността
+- Говорете на езика на брокерите - време, пари, продажби
+- Подчертайте, че това не е разход, а инвестиция която се връща многократно
+- Ако клиентът се съгласи за среща, попитайте за удобен ден и час и ги запомнете
+- Фокусирайте се върху конкретни болки в недвижимите имоти """
+        elif call_objective == "companions_services":
+            system_text += """Вие се обаждате от премиум ескорт агенция. Бъдете професионален, дискретен и учтив. Следвайте тази структура:
+
+1. ДИСКРЕТНО ПРЕДСТАВЯНЕ:
+   - Представете се професионално с име и агенция
+   - Бъдете учтив и зачитайте личното им пространство
+   - Попитайте дали е удобен момент за разговор
+
+2. ПРЕДСТАВЯНЕ НА УСЛУГИТЕ:
+   - Споменете, че предлагате премиум ескорт услуги
+   - Подчертайте професионализма, дискретността и елегантността
+   - Обяснете, че разполагате с образовани и привлекателни дами
+   - Услугите включват придружаване за събития, срещи, VIP срещи
+
+3. КЛЮЧОВИ ПОЛЗИ:
+   - Пълна дискретност и поверителност гарантирана
+   - Гъвкави срещи по график (24/7 наличност)
+   - Безопасност и професионално поведение
+   - Високо ниво на обслужване
+
+4. НАСРОЧВАНЕ НА СРЕЩА:
+   - Попитайте дали проявяват интерес
+   - Предложете среща днес вечерта или утре
+   - Споменете специалната отстъпка 20% за първа среща
+   - Предложете да изпратите портфолио дискретно (снимки на дамите)
+   - АКО СЕ ДОГОВОРИТЕ ЗА СРЕЩА: Запомнете часа и деня
+
+5. СПРАВЯНЕ С ВЪЗРАЖЕНИЯ:
+   - "Не съм сигурен" → Подчертайте дискретността и професионализма. Предложете да изпратите информация без никакво задължение
+   - "Твърде скъпо" → Обяснете качеството на услугата и споменете отстъпката за първи път
+   - "Нямам време" → "Разбирам. Работим 24/7, можем да организираме среща когато Ви е удобно"
+   - "Женен съм/Имам връзка" → Уверете ги в пълната дискретност и поверителност
+
+ВАЖНО: 
+- Бъдете професионален, учтив и зачитайте личните граници
+- НИКОГА не бъдете вулгарен или груб
+- Подчертайте дискретността и безопасността
+- Уважавайте отказа - ако клиентът не е заинтересован, благодарете учтиво и прекратете обаждането
+- Говорете естествено и доверително, без да звучите като продавач """
         
         # Add main benefits if provided
         if main_benefits:
@@ -871,6 +1046,93 @@ def create_voice_config(language_info: Dict[str, Any], custom_config: Dict[str, 
             system_text += "You are conducting a survey but also identifying sales opportunities. Ask relevant questions while presenting the product benefits. "
         elif call_objective == "appointment":
             system_text += "You are cold calling to set appointments or qualify leads. Focus on building rapport, understanding their needs, and scheduling a follow-up meeting or call. "
+        elif call_objective == "ai_sales_services":
+            system_text += f"""You are making a professional cold call to a real estate agent in {lang_name} to sell AI automation solutions. Follow this structure:
+
+1. INTRODUCTION & PATTERN INTERRUPT (first 15 seconds):
+   - Introduce yourself and the company
+   - Mention the goal - real estate automation with AI
+   - Ask: "Did I catch you at a bad time?"
+
+2. PRESENT THE PROBLEM (if they say "I have a minute"):
+   - Explain the problem: many agents lose potential clients because they can't respond to everyone immediately
+   - Missed calls after hours and on weekends
+   - Time spent writing property descriptions
+   - Unqualified buyers taking up time
+   - Manual scheduling of viewings
+
+3. PRESENT THE SOLUTION:
+   - AI assistant that answers inquiries 24/7
+   - Automatically generates professional property descriptions
+   - Intelligent buyer qualification (budget, requirements, seriousness)
+   - Automated viewing scheduling
+   - Frees up time for actual sales
+   - Can handle 10x more inquiries without hiring staff
+
+4. QUALIFYING QUESTIONS:
+   - "How many property inquiries do you get weekly?"
+   - "Are you able to respond to all of them or do you lose potential clients?"
+   - "Do you have an assistant or work alone?"
+   - "How much time do you spend writing descriptions and coordinating viewings?"
+
+5. SCHEDULE A MEETING:
+   - Mention social proof: "We work with leading agents who've already increased their inquiries by 300%"
+   - Suggest a 15-minute demo
+   - SPECIAL OFFER: "The first 30 days are completely free for early clients"
+   - Give specific options: "Tomorrow afternoon or Friday morning - which works better?"
+   - IF THE CLIENT SHOWS INTEREST AND YOU AGREE ON A MEETING: Remember the day and time and mention them at the end for confirmation
+
+6. HANDLING OBJECTIONS:
+   - "Too expensive" → "I understand the concern. Actually, the first 30 days are free. After that, it's less than one month's assistant salary, and it works 24/7. How much is one property sale worth?"
+   - "Already have an assistant" → "Great! Our AI actually helps your assistant be more effective. It handles routine inquiries while your assistant focuses on real clients. Can we show you how in 15 minutes?"
+   - "No time now" → "That's exactly why you need AI - to free up time! The demo is only 15 minutes and will show you how to save hours every week"
+   - "Need to think" → "Of course. Just keep in mind that the special offer for the first 30 days free is only for a limited number of agencies. Could we reserve a spot for you with a quick demo?"
+
+IMPORTANT: 
+- Be professional, direct, and focused on value
+- Speak the agents' language - time, money, sales
+- Emphasize that this is not an expense but an investment that pays back many times over
+- If the client agrees to a meeting, ask for a convenient day and time and remember them
+- Focus on specific real estate pain points """
+        elif call_objective == "companions_services":
+            system_text += f"""You are calling from a premium escort agency, speaking in {lang_name}. Be professional, discreet, and polite. Follow this structure:
+
+1. DISCREET INTRODUCTION:
+   - Introduce yourself professionally with name and agency
+   - Be polite and respect their personal space
+   - Ask if it's a convenient time to talk
+
+2. SERVICE PRESENTATION:
+   - Mention that you offer premium escort services
+   - Emphasize professionalism, discretion, and elegance
+   - Explain that you have educated and attractive ladies
+   - Services include event companionship, meetings, VIP arrangements
+
+3. KEY BENEFITS:
+   - Full discretion and confidentiality guaranteed
+   - Flexible scheduling (24/7 availability)
+   - Safety and professional behavior
+   - High level of service
+
+4. APPOINTMENT SCHEDULING:
+   - Ask if they are interested
+   - Suggest a meeting tonight or tomorrow
+   - Mention the 20% discount for first meeting
+   - Offer to send portfolio discreetly (photos of ladies)
+   - IF YOU AGREE ON A MEETING: Remember the time and day
+
+5. HANDLING OBJECTIONS:
+   - "Not sure" → Emphasize discretion and professionalism. Offer to send information without obligation
+   - "Too expensive" → Explain the quality of service and mention the first-time discount
+   - "No time" → "I understand. We work 24/7, we can arrange a meeting whenever convenient for you"
+   - "Married/In a relationship" → Assure them of complete discretion and confidentiality
+
+IMPORTANT: 
+- Be professional, polite, and respect personal boundaries
+- NEVER be vulgar or rude
+- Emphasize discretion and safety
+- Respect refusal - if the client is not interested, thank them politely and end the call
+- Speak naturally and confidently, without sounding like a salesperson """
         
         # Add main benefits if provided
         if main_benefits:
@@ -1733,24 +1995,45 @@ class CallRecorder:
         """Stop recording and close WAV files"""
         if not self.recording:
             return
+        
+        # Check if Python is shutting down before doing file operations
+        import sys
+        if sys.meta_path is None:
+            logger.debug("Python shutting down, skipping recording cleanup")
+            return
             
         try:
             logger.info(f"🛑 Stopping recording for session {self.session_id}")
             
             # Close WAV files
             if self.incoming_wav:
-                self.incoming_wav.close()
+                try:
+                    self.incoming_wav.close()
+                except:
+                    pass
                 self.incoming_wav = None
                 
             if self.outgoing_wav:
-                self.outgoing_wav.close()
+                try:
+                    self.outgoing_wav.close()
+                except:
+                    pass
                 self.outgoing_wav = None
             
-            # Create mixed recording
-            self.create_mixed_recording()
+            # Create mixed recording (only if not shutting down)
+            try:
+                self.create_mixed_recording()
+            except Exception as e:
+                # Don't log during shutdown as logging may not be available
+                if sys.meta_path is not None:
+                    logger.warning(f"Could not create mixed recording: {e}")
             
             # Create session info file
-            self._save_session_info()
+            try:
+                self._save_session_info()
+            except Exception as e:
+                if sys.meta_path is not None:
+                    logger.warning(f"Could not save session info: {e}")
             
             self.recording = False
             
@@ -2776,11 +3059,26 @@ Content-Length: 0
                 sip_handler.socket.sendto(bye_message.encode(), gate_addr)
                 logger.info(f"✅ BYE message sent to {gate_addr} for session {self.session_id}")
                 
-                # Remove from active sessions
+                # Stop recording FIRST to ensure mixed file is created before cleanup
+                if self.voice_session and hasattr(self.voice_session, 'call_recorder') and self.voice_session.call_recorder:
+                    try:
+                        self.voice_session.call_recorder.stop_recording()
+                        logger.info(f"📼 Recording stopped for session {self.session_id}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Error stopping recording: {e}")
+                
+                # Remove from active sessions - DO THIS BEFORE calling cleanup_threads
+                # to avoid race conditions with asyncio loop shutdown
                 from __main__ import active_sessions
+                logger.info(f"🔍 Checking active_sessions before removal: session in dict = {self.session_id in active_sessions}, total sessions = {len(active_sessions)}")
+                
                 if self.session_id in active_sessions:
                     del active_sessions[self.session_id]
                     logger.info(f"🗑️ Session {self.session_id} removed from active sessions")
+                else:
+                    logger.warning(f"⚠️ Session {self.session_id} was NOT in active_sessions during cleanup - may have been removed already by BYE handler")
+                
+                logger.info(f"🔍 After removal: total sessions = {len(active_sessions)}")
                 
                 # Remove RTP session (this will call cleanup_threads automatically)
                 sip_handler.rtp_server.remove_session(self.session_id)
@@ -2820,10 +3118,30 @@ Content-Length: 0
         # Close asyncio loop if it exists
         if self.asyncio_loop and not self.asyncio_loop.is_closed():
             try:
-                # Schedule loop closure in the loop's thread
+                # Cancel all pending tasks before stopping the loop
                 if self.asyncio_loop.is_running():
+                    # Get all pending tasks and cancel them
+                    def cancel_all_tasks():
+                        tasks = [t for t in asyncio.all_tasks(self.asyncio_loop) if not t.done()]
+                        for task in tasks:
+                            task.cancel()
+                        logger.info(f"🛑 Cancelled {len(tasks)} pending asyncio task(s) for session {self.session_id}")
+                        return len(tasks)
+                    
+                    # Schedule task cancellation in the loop's thread
+                    future = asyncio.run_coroutine_threadsafe(
+                        asyncio.create_task(asyncio.sleep(0)),  # Dummy coroutine to run cancel_all_tasks
+                        self.asyncio_loop
+                    )
+                    try:
+                        future.result(timeout=0.2)
+                    except:
+                        pass
+                    
+                    # Now stop the loop
                     self.asyncio_loop.call_soon_threadsafe(self.asyncio_loop.stop)
-                    time.sleep(0.1)  # Give it time to stop
+                    time.sleep(0.15)  # Give it time to stop
+                
                 self.asyncio_loop.close()
                 logger.info(f"✅ Closed asyncio loop for session {self.session_id}")
             except Exception as e:
@@ -3213,6 +3531,14 @@ Content-Length: 0
                                 # Note: cleanup_threads will stop all processing and clean up resources
                                 logger.info(f"🛑 Initiating RTP cleanup for session {session_id}")
                             
+                            # Stop recording BEFORE removing from active_sessions to ensure mixed file is created
+                            if voice_session and hasattr(voice_session, 'call_recorder') and voice_session.call_recorder:
+                                try:
+                                    voice_session.call_recorder.stop_recording()
+                                    logger.info(f"📼 Recording stopped for session {session_id}")
+                                except Exception as e:
+                                    logger.warning(f"⚠️ Error stopping recording: {e}")
+                            
                             # Remove from active sessions immediately
                             del active_sessions[session_id]
                             logger.info(f"🗑️ Session {session_id} removed from active sessions")
@@ -3266,6 +3592,14 @@ Content-Length: 0
                         # Stop all processing immediately
                         if rtp_session:
                             logger.info(f"🛑 Initiating RTP cleanup for session {session_id} (legacy path)")
+                        
+                        # Stop recording BEFORE removing from active_sessions to ensure mixed file is created
+                        if voice_session and hasattr(voice_session, 'call_recorder') and voice_session.call_recorder:
+                            try:
+                                voice_session.call_recorder.stop_recording()
+                                logger.info(f"📼 Recording stopped for session {session_id}")
+                            except Exception as e:
+                                logger.warning(f"⚠️ Error stopping recording: {e}")
                         
                         # Remove from active sessions immediately
                         del active_sessions[session_id]
@@ -4158,9 +4492,53 @@ Content-Length: {len(sdp_content)}
                             
                             logger.info("🎵 Playing greeting to called party...")
                             
-                            # Check if custom greeting file is available
-                            custom_greeting = custom_config.get('greeting_file', 'greeting.wav') if custom_config else 'greeting.wav'
-                            greeting_duration = rtp_session.play_greeting_file(custom_greeting)
+                            # Check if we need to generate greeting from call_config
+                            custom_greeting = None
+                            if custom_config:
+                                # If greeting_file is already provided, use it
+                                if custom_config.get('greeting_file'):
+                                    custom_greeting = custom_config.get('greeting_file')
+                                # Otherwise, if call_config is provided, generate greeting now
+                                elif custom_config.get('call_config') and custom_config.get('phone_number'):
+                                    try:
+                                        logger.info("🎤 Generating greeting from call_config...")
+                                        phone_num = custom_config.get('phone_number')
+                                        call_cfg = custom_config.get('call_config')
+                                        
+                                        # Detect language for greeting
+                                        caller_ctry = detect_caller_country(phone_num)
+                                        lang_info = get_language_config(caller_ctry)
+                                        
+                                        # Generate greeting using Gemini
+                                        import asyncio
+                                        loop = asyncio.new_event_loop()
+                                        asyncio.set_event_loop(loop)
+                                        greeting_result = loop.run_until_complete(
+                                            generate_greeting_for_lead(
+                                                language=lang_info['lang'],
+                                                language_code=lang_info['code'],
+                                                call_config=call_cfg
+                                            )
+                                        )
+                                        loop.close()
+                                        
+                                        if greeting_result and greeting_result.get('success'):
+                                            custom_greeting = greeting_result.get('greeting_file')
+                                            logger.info(f"✅ Generated greeting: {custom_greeting}")
+                                        else:
+                                            logger.warning("⚠️ Failed to generate greeting")
+                                    except Exception as e:
+                                        logger.warning(f"⚠️ Error generating greeting: {e}")
+                            
+                            if not custom_greeting:
+                                custom_greeting = 'greeting.wav'
+                            
+                            # Only play greeting if file exists
+                            greeting_duration = 0
+                            if custom_greeting and os.path.exists(custom_greeting):
+                                greeting_duration = rtp_session.play_greeting_file(custom_greeting)
+                            else:
+                                logger.warning(f"⚠️ Greeting file not found or not specified: {custom_greeting}")
                             
                             if greeting_duration > 0:
                                 logger.info(f"✅ Greeting played ({greeting_duration:.1f}s). Ready for conversation.")

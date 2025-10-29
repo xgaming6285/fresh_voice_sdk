@@ -87,7 +87,10 @@ export const campaignAPI = {
     api.post(`/api/crm/campaigns/${id}/leads/filter`, filter),
   getLeads: (id, params) =>
     api.get(`/api/crm/campaigns/${id}/leads`, { params }),
-  start: (id) => api.post(`/api/crm/campaigns/${id}/start`),
+  start: (id, callConfig = null) => {
+    const payload = callConfig ? { call_config: callConfig } : {};
+    return api.post(`/api/crm/campaigns/${id}/start`, payload);
+  },
   pause: (id) => api.post(`/api/crm/campaigns/${id}/pause`),
   stop: (id) => api.post(`/api/crm/campaigns/${id}/stop`),
 };
