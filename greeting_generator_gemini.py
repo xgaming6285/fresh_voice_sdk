@@ -346,7 +346,7 @@ async def test_generator():
             language="Bulgarian",
             language_code="bg",
             call_config={
-                "company_name": "QuantumAI",
+                "company_name": "PropTechAI",
                 "caller_name": "Maria",
                 "product_name": "АртроФлекс"
             }

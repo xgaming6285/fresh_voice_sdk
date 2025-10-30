@@ -50,8 +50,10 @@ function Leads() {
   const [leads, setLeads] = useState([]);
   const [totalLeads, setTotalLeads] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(0);
-  const [pageSize, setPageSize] = useState(25);
+  const [paginationModel, setPaginationModel] = useState({
+    page: 0,
+    pageSize: 25,
+  });
   const [openDialog, setOpenDialog] = useState(false);
   const [editingLead, setEditingLead] = useState(null);
   const [snackbar, setSnackbar] = useState({
@@ -77,14 +79,14 @@ function Leads() {
 
   useEffect(() => {
     loadLeads();
-  }, [page, pageSize]);
+  }, [paginationModel.page, paginationModel.pageSize]);
 
   const loadLeads = async () => {
     setLoading(true);
     try {
       const response = await leadAPI.getAll({
-        page: page + 1,
-        per_page: pageSize,
+        page: paginationModel.page + 1,
+        per_page: paginationModel.pageSize,
       });
       setLeads(response.data.leads);
       setTotalLeads(response.data.total);
@@ -564,14 +566,12 @@ Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
         <DataGrid
           rows={leads}
           columns={columns}
-          pageSize={pageSize}
-          rowsPerPageOptions={[25, 50, 100]}
+          paginationModel={paginationModel}
+          onPaginationModelChange={setPaginationModel}
+          pageSizeOptions={[25, 50, 100]}
           paginationMode="server"
           rowCount={totalLeads}
           loading={loading}
-          page={page}
-          onPageChange={(newPage) => setPage(newPage)}
-          onPageSizeChange={(newPageSize) => setPageSize(newPageSize)}
           disableSelectionOnClick
           disableColumnMenu
           rowHeight={72}

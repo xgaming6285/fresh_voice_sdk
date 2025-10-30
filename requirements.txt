@@ -27,6 +27,10 @@ websockets>=12.0
 # HTTP Client
 requests>=2.31.0
 
+# Web Scraping (for PBX recording scraper)
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
 # Environment Configuration
 python-dotenv>=1.0.0
 

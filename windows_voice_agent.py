@@ -27,7 +27,7 @@ from scipy.signal import resample_poly
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import uvicorn
 
@@ -41,6 +41,9 @@ logging.getLogger('google_genai.types').setLevel(logging.ERROR)
 import pyaudio
 import requests
 import numpy as np
+
+# PBX Scraper for fetching recordings
+from pbx_scraper import get_pbx_scraper
 
 # Multi-tier transcription system with Windows-compatible fallbacks
 TRANSCRIPTION_METHOD = None
@@ -737,7 +740,7 @@ def create_voice_config(language_info: Dict[str, Any], custom_config: Dict[str, 
     
     # Use custom config if provided, otherwise use defaults
     if custom_config:
-        company_name = custom_config.get('company_name', 'QuantumAI')
+        company_name = custom_config.get('company_name', 'PropTechAI')
         caller_name = custom_config.get('caller_name', 'Assistant')
         product_name = custom_config.get('product_name', 'our product')
         additional_prompt = custom_config.get('additional_prompt', '')
@@ -749,7 +752,7 @@ def create_voice_config(language_info: Dict[str, Any], custom_config: Dict[str, 
         greeting_transcript = custom_config.get('greeting_transcript', '')  # ✅ Get greeting text
     else:
         # Minimal defaults when no custom config is provided
-        company_name = 'QuantumAI'
+        company_name = 'PropTechAI'
         caller_name = 'Assistant'
         product_name = 'our product'
         additional_prompt = ''
@@ -1842,7 +1845,12 @@ class AudioTranscriber:
 audio_transcriber = AudioTranscriber(model_size="large")
 
 class CallRecorder:
-    """Records call audio to WAV files - separate files for incoming and outgoing audio"""
+    """Records call audio to WAV files - separate files for incoming and outgoing audio
+    
+    NOTE: This class creates local recordings for backup/testing purposes.
+    The primary recordings are now handled by the PBX system and accessed via 
+    pbx_scraper.py. See /api/recordings endpoint for PBX recording integration.
+    """
     
     def __init__(self, session_id: str, caller_id: str, called_number: str):
         self.session_id = session_id
@@ -5374,7 +5382,7 @@ async def make_outbound_call(call_request: dict, current_user: User = Depends(ch
         
         # Extract custom prompt configuration
         custom_config = {
-            "company_name": call_config.get("company_name", "QuantumAI"),
+            "company_name": call_config.get("company_name", "PropTechAI"),
             "caller_name": call_config.get("caller_name", "Assistant"),
             "product_name": call_config.get("product_name", "our product"),
             "additional_prompt": call_config.get("additional_prompt", ""),
@@ -5567,84 +5575,33 @@ async def get_config():
 
 @app.get("/api/recordings")
 async def get_recordings():
-    """Get list of available call recordings"""
+    """Get list of available call recordings from PBX"""
     try:
-        sessions_dir = Path("sessions")
+        # Get recordings from PBX scraper
+        pbx = get_pbx_scraper()
+        pbx_records = pbx.get_call_records()
+        
+        # Transform PBX records to match expected format
         recordings = []
-        
-        if sessions_dir.exists():
-            for session_dir in sessions_dir.iterdir():
-                if session_dir.is_dir():
-                    session_info_path = session_dir / "session_info.json"
-                    if session_info_path.exists():
-                        try:
-                            with open(session_info_path, 'r') as f:
-                                session_info = json.load(f)
-                            
-                            # Check if audio files exist
-                            audio_files = {}
-                            for audio_type, filename in session_info.get('files', {}).items():
-                                audio_path = session_dir / filename
-                                if audio_path.exists():
-                                    audio_files[audio_type] = {
-                                        "filename": filename,
-                                        "size_mb": round(audio_path.stat().st_size / (1024 * 1024), 2),
-                                        "path": str(audio_path)
-                                    }
-                            
-                            # Check if transcript files exist (scan directory for real-time updates)
-                            transcript_files = {}
-                            transcripts_info = session_info.get('transcripts', {})
-                            
-                            # Check for actual .txt files in the session directory
-                            audio_types = ['incoming', 'outgoing', 'mixed']
-                            for audio_type in audio_types:
-                                # Look for .txt files matching the audio type
-                                txt_files = list(session_dir.glob(f"*{audio_type}*.txt"))
-                                # Filter to get actual transcript files
-                                txt_files = [f for f in txt_files if f.suffix == '.txt']
-                                
-                                if txt_files:
-                                    transcript_path = txt_files[0]
-                                    transcript_info = transcripts_info.get(audio_type, {})
-                                    
-                                    # Get file size
-                                    try:
-                                        with open(transcript_path, 'r', encoding='utf-8') as f:
-                                            content = f.read()
-                                            text_length = len(content)
-                                    except:
-                                        text_length = 0
-                                    
-                                        transcript_files[audio_type] = {
-                                        "filename": transcript_path.name,
-                                            "language": transcript_info.get('language', 'unknown'),
-                                        "text_length": text_length,
-                                            "confidence": transcript_info.get('confidence'),
-                                            "transcribed_at": transcript_info.get('transcribed_at'),
-                                        "success": True,
-                                            "path": str(transcript_path)
-                                        }
-                            
-                            if audio_files:  # Only include if audio files exist
-                                recording_entry = {
-                                    "session_id": session_info.get('session_id'),
-                                    "caller_id": session_info.get('caller_id'),
-                                    "called_number": session_info.get('called_number'),
-                                    "start_time": session_info.get('start_time'),
-                                    "end_time": session_info.get('end_time'),
-                                    "duration_seconds": session_info.get('duration_seconds'),
-                                    "audio_files": audio_files,
-                                    "transcript_files": transcript_files,
-                                    "has_transcripts": len(transcript_files) > 0
-                                }
-                                recordings.append(recording_entry)
-                        except Exception as e:
-                            logger.warning(f"Error reading session info for {session_dir.name}: {e}")
-                            continue
-        
-        # Sort by start_time, newest first
-        recordings.sort(key=lambda x: x.get('start_time', ''), reverse=True)
+        for record in pbx_records:
+            if record['has_recording']:
+                recording_entry = {
+                    "session_id": record['recording_id'],  # Use recording_id as session_id
+                    "caller_id": record['src'],
+                    "called_number": record['dst'],
+                    "start_time": record['datetime'],
+                    "end_time": None,  # Not available from PBX
+                    "duration": record['duration'],
+                    "billsec": record['billsec'],
+                    "call_type": record['call_type'],
+                    "status": record['status'],
+                    "trunk": record['trunk'],
+                    "line": record['line'],
+                    "recording_url": record['recording_url'],
+                    "has_recording": True,
+                    "source": "pbx"
+                }
+                recordings.append(recording_entry)
         
         return {
             "status": "success",
@@ -5653,8 +5610,96 @@ async def get_recordings():
         }
         
     except Exception as e:
-        logger.error(f"Error getting recordings: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error getting recordings from PBX: {e}")
+        # Fallback: still try to return any local recordings if PBX fails
+        try:
+            sessions_dir = Path("sessions")
+            local_recordings = []
+            
+            if sessions_dir.exists():
+                for session_dir in sessions_dir.iterdir():
+                    if session_dir.is_dir():
+                        session_info_path = session_dir / "session_info.json"
+                        if session_info_path.exists():
+                            try:
+                                with open(session_info_path, 'r') as f:
+                                    session_info = json.load(f)
+                                
+                                # Check if audio files exist
+                                audio_files = {}
+                                for audio_type, filename in session_info.get('files', {}).items():
+                                    audio_path = session_dir / filename
+                                    if audio_path.exists():
+                                        audio_files[audio_type] = {
+                                            "filename": filename,
+                                            "size_mb": round(audio_path.stat().st_size / (1024 * 1024), 2),
+                                            "path": str(audio_path)
+                                        }
+                                
+                                if audio_files:
+                                    recording_entry = {
+                                        "session_id": session_info.get('session_id'),
+                                        "caller_id": session_info.get('caller_id'),
+                                        "called_number": session_info.get('called_number'),
+                                        "start_time": session_info.get('start_time'),
+                                        "end_time": session_info.get('end_time'),
+                                        "duration_seconds": session_info.get('duration_seconds'),
+                                        "audio_files": audio_files,
+                                        "has_recording": True,
+                                        "source": "local"
+                                    }
+                                    local_recordings.append(recording_entry)
+                            except Exception as e2:
+                                logger.warning(f"Error reading local session {session_dir.name}: {e2}")
+                                continue
+            
+            local_recordings.sort(key=lambda x: x.get('start_time', ''), reverse=True)
+            
+            return {
+                "status": "warning",
+                "message": f"PBX scraper failed: {str(e)}. Returning local recordings.",
+                "total_recordings": len(local_recordings),
+                "recordings": local_recordings
+            }
+        except Exception as e2:
+            logger.error(f"Both PBX and local recording fetch failed: {e2}")
+            raise HTTPException(status_code=500, detail=f"Failed to fetch recordings: {str(e)}")
+
+@app.get("/api/recordings/pbx/{recording_id}")
+async def stream_pbx_recording(recording_id: str):
+    """Stream a recording directly from the PBX"""
+    try:
+        pbx = get_pbx_scraper()
+        recording_url = pbx.get_recording_stream_url(recording_id)
+        
+        # Stream the recording from PBX to client
+        response = pbx.session.get(recording_url, stream=True)
+        
+        if response.status_code != 200:
+            raise HTTPException(status_code=404, detail="Recording not found on PBX")
+        
+        # Determine content type from PBX response or default to wav
+        content_type = response.headers.get('Content-Type', 'audio/wav')
+        
+        # Stream the content
+        def iterfile():
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    yield chunk
+        
+        return StreamingResponse(
+            iterfile(),
+            media_type=content_type,
+            headers={
+                "Content-Disposition": f"inline; filename={recording_id}.wav"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error streaming recording from PBX: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to stream recording: {str(e)}")
 
 @app.get("/api/transcripts/{session_id}")
 async def get_session_transcripts(session_id: str):

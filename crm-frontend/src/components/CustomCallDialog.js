@@ -699,7 +699,7 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
                   })
                 }
                 helperText="Enter the exact greeting the bot should say (leave empty for auto-generated greeting based on language and product)"
-                placeholder="e.g., 'Здравейте! Аз съм Maria от компания QuantumAI. Обаждам се във връзка с АртроФлекс. Интересувате ли се да научите повече?'"
+                placeholder="e.g., 'Здравейте! Аз съм Maria от компания PropTechAI. Обаждам се във връзка с АртроФлекс. Интересувате ли се да научите повече?'"
               />
             </Grid>
           </Grid>
