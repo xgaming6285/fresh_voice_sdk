@@ -4921,6 +4921,11 @@ class WindowsVoiceSession:
     
     async def initialize_voice_session(self):
         """Initialize the Google Gemini voice session with improved error handling"""
+        # Check if session is already initialized
+        if self.gemini_session is not None:
+            logger.warning(f"⚠️ Voice session already initialized for {self.session_id}, skipping duplicate initialization")
+            return True
+        
         current_time = time.time()
         
         # Check if we should wait before retrying
