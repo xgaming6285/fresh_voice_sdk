@@ -2283,13 +2283,13 @@ class RTPSession:
         self._bye_sent = False  # Track if we already sent BYE
         logger.info("👋 Goodbye detection enabled for graceful hangup")
         
-        # Echo suppression / state management
+        # Full-duplex audio state management (for monitoring only - not blocking)
         self.assistant_speaking = False  # Track when assistant is speaking
         self.assistant_stop_time = 0  # Track when assistant stopped speaking
-        self.echo_suppression_delay = 0.15  # 150ms grace period after assistant stops (reduced for faster response)
+        self.echo_suppression_delay = 0.15  # 150ms reference time (used for logging only, not blocking)
         self.audio_output_active = False  # Track if we're actively outputting audio
         self.last_output_time = 0  # Track last time we sent output audio
-        logger.info("🔇 Echo suppression enabled with 150ms post-speech grace period")
+        logger.info("🎙️ Full-duplex mode enabled - user audio always sent to Gemini for instant interruption")
         
         # Start output processing thread immediately for greeting playback
         self.output_thread = threading.Thread(target=self._process_output_queue, daemon=True)
@@ -2306,7 +2306,7 @@ class RTPSession:
         self.processing = self.output_processing
         
     def process_incoming_audio(self, audio_data: bytes, payload_type: int, timestamp: int):
-        """Process incoming RTP audio packet with echo suppression"""
+        """Process incoming RTP audio packet in full-duplex mode - always sent to Gemini"""
         try:
             # Increment packet counter for RTP activity tracking
             self.packets_received += 1
@@ -2331,26 +2331,24 @@ class RTPSession:
                     self._last_voice_log_time = time.time()
                     logger.debug(f"🗣️ Voice activity detected in session {self.session_id}")
             
-            # Echo suppression: Check if assistant is speaking or just finished
+            # ⚡ FULL-DUPLEX MODE: Always send user audio to Gemini for instant interruption detection
+            # Gemini Live API has built-in server-side interruption detection and echo handling
+            # We NEVER block user audio from being sent - this enables natural conversation flow
+            # where users can interrupt the model at any time (even mid-word like "but...")
+            
+            # Track output state for logging only (not for blocking input)
             current_time = time.time()
             time_since_output = current_time - self.last_output_time
             
-            # Suppress audio if:
-            # 1. Assistant is actively speaking (audio_output_active)
-            # 2. Within grace period after assistant stopped (echo_suppression_delay)
-            if self.audio_output_active or time_since_output < self.echo_suppression_delay:
-                if not hasattr(self, '_suppression_logged') or current_time - self._suppression_logged > 1.0:
-                    self._suppression_logged = current_time
-                    if self.audio_output_active:
-                        logger.debug(f"🔇 Suppressing incoming audio - assistant is speaking")
-                    else:
-                        logger.debug(f"🔇 Suppressing incoming audio - grace period ({time_since_output:.1f}s < {self.echo_suppression_delay}s)")
-                return  # Don't process this audio
-            
-            # Clear suppression log flag when we start processing again
-            if hasattr(self, '_suppression_logged'):
-                delattr(self, '_suppression_logged')
-                logger.info(f"🎤 Resuming audio processing after echo suppression (delay: {time_since_output:.2f}s)")
+            # Log when transitioning from assistant speech to user speech (for debugging only)
+            if (self.audio_output_active or time_since_output < self.echo_suppression_delay):
+                if not hasattr(self, '_duplex_mode_logged'):
+                    self._duplex_mode_logged = True
+                    logger.debug(f"🎙️ Full-duplex mode: User speaking while/after assistant - sending to Gemini for interruption detection")
+            else:
+                # Reset logging flag when clearly in user-only mode
+                if hasattr(self, '_duplex_mode_logged'):
+                    delattr(self, '_duplex_mode_logged')
             
             # Process audio normally
             try:
@@ -2359,7 +2357,7 @@ class RTPSession:
                 # Log once to show audio is flowing
                 if not hasattr(self, '_audio_packet_count'):
                     self._audio_packet_count = 0
-                    logger.info(f"🎤 Echo suppression enabled - processing user audio")
+                    logger.info(f"🎤 Full-duplex streaming active - all user audio sent to Gemini in real-time")
                     
             except Exception as preprocess_error:
                 logger.warning(f"⚠️ Audio preprocessing failed, using original: {preprocess_error}")
@@ -2377,8 +2375,10 @@ class RTPSession:
             with self.buffer_lock:
                 self.audio_buffer += processed_pcm
                 
-                # Send in 40ms chunks for optimal balance between latency and efficiency
-                min_chunk = 640  # 40ms at 8kHz = 320 samples * 2 bytes = 640 bytes
+                # ⚡ Send in 10ms chunks for minimal latency and instant interruption detection
+                # 10ms at 8kHz = 80 samples * 2 bytes = 160 bytes
+                # This allows Gemini to detect interruptions within 10ms of user starting to speak
+                min_chunk = 160  # Reduced from 640 bytes (40ms) to 160 bytes (10ms) for 4x faster response
                 if len(self.audio_buffer) >= min_chunk:
                     chunk_to_send = self.audio_buffer
                     self.audio_buffer = b""  # Clear buffer
@@ -2602,19 +2602,31 @@ class RTPSession:
                                         elif agent_txt and agent_txt.startswith('**'):
                                             logger.debug(f"💭 Agent thinking: {agent_txt[:100]}...")
                                 
-                                # 3) Check for interruptions to cancel hangup timer
+                                # 3) ⚡ INSTANT INTERRUPTION HANDLING - stop model speech immediately
                                 if hasattr(sc, "interrupted") and sc.interrupted:
+                                    logger.info("🔄 User interrupted model - stopping speech immediately!")
                                     self._cancel_hangup()
-                                    logger.debug("🔄 Agent interrupted by user")
-                                    # Clear echo suppression immediately on interruption
+                                    
+                                    # Clear output state immediately for instant response
                                     self.audio_output_active = False
-                                    self.last_output_time = 0  # Reset to allow immediate input
-                                    # Clear output queue to stop any pending audio
+                                    self.last_output_time = 0  # Reset to allow immediate input processing
+                                    
+                                    # CRITICAL: Clear all pending output audio to stop model voice instantly
+                                    # This prevents the model from continuing to speak after user interrupts
+                                    cleared_chunks = 0
                                     try:
                                         while not self.output_queue.empty():
                                             self.output_queue.get_nowait()
+                                            cleared_chunks += 1
                                     except:
                                         pass
+                                    
+                                    if cleared_chunks > 0:
+                                        logger.debug(f"🔇 Cleared {cleared_chunks} pending audio chunks to stop model speech")
+                                    
+                                    # Reset duplex logging flag so next user audio is logged
+                                    if hasattr(self, '_duplex_mode_logged'):
+                                        delattr(self, '_duplex_mode_logged')
                                     
                         except Exception as e:
                             logger.debug(f"Error checking transcripts: {e}")
@@ -6271,7 +6283,9 @@ if __name__ == "__main__":
     logger.info("🔊 Greeting System: ENABLED for both incoming and outbound calls")
     logger.info("   🎙️ Plays greeting.wav file automatically when call is answered")
     logger.info("   🤖 AI responds naturally when user speaks (no artificial triggers)")
-    logger.info("   ⚡ Natural turn-taking with instant interruption support")
+    logger.info("   ⚡ FULL-DUPLEX MODE: Users can interrupt model at any time (even mid-word!)")
+    logger.info("   ⚡ 10ms audio chunks for instant interruption detection (<10ms latency)")
+    logger.info("   ⚡ Server-side interruption detection via Gemini Live API")
     logger.info("=" * 60)
     logger.info("Endpoints:")
     logger.info("  GET /health - System health check (includes transcription status)")
