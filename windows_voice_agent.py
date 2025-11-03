@@ -750,6 +750,7 @@ def create_voice_config(language_info: Dict[str, Any], custom_config: Dict[str, 
         special_offer = custom_config.get('special_offer', '')
         objection_strategy = custom_config.get('objection_strategy', 'understanding')
         greeting_transcript = custom_config.get('greeting_transcript', '')  # ✅ Get greeting text
+        voice_name = custom_config.get('voice_name', 'Puck')  # ✅ Get voice name from CRM
     else:
         # Minimal defaults when no custom config is provided
         company_name = 'PropTechAI'
@@ -762,6 +763,7 @@ def create_voice_config(language_info: Dict[str, Any], custom_config: Dict[str, 
         special_offer = ''
         objection_strategy = 'understanding'
         greeting_transcript = ''  # ✅ No greeting by default
+        voice_name = 'Puck'  # ✅ Default voice
     
     # Create system instruction in the detected language
     if lang_name == 'English':
@@ -1173,7 +1175,7 @@ IMPORTANT:
         media_resolution="MEDIA_RESOLUTION_MEDIUM",
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
-                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)  # ✅ Use voice from CRM
             )
         ),
         system_instruction=types.Content(
@@ -5453,7 +5455,8 @@ async def make_outbound_call(call_request: dict, current_user: User = Depends(ch
             "call_objective": call_config.get("call_objective", "sales"),
             "main_benefits": call_config.get("main_benefits", ""),
             "special_offer": call_config.get("special_offer", ""),
-            "objection_strategy": call_config.get("objection_strategy", "understanding")
+            "objection_strategy": call_config.get("objection_strategy", "understanding"),
+            "voice_name": call_config.get("voice_name", "Puck")  # ✅ Pass voice from CRM to custom_config
         }
         
         logger.info(f"📞 Making outbound call to {phone_number} with custom config:")
@@ -5465,6 +5468,7 @@ async def make_outbound_call(call_request: dict, current_user: User = Depends(ch
         logger.info(f"   Benefits: {custom_config['main_benefits']}")
         logger.info(f"   Offers: {custom_config['special_offer']}")
         logger.info(f"   Objection Strategy: {custom_config['objection_strategy']}")
+        logger.info(f"   Voice: {custom_config['voice_name']}")  # ✅ Log selected voice
         
         # Store greeting file in custom config if provided
         if greeting_file:
