@@ -2254,6 +2254,9 @@ class RTPSession:
         self.output_thread = None
         self.output_processing = True  # For outgoing audio processing
         
+        # Packet tracking for RTP activity detection
+        self.packets_received = 0  # Count of received RTP packets
+        
         # Audio level tracking for AGC
         self.audio_level_history = []
         self.target_audio_level = -20  # dBFS
@@ -2305,6 +2308,9 @@ class RTPSession:
     def process_incoming_audio(self, audio_data: bytes, payload_type: int, timestamp: int):
         """Process incoming RTP audio packet with echo suppression"""
         try:
+            # Increment packet counter for RTP activity tracking
+            self.packets_received += 1
+            
             # Convert payload based on type
             if payload_type == 0:  # PCMU/μ-law
                 pcm_data = self.ulaw_to_pcm(audio_data)
@@ -4392,8 +4398,13 @@ Content-Length: {len(sdp_content)}
             original_number = invite_info.get('original_number', phone_number)  # Get original number without prefix
             session_id = invite_info['session_id']
             from_tag = invite_info['from_tag']  # Use our stored from_tag, not from the 200 OK
+            was_ringing = invite_info.get('is_ringing', False)  # Check if we saw 180/183 before 200 OK
             
-            logger.info(f"✅ Outbound call to {phone_number} answered!")
+            if was_ringing:
+                logger.info(f"✅ Outbound call to {phone_number} answered!")
+            else:
+                logger.warning(f"⚠️ Outbound call to {phone_number} got 200 OK without ringing state (180/183)")
+                logger.info(f"📞 Call may still be connecting - will wait for RTP activity before playing greeting")
             
             # Detect caller's country and language (for outbound calls, use target number)
             caller_country = detect_caller_country(original_number)  # Use original number for language
@@ -4439,7 +4450,8 @@ Content-Length: {len(sdp_content)}
                 "from_tag": from_tag,
                 "to_tag": to_tag,
                 "caller_id": self.phone_number,
-                "called_number": phone_number
+                "called_number": phone_number,
+                "was_ringing": was_ringing  # Track if we saw 180/183 before 200 OK
             }
             
             # Send ACK to complete the call setup BEFORE initializing Gemini
@@ -4491,8 +4503,38 @@ Content-Length: {len(sdp_content)}
 
                         # Play greeting now that call is fully established AND Gemini is ready
                         def play_outbound_greeting():
-                            # Small delay to ensure audio pipeline is ready
-                            time.sleep(0.5)
+                            # Check if we saw ringing state before 200 OK
+                            was_ringing = active_sessions[session_id].get('was_ringing', False) if session_id in active_sessions else False
+                            
+                            if was_ringing:
+                                # Normal case: We saw 180/183 ringing, so 200 OK means user picked up
+                                # Small delay to ensure audio pipeline is ready
+                                time.sleep(0.5)
+                            else:
+                                # Special case: No 180/183 ringing seen, 200 OK may be premature
+                                # Wait for actual RTP activity to confirm user picked up
+                                logger.info("⏳ No ringing state detected - waiting for RTP activity before playing greeting")
+                                max_wait = 15  # Wait up to 15 seconds for RTP activity
+                                wait_interval = 0.1
+                                elapsed = 0
+                                
+                                while elapsed < max_wait:
+                                    if session_id not in active_sessions:
+                                        logger.warning("⚠️ Call ended while waiting for RTP activity")
+                                        return
+                                    
+                                    # Check if we've received any RTP packets (indicates phone was picked up)
+                                    rtp_sess = active_sessions[session_id].get('rtp_session')
+                                    if rtp_sess and hasattr(rtp_sess, 'packets_received') and rtp_sess.packets_received > 5:
+                                        logger.info(f"✅ RTP activity detected after {elapsed:.1f}s - user has picked up")
+                                        time.sleep(0.5)  # Small delay to let audio settle
+                                        break
+                                    
+                                    time.sleep(wait_interval)
+                                    elapsed += wait_interval
+                                
+                                if elapsed >= max_wait:
+                                    logger.warning("⚠️ No RTP activity detected within 15s, playing greeting anyway")
                             
                             # Check if call is still active
                             if session_id not in active_sessions:
@@ -4634,6 +4676,8 @@ Content-Length: 0
                             break
                     
                     if call_id and call_id in self.pending_invites:
+                        # Mark that we've seen ringing state
+                        self.pending_invites[call_id]['is_ringing'] = True
                         phone_number = self.pending_invites[call_id]['phone_number']
                         logger.info(f"🔔 Phone ringing - outbound call to {phone_number}")
                     else:
@@ -4653,6 +4697,8 @@ Content-Length: 0
                             break
                     
                     if call_id and call_id in self.pending_invites:
+                        # Mark that we've seen ringing state (183 = ringing with early media)
+                        self.pending_invites[call_id]['is_ringing'] = True
                         phone_number = self.pending_invites[call_id]['phone_number']
                         logger.info(f"🔔 Phone ringing with early media - outbound call to {phone_number}")
                     else:
