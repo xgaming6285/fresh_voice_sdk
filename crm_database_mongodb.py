@@ -533,6 +533,7 @@ class User:
     updated_at = Column('updated_at')
     last_login = Column('last_login')
     gate_slot = Column('gate_slot')
+    google_api_key = Column('google_api_key')
     
     def __init__(self, **kwargs):
         self.id = kwargs.get('id')
@@ -556,6 +557,7 @@ class User:
         self.updated_at = kwargs.get('updated_at', datetime.utcnow())
         self.last_login = kwargs.get('last_login')
         self.gate_slot = kwargs.get('gate_slot')  # Gate slot number (9-19) for outbound calls
+        self.google_api_key = kwargs.get('google_api_key')  # Google API key for Gemini
     
     @property
     def full_name(self):
@@ -615,7 +617,8 @@ class User:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "last_login": self.last_login,
-            "gate_slot": self.gate_slot
+            "gate_slot": self.gate_slot,
+            "google_api_key": self.google_api_key
         }
     
     @classmethod
@@ -1382,6 +1385,66 @@ class UserManager:
             user.save()
             return True
         return False
+    
+    def get_available_api_keys(self):
+        """Get list of available Google API keys from environment"""
+        import os
+        available_keys = []
+        
+        # Check GOOGLE_API_KEY (primary)
+        primary_key = os.getenv('GOOGLE_API_KEY')
+        if primary_key:
+            available_keys.append(primary_key)
+        
+        # Check GOOGLE_API_KEY_2 through GOOGLE_API_KEY_10
+        for i in range(2, 11):
+            key = os.getenv(f'GOOGLE_API_KEY_{i}')
+            if key:
+                available_keys.append(key)
+        
+        return available_keys
+    
+    def get_assigned_api_keys(self):
+        """Get set of already assigned API keys"""
+        assigned_keys = set()
+        users = self.db.users.find({"google_api_key": {"$ne": None}})
+        for user in users:
+            if user.get('google_api_key'):
+                assigned_keys.add(user['google_api_key'])
+        return assigned_keys
+    
+    def assign_api_key(self, user_id):
+        """Automatically assign a free Google API key to a user"""
+        available_keys = self.get_available_api_keys()
+        assigned_keys = self.get_assigned_api_keys()
+        
+        # Find keys that are available but not yet assigned
+        free_keys = [key for key in available_keys if key not in assigned_keys]
+        
+        if not free_keys:
+            # If all keys are assigned, round-robin assign (reuse keys)
+            # This allows multiple users to share keys if we run out
+            if available_keys:
+                # Get count of users per key and assign to the one with least users
+                key_usage = {}
+                for key in available_keys:
+                    count = self.db.users.count_documents({"google_api_key": key})
+                    key_usage[key] = count
+                
+                # Get key with minimum usage
+                assigned_key = min(key_usage.items(), key=lambda x: x[1])[0]
+            else:
+                return None  # No API keys available at all
+        else:
+            # Assign the first free key
+            assigned_key = free_keys[0]
+        
+        user = self.get_user_by_id(user_id)
+        if user:
+            user.google_api_key = assigned_key
+            user.save()
+            return assigned_key
+        return None
 
 class LeadManager:
     """Manager class for lead operations"""

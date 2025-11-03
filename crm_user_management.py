@@ -142,6 +142,13 @@ async def create_agent(agent_data: AgentCreate, current_admin: User = Depends(ge
         
         logger.info(f"✅ Assigned gate slot {assigned_slot} to agent {new_agent.username}")
         
+        # Automatically assign a Google API key to the new agent
+        assigned_api_key = user_manager.assign_api_key(new_agent.id)
+        if assigned_api_key:
+            logger.info(f"✅ Assigned Google API key to agent {new_agent.username}: {assigned_api_key[:20]}...{assigned_api_key[-4:]}")
+        else:
+            logger.warning(f"⚠️ Could not assign Google API key to agent {new_agent.username} - no keys available")
+        
         return AgentResponse(
             id=new_agent.id,
             username=new_agent.username,

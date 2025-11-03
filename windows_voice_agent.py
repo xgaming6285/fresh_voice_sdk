@@ -2147,26 +2147,57 @@ class RTPServer:
                 if len(data) > header_length:
                     audio_payload = data[header_length:]
                     
-                    # Find session for this SSRC/address
+                    # Find session for this RTP stream
+                    # Priority 1: Match by SSRC (most reliable for concurrent calls)
+                    # Priority 2: Match by port (different calls use different ports)
+                    # Priority 3: Match by IP only for UNINITIALIZED sessions (initialization)
                     session_found = False
+                    matched_session = None
+                    uninitialized_session = None
+                    
                     for session_id, rtp_session in self.sessions.items():
-                        # Match by IP address only (port can be different for RTP vs SIP)
-                        if rtp_session.remote_addr[0] == addr[0]:
-                            # Update the RTP session's actual RTP address if it changed
-                            if rtp_session.remote_addr != addr:
-                                logger.info(f"📍 Updating RTP address from {rtp_session.remote_addr} to {addr}")
-                                rtp_session.remote_addr = addr
-                            
-                            rtp_session.process_incoming_audio(audio_payload, payload_type, timestamp)
+                        # First, try to match by SSRC if we've seen it before
+                        if hasattr(rtp_session, 'remote_ssrc') and rtp_session.remote_ssrc == ssrc:
+                            matched_session = rtp_session
+                            session_found = True
+                            logger.debug(f"✅ Matched RTP packet by SSRC {ssrc} to session {session_id}")
+                            break
+                        
+                        # Second, try to match by IP and port (works for most cases)
+                        if rtp_session.remote_addr == addr:
+                            matched_session = rtp_session
+                            # Store the SSRC for future matching
+                            if not hasattr(rtp_session, 'remote_ssrc'):
+                                rtp_session.remote_ssrc = ssrc
+                                logger.info(f"🔒 Locked RTP session {session_id} to SSRC {ssrc} from {addr}")
                             session_found = True
                             break
+                        
+                        # Track uninitialized sessions (port still 5004) for later
+                        if not hasattr(rtp_session, 'rtp_initialized') and rtp_session.remote_addr[1] == 5004:
+                            # Only consider if not already claimed by another SSRC
+                            if not hasattr(rtp_session, 'remote_ssrc'):
+                                if uninitialized_session is None:
+                                    uninitialized_session = (session_id, rtp_session)
                     
-                    if not session_found:
+                    # If no match found, try to initialize the first uninitialized session
+                    if not session_found and uninitialized_session is not None:
+                        session_id, rtp_session = uninitialized_session
+                        logger.info(f"📍 Initializing RTP session {session_id} with actual port {addr[1]} and SSRC {ssrc}")
+                        rtp_session.remote_addr = addr
+                        rtp_session.remote_ssrc = ssrc
+                        rtp_session.rtp_initialized = True
+                        matched_session = rtp_session
+                        session_found = True
+                    
+                    if matched_session:
+                        matched_session.process_incoming_audio(audio_payload, payload_type, timestamp)
+                    elif not session_found:
                         # No session found for this address - log only once per address
                         if not hasattr(self, '_unknown_addresses'):
                             self._unknown_addresses = set()
                         if addr not in self._unknown_addresses:
-                            logger.warning(f"⚠️ Received RTP audio from unknown address {addr}")
+                            logger.warning(f"⚠️ Received RTP audio from unknown address {addr} (SSRC: {ssrc})")
                             self._unknown_addresses.add(addr)
                 
             except Exception as e:
@@ -3407,8 +3438,24 @@ class WindowsSIPHandler:
             
             logger.info(f"🌍 Language: {language_info['lang']} ({caller_country})")
             
-            # Create voice session with language-specific configuration
-            voice_session = WindowsVoiceSession(session_id, caller_id, self.phone_number, voice_config, custom_config=None)
+            # Get the user's API key for this call
+            user_api_key = None
+            try:
+                from crm_database_mongodb import UserManager
+                db = get_session()
+                user_manager = UserManager(db)
+                user = user_manager.get_user_by_id(default_owner_id)
+                if user and user.google_api_key:
+                    user_api_key = user.google_api_key
+                    logger.info(f"🔑 Retrieved API key for user {user.username} (ID: {default_owner_id})")
+                else:
+                    logger.warning(f"⚠️ No API key found for user ID {default_owner_id}, using default")
+                db.close()
+            except Exception as e:
+                logger.error(f"❌ Error retrieving user API key: {e}")
+            
+            # Create voice session with language-specific configuration and user's API key
+            voice_session = WindowsVoiceSession(session_id, caller_id, self.phone_number, voice_config, custom_config=None, api_key=user_api_key)
             
             # Store SIP details in voice session for sending BYE later
             voice_session.sip_handler = self
@@ -3887,13 +3934,14 @@ Content-Length: {len(sdp_content)}
 """
         return response
     
-    def make_outbound_call(self, phone_number: str, custom_config: dict = None, gate_slot: int = None) -> Optional[str]:
+    def make_outbound_call(self, phone_number: str, custom_config: dict = None, gate_slot: int = None, owner_id: int = None) -> Optional[str]:
         """Initiate outbound call as registered Extension 200
         
         Args:
             phone_number: Phone number to call
             custom_config: Optional custom configuration for the call
             gate_slot: Gate slot number (9-19) to use for this call. If None, defaults to 10
+            owner_id: User ID who owns this call (for API key assignment)
         
         Returns:
             Session ID if successful, None otherwise
@@ -3965,7 +4013,8 @@ Content-Length: {len(sdp_content)}
                 'sdp_content': sdp_content,
                 'cseq': 1,
                 'custom_config': custom_config,  # Store custom config for use in success handler
-                'from_tag': session_id[:8]  # Store our own from_tag for sending BYE later
+                'from_tag': session_id[:8],  # Store our own from_tag for sending BYE later
+                'owner_id': owner_id  # Store owner_id for API key retrieval
             }
             
             # Send INVITE
@@ -4389,6 +4438,7 @@ Content-Length: {len(sdp_content)}
             session_id = invite_info['session_id']
             from_tag = invite_info['from_tag']  # Use our stored from_tag, not from the 200 OK
             was_ringing = invite_info.get('is_ringing', False)  # Check if we saw 180/183 before 200 OK
+            owner_id = invite_info.get('owner_id')  # Get owner_id for API key retrieval
             
             if was_ringing:
                 logger.info(f"✅ Outbound call to {phone_number} answered!")
@@ -4407,13 +4457,33 @@ Content-Length: {len(sdp_content)}
             
             logger.info(f"🌍 Language: {language_info['lang']} ({caller_country})")
             
+            # Get the user's API key for this call
+            user_api_key = None
+            if owner_id:
+                try:
+                    from crm_database_mongodb import UserManager
+                    db = get_session()
+                    user_manager = UserManager(db)
+                    user = user_manager.get_user_by_id(owner_id)
+                    if user and user.google_api_key:
+                        user_api_key = user.google_api_key
+                        logger.info(f"🔑 Retrieved API key for user {user.username} (ID: {owner_id})")
+                    else:
+                        logger.warning(f"⚠️ No API key found for user ID {owner_id}, using default")
+                    db.close()
+                except Exception as e:
+                    logger.error(f"❌ Error retrieving user API key: {e}")
+            else:
+                logger.warning(f"⚠️ No owner_id for outbound call, using default API key")
+            
             # Create voice session for outbound call (we are the caller)
             voice_session = WindowsVoiceSession(
                 session_id, 
                 self.phone_number,  # We are calling
                 phone_number,       # They are receiving
                 voice_config,
-                custom_config=custom_config
+                custom_config=custom_config,
+                api_key=user_api_key
             )
             
             # Store SIP details in voice session for sending BYE later
@@ -4898,7 +4968,7 @@ Content-Length: 0
 class WindowsVoiceSession:
     """Voice session for Windows - simpler than Linux version"""
     
-    def __init__(self, session_id: str, caller_id: str, called_number: str, voice_config: Dict[str, Any] = None, custom_config: Dict[str, Any] = None):
+    def __init__(self, session_id: str, caller_id: str, called_number: str, voice_config: Dict[str, Any] = None, custom_config: Dict[str, Any] = None, api_key: str = None):
         self.session_id = session_id
         self.caller_id = caller_id
         self.called_number = called_number
@@ -4906,6 +4976,21 @@ class WindowsVoiceSession:
         self.session_logger = SessionLogger()
         self.voice_session = None
         self.gemini_session = None  # The actual session object from the context manager
+        
+        # Store API key for this session
+        self.api_key = api_key
+        
+        # Create a session-specific genai client if api_key is provided
+        if api_key:
+            self.session_voice_client = genai.Client(
+                api_key=api_key,
+                http_options={"api_version": "v1beta"}
+            )
+            logger.info(f"🔑 Using user-specific API key for session {session_id}: {api_key[:20]}...{api_key[-4:]}")
+        else:
+            # Fallback to global client
+            self.session_voice_client = voice_client
+            logger.warning(f"⚠️ No user-specific API key for session {session_id}, using global client")
         
         # Store custom config for later use
         self.custom_config = custom_config
@@ -5001,7 +5086,8 @@ class WindowsVoiceSession:
             # Create the connection with timeout
             try:
                 # Create the context manager with the dynamic voice config
-                context_manager = voice_client.aio.live.connect(
+                # Use session-specific client to ensure isolation between concurrent calls
+                context_manager = self.session_voice_client.aio.live.connect(
                     model=MODEL, 
                     config=self.voice_config
                 )
@@ -5465,7 +5551,12 @@ async def make_outbound_call(call_request: dict, current_user: User = Depends(ch
             logger.warning(f"⚠️ User has no assigned gate slot, will use default")
         
         # Make call through Gate VoIP with custom config and agent's gate slot
-        session_id = sip_handler.make_outbound_call(phone_number, custom_config, gate_slot=gate_slot)
+        session_id = sip_handler.make_outbound_call(
+            phone_number, 
+            custom_config, 
+            gate_slot=gate_slot,
+            owner_id=current_user.id if current_user else None
+        )
         
         if session_id:
             # Save to CRM database

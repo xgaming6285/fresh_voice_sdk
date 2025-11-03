@@ -1119,7 +1119,8 @@ async def execute_campaign(campaign_id: int):
                 voice_session_id = sip_handler.make_outbound_call(
                     lead.full_phone, 
                     custom_config=custom_config if custom_config else None,
-                    gate_slot=gate_slot
+                    gate_slot=gate_slot,
+                    owner_id=campaign.owner_id  # Pass owner_id for API key assignment
                 )
                 
                 if voice_session_id:

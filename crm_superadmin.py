@@ -182,6 +182,13 @@ async def create_admin(
         session.commit()
         session.refresh(new_admin)
         
+        # Automatically assign a Google API key to the new admin
+        assigned_api_key = user_manager.assign_api_key(new_admin.id)
+        if assigned_api_key:
+            logger.info(f"✅ Assigned Google API key to admin {new_admin.username}: {assigned_api_key[:20]}...{assigned_api_key[-4:]}")
+        else:
+            logger.warning(f"⚠️ Could not assign Google API key to admin {new_admin.username} - no keys available")
+        
         return get_admin_with_stats(new_admin, session)
     except HTTPException:
         raise
