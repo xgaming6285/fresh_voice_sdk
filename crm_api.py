@@ -166,7 +166,7 @@ def build_call_session_response(call_session: CallSession) -> CallSessionRespons
         campaign_id=call_session.campaign_id,
         lead_id=call_session.lead_id,
         lead_country=call_session.lead.country if call_session.lead else None,
-        caller_id=call_session.caller_id,
+        caller_id=str(call_session.caller_id) if call_session.caller_id is not None else None,
         called_number=call_session.called_number,
         status=get_enum_value(call_session.status),
         started_at=call_session.started_at,
@@ -905,14 +905,12 @@ async def get_call_sessions(
             agent_ids = [agent.id for agent in agents]
             accessible_user_ids = [current_user.id] + agent_ids
             query = session.query(CallSession).options(joinedload(CallSession.lead)).filter(
-                CallSession.owner_id.in_(accessible_user_ids),
-                CallSession.owner_id.isnot(None)  # Extra safety: exclude NULL owner_id
+                CallSession.owner_id.in_(accessible_user_ids)
             )
         else:  # AGENT
             # Agent only sees their own sessions
             query = session.query(CallSession).options(joinedload(CallSession.lead)).filter(
-                CallSession.owner_id == current_user.id,
-                CallSession.owner_id.isnot(None)  # Extra safety: exclude NULL owner_id
+                CallSession.owner_id == current_user.id
             )
         
         if campaign_id:

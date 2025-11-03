@@ -62,6 +62,12 @@ function SessionDetail() {
   const [languageDialogOpen, setLanguageDialogOpen] = useState(false);
   const [selectedLanguage, setSelectedLanguage] = useState("English");
 
+  // Helper to get recording URL with token
+  const getRecordingUrl = (sessionId) => {
+    const token = localStorage.getItem("token");
+    return `http://localhost:8000/api/recordings/pbx/${sessionId}${token ? `?token=${token}` : ""}`;
+  };
+
   const loadSessionData = useCallback(async () => {
     setLoading(true);
     try {
@@ -285,7 +291,7 @@ function SessionDetail() {
       // For PBX recordings, use the recording_url or construct the API endpoint
       const recordingId = recording.session_id;
       window.open(
-        `http://localhost:8000/api/recordings/pbx/${recordingId}`,
+        getRecordingUrl(recordingId),
         "_blank"
       );
     } else {
@@ -303,7 +309,7 @@ function SessionDetail() {
       // For PBX recordings, download from the API endpoint
       const recordingId = recording.session_id;
       const link = document.createElement("a");
-      link.href = `http://localhost:8000/api/recordings/pbx/${recordingId}`;
+      link.href = getRecordingUrl(recordingId);
       link.download = `recording_${recordingId}.wav`;
       link.click();
     } else {
@@ -550,7 +556,7 @@ function SessionDetail() {
                       <audio
                         controls
                         style={{ width: "100%" }}
-                        src={`http://localhost:8000/api/recordings/pbx/${recording.session_id}`}
+                        src={getRecordingUrl(recording.session_id)}
                       >
                         Your browser does not support the audio element.
                       </audio>
