@@ -46,5 +46,12 @@
     "level": "INFO",
     "call_logs_retention_days": 30,
     "audio_logs_retention_days": 7
+  },
+  "asterisk_sftp": {
+     "host": "192.168.50.50",
+     "port": 22,
+     "username": "evolvs",
+     "password": "evolvs@1",
+     "recordings_path": "/var/spool/asterisk/monitor/"
   }
 }

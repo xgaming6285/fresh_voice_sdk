@@ -43,6 +43,8 @@ import pyaudio
 import requests
 import numpy as np
 
+# Asterisk AMI Monitor for linkedid capture
+from asterisk_ami_monitor import start_ami_monitoring, get_current_linkedid, ami_monitor
 
 # Multi-tier transcription system with Windows-compatible fallbacks
 TRANSCRIPTION_METHOD = None
@@ -3356,6 +3358,9 @@ class WindowsSIPHandler:
             logger.info("📞 ================== INCOMING CALL ==================")
             logger.debug(f"INVITE message from {addr}:\n{message}")
             
+            # Extract Asterisk headers from incoming INVITE
+            asterisk_headers = self._extract_asterisk_headers(message)
+            
             # Parse caller ID from SIP message
             caller_id = "Unknown"
             call_id = ""
@@ -3380,6 +3385,10 @@ class WindowsSIPHandler:
                     call_id = line.split(':', 1)[1].strip()
             
             logger.info(f"📞 Incoming call from {caller_id}")
+            
+            # Print Asterisk linkedid if available
+            if asterisk_headers.get('linkedid'):
+                logger.info(f"🔗 Asterisk Linked ID (Call-Wide): {asterisk_headers['linkedid']}")
             
             # Generate session ID
             session_id = str(uuid.uuid4())
@@ -3478,7 +3487,8 @@ class WindowsSIPHandler:
                 "from_tag": from_tag,
                 "to_tag": to_tag,
                 "caller_id": caller_id,
-                "called_number": self.phone_number
+                "called_number": self.phone_number,
+                "asterisk_linkedid": asterisk_headers.get('linkedid')  # Store Asterisk Linked ID
             }
             
             logger.info(f"⏳ Waiting for ACK to establish call {session_id}...")
@@ -4412,6 +4422,9 @@ Content-Length: {len(sdp_content)}
     def _handle_outbound_call_success(self, message: str):
         """Handle successful outbound call establishment (200 OK for INVITE)"""
         try:
+            # Extract Asterisk headers first
+            asterisk_headers = self._extract_asterisk_headers(message)
+            
             # Extract Call-ID to find the pending invite
             call_id = None
             to_tag = None
@@ -4429,8 +4442,32 @@ Content-Length: {len(sdp_content)}
                         tag_end = len(line)
                     to_tag = line[tag_start:tag_end].strip()
             
-            if not call_id or call_id not in self.pending_invites:
-                logger.warning("❌ Cannot find pending INVITE for successful response")
+            if not call_id:
+                logger.warning("❌ No Call-ID found in 200 OK response")
+                return
+            
+            # Check if this is a retransmission (call already established)
+            if call_id not in self.pending_invites:
+                # This is likely a SIP retransmission of 200 OK (normal SIP behavior)
+                # Check if session is already active
+                for session_id, session_info in active_sessions.items():
+                    if session_info.get('call_id') == call_id:
+                        # Re-send ACK to acknowledge the retransmission
+                        logger.debug(f"📞 Received 200 OK retransmission for call {call_id}, re-sending ACK")
+                        # Extract to_tag from the retransmitted message
+                        if to_tag and session_info.get('from_tag'):
+                            from_tag = session_info.get('from_tag')
+                            # Create a minimal invite_info for ACK with all required fields
+                            invite_info_for_ack = {
+                                'username': config.get('username', '200'),
+                                'phone_number': session_info.get('called_number', ''),
+                                'session_id': session_id,
+                                'cseq': 1  # Use a simple CSeq for retransmission ACK
+                            }
+                            self._send_ack(call_id, to_tag, from_tag, invite_info_for_ack)
+                        return
+                # If not in active sessions, it's truly an unknown response
+                logger.debug(f"📞 Received 200 OK for unknown call (likely already ended): {call_id}")
                 return
             
             invite_info = self.pending_invites[call_id]
@@ -4441,11 +4478,31 @@ Content-Length: {len(sdp_content)}
             was_ringing = invite_info.get('is_ringing', False)  # Check if we saw 180/183 before 200 OK
             owner_id = invite_info.get('owner_id')  # Get owner_id for API key retrieval
             
+            # Get linkedid from pending_invites (stored from earlier responses) or from 200 OK
+            asterisk_linkedid = invite_info.get('asterisk_linkedid') or asterisk_headers.get('linkedid')
+            
             if was_ringing:
                 logger.info(f"✅ Outbound call to {phone_number} answered!")
             else:
                 logger.warning(f"⚠️ Outbound call to {phone_number} got 200 OK without ringing state (180/183)")
                 logger.info(f"📞 Call may still be connecting - will wait for RTP activity before playing greeting")
+            
+            # Print Asterisk linkedid (the most important place - when call is answered)
+            if asterisk_linkedid:
+                logger.info(f"🔗 Asterisk Linked ID (Call-Wide): {asterisk_linkedid}")
+            else:
+                logger.warning("⚠️ No Asterisk Linked ID found in SIP headers")
+                logger.warning("💡 Trying to get linkedid from AMI...")
+                
+                # Try to get linkedid from AMI
+                time.sleep(0.2)  # Small delay to let AMI event arrive
+                asterisk_linkedid = get_current_linkedid()
+                
+                if asterisk_linkedid:
+                    logger.info(f"🔗 Asterisk Linked ID (from AMI): {asterisk_linkedid}")
+                else:
+                    logger.warning("⚠️ No linkedid available from AMI either")
+                    logger.warning("💡 Check AMI connection and Asterisk configuration")
             
             # Detect caller's country and language (for outbound calls, use target number)
             caller_country = detect_caller_country(original_number)  # Use original number for language
@@ -4512,12 +4569,36 @@ Content-Length: {len(sdp_content)}
                 "to_tag": to_tag,
                 "caller_id": self.phone_number,
                 "called_number": phone_number,
-                "was_ringing": was_ringing  # Track if we saw 180/183 before 200 OK
+                "was_ringing": was_ringing,  # Track if we saw 180/183 before 200 OK
+                "asterisk_linkedid": asterisk_linkedid  # Store Asterisk Linked ID for the call
             }
             
             # Send ACK to complete the call setup BEFORE initializing Gemini
             self._send_ack(call_id, to_tag, from_tag, invite_info)
             logger.info(f"✅ Outbound call {session_id} established")
+            
+            # Update CallSession in database with asterisk_linkedid (for outbound calls only)
+            if asterisk_linkedid:
+                try:
+                    db = get_session()
+                    try:
+                        crm_session = db.query(CallSession).filter(CallSession.session_id == session_id).first()
+                        if crm_session:
+                            crm_session.asterisk_linkedid = asterisk_linkedid
+                            crm_session.status = CallStatus.ANSWERED
+                            crm_session.answered_at = datetime.utcnow()
+                            crm_session.save()  # MongoDB requires explicit save
+                            logger.info(f"💾 Saved Asterisk Linked ID to database: {asterisk_linkedid}")
+                        else:
+                            logger.warning(f"⚠️ CallSession not found for session_id: {session_id}")
+                    except Exception as e:
+                        logger.error(f"Error updating CallSession with linkedid: {e}")
+                    finally:
+                        db.close()
+                except Exception as e:
+                    logger.error(f"Error in database update: {e}")
+            else:
+                logger.warning("⚠️ No Asterisk Linked ID available to save")
             
             # Clean up pending invite
             del self.pending_invites[call_id]
@@ -4701,10 +4782,34 @@ Content-Length: 0
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
     
+    def _extract_asterisk_headers(self, message: str) -> dict:
+        """Extract Asterisk-specific headers from SIP message
+        
+        Returns:
+            dict with keys: linkedid, uniqueid (if present in headers)
+        """
+        asterisk_info = {}
+        for line in message.split('\n'):
+            line = line.strip()
+            # Check for X-Asterisk headers (case-insensitive)
+            if line.lower().startswith('x-asterisk-linkedid:'):
+                asterisk_info['linkedid'] = line.split(':', 1)[1].strip()
+            elif line.lower().startswith('x-asterisk-uniqueid:'):
+                asterisk_info['uniqueid'] = line.split(':', 1)[1].strip()
+            # Some Asterisk versions may use different header names
+            elif line.lower().startswith('x-linkedid:'):
+                asterisk_info['linkedid'] = line.split(':', 1)[1].strip()
+            elif line.lower().startswith('x-uniqueid:'):
+                asterisk_info['uniqueid'] = line.split(':', 1)[1].strip()
+        return asterisk_info
+    
     def _handle_sip_response(self, message: str, addr):
         """Handle SIP responses (100 Trying, 180 Ringing, 183 Session Progress, 200 OK, 401 Unauthorized, etc.)"""
         try:
             first_line = message.split('\n')[0].strip()
+            
+            # Extract Asterisk headers if present
+            asterisk_headers = self._extract_asterisk_headers(message)
             
             if '100 Trying' in first_line:
                 # Handle 100 Trying response for outbound calls
@@ -4720,6 +4825,11 @@ Content-Length: 0
                     if call_id and call_id in self.pending_invites:
                         phone_number = self.pending_invites[call_id]['phone_number']
                         logger.info(f"📞 Call initiated - processing call to {phone_number}")
+                        # Print Asterisk linkedid if available
+                        if asterisk_headers.get('linkedid'):
+                            logger.info(f"🔗 Asterisk Linked ID: {asterisk_headers['linkedid']}")
+                            # Store it in pending_invites for later use
+                            self.pending_invites[call_id]['asterisk_linkedid'] = asterisk_headers['linkedid']
                     else:
                         logger.debug("📞 Received 100 Trying response")
                 else:
@@ -4741,6 +4851,11 @@ Content-Length: 0
                         self.pending_invites[call_id]['is_ringing'] = True
                         phone_number = self.pending_invites[call_id]['phone_number']
                         logger.info(f"🔔 Phone ringing - outbound call to {phone_number}")
+                        # Print Asterisk linkedid if available
+                        if asterisk_headers.get('linkedid'):
+                            logger.info(f"🔗 Asterisk Linked ID: {asterisk_headers['linkedid']}")
+                            # Store it in pending_invites for later use
+                            self.pending_invites[call_id]['asterisk_linkedid'] = asterisk_headers['linkedid']
                     else:
                         logger.info("🔔 Phone ringing - waiting for answer")
                 else:
@@ -4762,6 +4877,11 @@ Content-Length: 0
                         self.pending_invites[call_id]['is_ringing'] = True
                         phone_number = self.pending_invites[call_id]['phone_number']
                         logger.info(f"🔔 Phone ringing with early media - outbound call to {phone_number}")
+                        # Print Asterisk linkedid if available
+                        if asterisk_headers.get('linkedid'):
+                            logger.info(f"🔗 Asterisk Linked ID: {asterisk_headers['linkedid']}")
+                            # Store it in pending_invites for later use
+                            self.pending_invites[call_id]['asterisk_linkedid'] = asterisk_headers['linkedid']
                     else:
                         logger.info("🔔 Phone ringing with early media - waiting for answer")
                 else:
@@ -4977,6 +5097,8 @@ class WindowsVoiceSession:
         self.session_logger = SessionLogger()
         self.voice_session = None
         self.gemini_session = None  # The actual session object from the context manager
+        self._init_lock = threading.Lock()  # Lock to prevent concurrent initialization
+        self._initializing = False  # Flag to track if initialization is in progress
         
         # Store API key for this session
         self.api_key = api_key
@@ -5043,27 +5165,35 @@ class WindowsVoiceSession:
     
     async def initialize_voice_session(self):
         """Initialize the Google Gemini voice session with improved error handling"""
-        # Check if session is already initialized
-        if self.gemini_session is not None:
-            logger.warning(f"⚠️ Voice session already initialized for {self.session_id}, skipping duplicate initialization")
-            return True
-        
-        current_time = time.time()
-        
-        # Check if we should wait before retrying
-        if (current_time - self.last_connection_attempt) < self.connection_backoff:
-            logger.info(f"Waiting {self.connection_backoff}s before retry...")
-            await asyncio.sleep(self.connection_backoff)
-        
-        # Check if we've exceeded max attempts
-        if self.connection_attempts >= self.max_connection_attempts:
-            logger.error(f"❌ Max connection attempts ({self.max_connection_attempts}) exceeded for session {self.session_id}")
-            return False
-        
-        self.connection_attempts += 1
-        self.last_connection_attempt = time.time()
+        # Check if session is already initialized or being initialized
+        with self._init_lock:
+            if self.gemini_session is not None:
+                logger.warning(f"⚠️ Voice session already initialized for {self.session_id}, skipping duplicate initialization")
+                return True
+            
+            if self._initializing:
+                logger.warning(f"⚠️ Voice session initialization already in progress for {self.session_id}, skipping duplicate call")
+                return False
+            
+            # Mark that we're initializing
+            self._initializing = True
         
         try:
+            current_time = time.time()
+            
+            # Check if we should wait before retrying
+            if (current_time - self.last_connection_attempt) < self.connection_backoff:
+                logger.info(f"Waiting {self.connection_backoff}s before retry...")
+                await asyncio.sleep(self.connection_backoff)
+            
+            # Check if we've exceeded max attempts
+            if self.connection_attempts >= self.max_connection_attempts:
+                logger.error(f"❌ Max connection attempts ({self.max_connection_attempts}) exceeded for session {self.session_id}")
+                return False
+            
+            self.connection_attempts += 1
+            self.last_connection_attempt = time.time()
+            
             logger.info(f"Attempting to connect to Gemini live session (attempt {self.connection_attempts}/{self.max_connection_attempts})...")
             logger.info(f"Using model: {MODEL}")
             # Extract language from voice config for logging
@@ -5123,6 +5253,10 @@ class WindowsVoiceSession:
                 f"Voice session initialized - ready for conversation"
             )
             
+            # Reset initializing flag on success
+            with self._init_lock:
+                self._initializing = False
+            
             return True
             
         except Exception as e:
@@ -5147,6 +5281,10 @@ class WindowsVoiceSession:
             
             # Exponential backoff for retries
             self.connection_backoff = min(self.connection_backoff * 2, 30.0)  # Max 30 seconds
+            
+            # Reset initializing flag on failure
+            with self._init_lock:
+                self._initializing = False
             
             return False
     
@@ -6285,6 +6423,20 @@ async def get_audio_preprocessing_status():
         "note": "Preprocessing only applied to incoming audio (user speech), not outgoing AI responses. VAD ensures Gemini only receives actual speech, preventing it from being overwhelmed with continuous audio."
     }
 
+def start_ami_thread():
+    """Start Asterisk AMI monitoring in background thread"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    # Use credentials from Asterisk config
+    ami_host = config.get('host', '192.168.50.50')
+    ami_port = 5038
+    ami_username = 'voipsystems'
+    ami_password = 'asccyber@1'
+    
+    logger.info(f"📡 Connecting to Asterisk AMI at {ami_host}:{ami_port}")
+    loop.run_until_complete(start_ami_monitoring(ami_host, ami_port, ami_username, ami_password))
+
 if __name__ == "__main__":
     import argparse
     
@@ -6333,6 +6485,12 @@ if __name__ == "__main__":
     logger.info("  GET /api/transcripts/{session_id}/{audio_type} - Get specific transcript")
     logger.info("  POST /api/transcripts/{session_id}/retranscribe - Re-transcribe session")
     logger.info("=" * 60)
+    
+    # Start AMI monitoring thread
+    logger.info("📡 Starting Asterisk AMI monitor for linkedid capture...")
+    ami_thread = threading.Thread(target=start_ami_thread, daemon=True)
+    ami_thread.start()
+    logger.info("✅ AMI monitor thread started")
     
     uvicorn.run(
         "windows_voice_agent:app",

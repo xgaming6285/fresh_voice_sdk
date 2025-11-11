@@ -104,15 +104,20 @@ def make_test_call():
             print("   Look for the SIP response sequence:")
             print("   1. 📞 Received SIP 100 Trying (Call Initiated)")
             print("   2. 📞 Call initiated - processing call to 9359988925337")
-            print("   3. 🔔 Received SIP 180 Ringing (Phone Ringing)  ← TARGET!")
-            print("   4. 🔔 Phone ringing - outbound call to 9359988925337")
-            print("   5. 📞 Received SIP 200 OK (Success Response)")
-            print("   6. ✅ Outbound call to 9359988925337 answered!")
+            print("   3. 🔗 Asterisk Linked ID (Call-Wide): <linkedid>  ← NEW!")
+            print("   4. 🔔 Received SIP 180 Ringing (Phone Ringing)  ← TARGET!")
+            print("   5. 🔔 Phone ringing - outbound call to 9359988925337")
+            print("   6. 📞 Received SIP 200 OK (Success Response)")
+            print("   7. ✅ Outbound call to 9359988925337 answered!")
             print("=" * 70)
             
             print("\n💡 Note: If you see 100 Trying immediately followed by 200 OK,")
             print("   it means the phone answered too quickly (no ringing phase).")
             print("   Try calling a number that will ring for a few seconds.")
+            print("\n🔗 Linked ID: This is the call-wide unique ID from Asterisk.")
+            print("   All legs of the call share this ID (useful for CDR tracking).")
+            print("   To enable it, configure your Asterisk dialplan to send")
+            print("   X-Asterisk-Linkedid header (see asterisk_dialplan.conf).")
             
             return True
             

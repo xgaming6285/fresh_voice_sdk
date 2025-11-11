@@ -143,6 +143,35 @@ Once running, these endpoints are available:
 - `POST /api/make_call` - Initiate outbound calls
 - `WS /ws/audio/{session_id}` - Real-time audio streaming
 
+### 🔗 Call Tracking with Asterisk Linked ID
+
+The system captures Asterisk's `linkedid` for call-wide tracking:
+
+- **What is linkedid?** A unique identifier that remains consistent across all legs of a call (A-leg, B-leg, transfers, etc.)
+- **Why use linkedid?** Unlike `uniqueid` which is per-channel, `linkedid` tracks the entire call session across transfers, making it ideal for CDR (Call Detail Records) tracking
+- **Where to find it?** The linkedid is printed in the terminal logs when making/receiving calls:
+  ```
+  🔗 Asterisk Linked ID (Call-Wide): 1636547890.1
+  ```
+
+**Enabling Linked ID in Asterisk:**
+
+1. Update your Asterisk dialplan (see `asterisk_dialplan.conf` for full config):
+   ```
+   exten => _X.,n,Set(LINKEDID=${CHANNEL(linkedid)})
+   exten => _X.,n,Set(PJSIP_HEADER(add,X-Asterisk-Linkedid)=${LINKEDID})
+   ```
+
+2. Reload Asterisk dialplan:
+   ```bash
+   asterisk -rx "dialplan reload"
+   ```
+
+3. The voice agent will automatically capture and display the linkedid in logs
+
+**Testing:**
+Run `python test_outbound_call.py` and check the logs for the linkedid output.
+
 ## Session Logging
 
 ### What Gets Logged
