@@ -43,8 +43,6 @@ import pyaudio
 import requests
 import numpy as np
 
-# PBX Scraper for fetching recordings
-from pbx_scraper import get_pbx_scraper
 
 # Multi-tier transcription system with Windows-compatible fallbacks
 TRANSCRIPTION_METHOD = None
@@ -1823,9 +1821,11 @@ audio_transcriber = AudioTranscriber(model_size="large")
 class CallRecorder:
     """Records call audio to WAV files - separate files for incoming and outgoing audio
     
-    NOTE: This class creates local recordings for backup/testing purposes.
-    The primary recordings are now handled by the PBX system and accessed via 
-    pbx_scraper.py. See /api/recordings endpoint for PBX recording integration.
+    This class handles local audio recording for call sessions by:
+    - Recording incoming audio from caller
+    - Recording outgoing audio (agent/AI responses)
+    - Creating mixed/combined recording
+    - Saving session metadata
     """
     
     def __init__(self, session_id: str, caller_id: str, called_number: str):
@@ -5710,7 +5710,7 @@ async def get_config():
 
 @app.get("/api/recordings")
 async def get_recordings(current_user: User = Depends(get_current_user)):
-    """Get list of available call recordings from PBX (filtered by user ownership)"""
+    """Get list of available call recordings from local sessions (filtered by user ownership)"""
     try:
         # Import necessary modules for session querying
         from crm_database import get_session as get_db_session, CallSession, UserRole, UserManager
@@ -5734,266 +5734,69 @@ async def get_recordings(current_user: User = Depends(get_current_user)):
                 # Agent only sees their own sessions
                 accessible_sessions = db_session.query(CallSession).filter(CallSession.owner_id == current_user.id).all()
             
-            # Create a mapping of phone numbers to sessions (for matching PBX recordings)
-            # Include multiple phone number formats for matching
-            phone_to_session = {}
-            for session in accessible_sessions:
-                if session.called_number:
-                    # Original format
-                    phone_to_session[session.called_number] = session
-                    
-                    # Without + and with gate slot prefixes (9-19)
-                    clean_phone = session.called_number.replace('+', '').replace(' ', '').replace('-', '')
-                    phone_to_session[clean_phone] = session
-                    
-                    # With potential gate slot prefixes
-                    for slot in range(9, 20):
-                        prefixed = f"{slot}{clean_phone}"
-                        phone_to_session[prefixed] = session
-                    
-                    # Just the last 9 digits (for partial matches)
-                    if len(clean_phone) >= 9:
-                        phone_to_session[clean_phone[-9:]] = session
+            # Create a set of accessible session IDs for filtering
+            accessible_session_ids = {session.session_id for session in accessible_sessions}
         finally:
             db_session.close()
         
-        # Get recordings from PBX scraper
-        pbx = get_pbx_scraper()
-        pbx_records = pbx.get_call_records()
+        # Get recordings from local sessions directory
+        sessions_dir = Path("sessions")
+        local_recordings = []
         
-        # Transform PBX records to match expected format, matching by phone number
-        recordings = []
-        for record in pbx_records:
-            if not record['has_recording']:
-                continue
-                
-            # Try to match PBX recording to a CallSession by phone number
-            matched_session = None
-            pbx_dst = record['dst']
-            
-            # Direct match
-            if pbx_dst in phone_to_session:
-                matched_session = phone_to_session[pbx_dst]
-            else:
-                # Try matching without common prefixes and suffixes
-                clean_dst = ''.join(filter(str.isdigit, pbx_dst))
-                if clean_dst in phone_to_session:
-                    matched_session = phone_to_session[clean_dst]
-                elif len(clean_dst) >= 9 and clean_dst[-9:] in phone_to_session:
-                    matched_session = phone_to_session[clean_dst[-9:]]
-            
-            # If we found a matching session, include this recording
-            if matched_session:
-                recording_entry = {
-                    "session_id": matched_session.session_id,  # Use CallSession UUID, not PBX recording_id
-                    "pbx_recording_id": record['recording_id'],  # Keep PBX ID for reference
-                    "caller_id": record['src'],
-                    "called_number": record['dst'],
-                    "start_time": record['datetime'],
-                    "end_time": None,  # Not available from PBX
-                    "duration": record['duration'],
-                    "billsec": record['billsec'],
-                    "call_type": record['call_type'],
-                    "status": record['status'],
-                    "trunk": record['trunk'],
-                    "line": record['line'],
-                    "recording_url": record['recording_url'],
-                    "has_recording": True,
-                    "source": "pbx"
-                }
-                recordings.append(recording_entry)
+        if sessions_dir.exists():
+            for session_dir in sessions_dir.iterdir():
+                if session_dir.is_dir():
+                    session_info_path = session_dir / "session_info.json"
+                    if session_info_path.exists():
+                        try:
+                            with open(session_info_path, 'r') as f:
+                                session_info = json.load(f)
+                            
+                            session_id = session_info.get('session_id')
+                            
+                            # Filter by ownership - only include accessible sessions
+                            if session_id not in accessible_session_ids:
+                                continue
+                            
+                            # Check if audio files exist
+                            audio_files = {}
+                            for audio_type, filename in session_info.get('files', {}).items():
+                                audio_path = session_dir / filename
+                                if audio_path.exists():
+                                    audio_files[audio_type] = {
+                                        "filename": filename,
+                                        "size_mb": round(audio_path.stat().st_size / (1024 * 1024), 2),
+                                        "path": str(audio_path)
+                                    }
+                            
+                            if audio_files:
+                                recording_entry = {
+                                    "session_id": session_id,
+                                    "caller_id": session_info.get('caller_id'),
+                                    "called_number": session_info.get('called_number'),
+                                    "start_time": session_info.get('start_time'),
+                                    "end_time": session_info.get('end_time'),
+                                    "duration_seconds": session_info.get('duration_seconds'),
+                                    "audio_files": audio_files,
+                                    "has_recording": True,
+                                    "source": "local"
+                                }
+                                local_recordings.append(recording_entry)
+                        except Exception as e2:
+                            logger.warning(f"Error reading local session {session_dir.name}: {e2}")
+                            continue
+        
+        local_recordings.sort(key=lambda x: x.get('start_time', ''), reverse=True)
         
         return {
             "status": "success",
-            "total_recordings": len(recordings),
-            "recordings": recordings
+            "total_recordings": len(local_recordings),
+            "recordings": local_recordings
         }
         
     except Exception as e:
-        logger.error(f"Error getting recordings from PBX: {e}")
-        # Fallback: still try to return any local recordings if PBX fails
-        try:
-            sessions_dir = Path("sessions")
-            local_recordings = []
-            
-            if sessions_dir.exists():
-                for session_dir in sessions_dir.iterdir():
-                    if session_dir.is_dir():
-                        session_info_path = session_dir / "session_info.json"
-                        if session_info_path.exists():
-                            try:
-                                with open(session_info_path, 'r') as f:
-                                    session_info = json.load(f)
-                                
-                                # Check if audio files exist
-                                audio_files = {}
-                                for audio_type, filename in session_info.get('files', {}).items():
-                                    audio_path = session_dir / filename
-                                    if audio_path.exists():
-                                        audio_files[audio_type] = {
-                                            "filename": filename,
-                                            "size_mb": round(audio_path.stat().st_size / (1024 * 1024), 2),
-                                            "path": str(audio_path)
-                                        }
-                                
-                                if audio_files:
-                                    recording_entry = {
-                                        "session_id": session_info.get('session_id'),
-                                        "caller_id": session_info.get('caller_id'),
-                                        "called_number": session_info.get('called_number'),
-                                        "start_time": session_info.get('start_time'),
-                                        "end_time": session_info.get('end_time'),
-                                        "duration_seconds": session_info.get('duration_seconds'),
-                                        "audio_files": audio_files,
-                                        "has_recording": True,
-                                        "source": "local"
-                                    }
-                                    local_recordings.append(recording_entry)
-                            except Exception as e2:
-                                logger.warning(f"Error reading local session {session_dir.name}: {e2}")
-                                continue
-            
-            local_recordings.sort(key=lambda x: x.get('start_time', ''), reverse=True)
-            
-            return {
-                "status": "warning",
-                "message": f"PBX scraper failed: {str(e)}. Returning local recordings.",
-                "total_recordings": len(local_recordings),
-                "recordings": local_recordings
-            }
-        except Exception as e2:
-            logger.error(f"Both PBX and local recording fetch failed: {e2}")
-            raise HTTPException(status_code=500, detail=f"Failed to fetch recordings: {str(e)}")
-
-@app.get("/api/recordings/pbx/{session_id}")
-async def stream_pbx_recording(
-    session_id: str, 
-    token: Optional[str] = None,
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False))
-):
-    """Stream a recording directly from the PBX by CallSession UUID
-    
-    This endpoint accepts a CallSession UUID, looks up the session,
-    finds the matching PBX recording by phone number, and streams it.
-    
-    Supports authentication via:
-    - Authorization header (Bearer token)
-    - Query parameter token (for HTML audio/video elements)
-    """
-    try:
-        from crm_database import get_session as get_db_session, CallSession, UserRole, User, UserManager
-        from crm_auth import decode_token
-        
-        # Get token from either header or query parameter
-        auth_token = None
-        if credentials:
-            auth_token = credentials.credentials
-        elif token:
-            auth_token = token
-        
-        if not auth_token:
-            raise HTTPException(status_code=401, detail="Not authenticated")
-        
-        # Decode token and get user
-        try:
-            payload = decode_token(auth_token)
-            user_id = payload.get("user_id")
-            if not user_id:
-                raise HTTPException(status_code=401, detail="Invalid token")
-        except Exception as e:
-            logger.error(f"Token decode error: {e}")
-            raise HTTPException(status_code=401, detail="Invalid token")
-        
-        # Get user from database
-        db_session = get_db_session()
-        try:
-            user_manager = UserManager(db_session)
-            current_user = user_manager.get_user_by_id(user_id)
-            
-            if not current_user or not current_user.is_active:
-                raise HTTPException(status_code=401, detail="User not found or inactive")
-        finally:
-            db_session.close()
-        
-        # Look up the CallSession
-        db_session = get_db_session()
-        try:
-            call_session = db_session.query(CallSession).filter(
-                CallSession.session_id == session_id
-            ).first()
-            
-            if not call_session:
-                raise HTTPException(status_code=404, detail="Session not found in database")
-            
-            if not call_session.called_number:
-                raise HTTPException(status_code=400, detail="Session has no phone number")
-        finally:
-            db_session.close()
-        
-        # Get PBX records and find matching recording
-        pbx = get_pbx_scraper()
-        pbx_records = pbx.get_call_records()
-        
-        # Create phone number variations for matching
-        phone_variations = set()
-        phone_variations.add(call_session.called_number)
-        
-        clean_phone = call_session.called_number.replace('+', '').replace(' ', '').replace('-', '')
-        phone_variations.add(clean_phone)
-        
-        # Add gate slot prefixes
-        for slot in range(9, 20):
-            phone_variations.add(f"{slot}{clean_phone}")
-        
-        # Find matching PBX recording
-        pbx_recording_id = None
-        for record in pbx_records:
-            if not record['has_recording']:
-                continue
-                
-            pbx_dst = record['dst']
-            clean_dst = ''.join(filter(str.isdigit, pbx_dst))
-            
-            # Check if this recording matches our session
-            if pbx_dst in phone_variations or clean_dst in phone_variations:
-                pbx_recording_id = record['recording_id']
-                logger.info(f"Found PBX recording {pbx_recording_id} for session {session_id} (phone: {call_session.called_number}, dst: {pbx_dst})")
-                break
-        
-        if not pbx_recording_id:
-            logger.error(f"No PBX recording found for session {session_id} with phone {call_session.called_number}")
-            logger.error(f"Phone variations tried: {phone_variations}")
-            raise HTTPException(status_code=404, detail="Recording not found on PBX for this session")
-        
-        # Stream the recording
-        recording_url = pbx.get_recording_stream_url(pbx_recording_id)
-        response = pbx.session.get(recording_url, stream=True)
-        
-        if response.status_code != 200:
-            raise HTTPException(status_code=404, detail="Recording not found on PBX")
-        
-        # Determine content type from PBX response or default to wav
-        content_type = response.headers.get('Content-Type', 'audio/wav')
-        
-        # Stream the content
-        def iterfile():
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    yield chunk
-        
-        return StreamingResponse(
-            iterfile(),
-            media_type=content_type,
-            headers={
-                "Content-Disposition": f"inline; filename={pbx_recording_id}.wav"
-            }
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error streaming recording from PBX: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to stream recording: {str(e)}")
+        logger.error(f"Error getting recordings: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch recordings: {str(e)}")
 
 @app.get("/api/transcripts/{session_id}")
 async def get_session_transcripts(session_id: str):
