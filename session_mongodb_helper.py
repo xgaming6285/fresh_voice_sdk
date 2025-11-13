@@ -96,10 +96,11 @@ def save_transcripts_to_mongodb(session_id, session_dir):
                     transcript_text = '\n'.join(lines[6:]).strip() if len(lines) > 6 else content
                     
                     transcripts[transcript_type] = {
-                        'text': transcript_text,
+                        'content': transcript_text,   # Frontend expects 'content'
+                        'success': True,
                         'file': transcript_file.name,
                         'length': len(transcript_text),
-                        'saved_at': datetime.utcnow().isoformat()
+                        'transcribed_at': datetime.utcnow().isoformat()
                     }
                     
                 except Exception as e:

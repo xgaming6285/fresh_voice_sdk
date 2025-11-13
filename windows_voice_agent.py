@@ -1413,8 +1413,8 @@ class AudioTranscriber:
             else:
                 prompt = "Please transcribe this audio. Provide only the transcription text, nothing else."
             
-            # Use Gemini 2.0 Flash model which supports audio
-            model_id = "gemini-2.0-flash-exp"
+            # Use Gemini 2.5 Flash model (paid, supports audio transcription)
+            model_id = "gemini-2.5-flash"
             
             logger.info(f"📤 Sending audio to Gemini model: {model_id}")
             
@@ -5974,79 +5974,101 @@ async def get_recordings(current_user: User = Depends(get_current_user)):
 
 @app.get("/api/transcripts/{session_id}")
 async def get_session_transcripts(session_id: str):
-    """Get transcripts for a specific session - reads directly from files for real-time updates"""
+    """Get transcripts for a specific session - reads from MongoDB or files"""
     try:
-        session_dir = Path(f"sessions/{session_id}")
-        
-        if not session_dir.exists():
-            raise HTTPException(status_code=404, detail="Session not found")
-        
-        # Load session info
-        session_info_path = session_dir / "session_info.json"
-        session_info = {}
-        if session_info_path.exists():
-            with open(session_info_path, 'r', encoding='utf-8') as f:
-                session_info = json.load(f)
-        
-        # Get transcript information from session_info if available
-        transcripts_info = session_info.get('transcripts', {})
         transcripts = {}
+        session_info_data = {}
         
-        # Check for actual transcript files directly (real-time check)
-        audio_types = ['incoming', 'outgoing', 'mixed']
-        for audio_type in audio_types:
-            # Look for .txt files matching the audio type
-            txt_files = list(session_dir.glob(f"*{audio_type}*.txt"))
+        # First, try to get transcripts from MongoDB
+        try:
+            from crm_database_mongodb import MongoDB
+            db = MongoDB.get_db()
+            call_session_doc = db.call_sessions.find_one({"session_id": session_id})
             
-            # Filter out non-transcript files (like transcript_*.json)
-            txt_files = [f for f in txt_files if f.suffix == '.txt' and 'transcript' not in f.stem or f.stem.startswith(audio_type)]
+            if call_session_doc:
+                # Get transcripts from MongoDB
+                mongo_transcripts = call_session_doc.get('transcripts', {})
+                if mongo_transcripts:
+                    transcripts = mongo_transcripts
+                    logger.info(f"📖 Loaded {len(transcripts)} transcripts from MongoDB for session {session_id}")
+                
+                # Get session info from MongoDB
+                if call_session_doc.get('session_info'):
+                    session_info_data = call_session_doc['session_info']
+        except Exception as e:
+            logger.warning(f"Could not load transcripts from MongoDB: {e}")
+        
+        # If no transcripts from MongoDB, try loading from files
+        if not transcripts:
+            session_dir = Path(f"sessions/{session_id}")
             
-            if txt_files:
-                # Use the first matching file
-                transcript_path = txt_files[0]
+            if not session_dir.exists():
+                raise HTTPException(status_code=404, detail="Session not found")
+            
+            # Load session info from file
+            session_info_path = session_dir / "session_info.json"
+            if session_info_path.exists():
+                with open(session_info_path, 'r', encoding='utf-8') as f:
+                    session_info_data = json.load(f)
+            
+            # Get transcript information from session_info if available
+            transcripts_info = session_info_data.get('transcripts', {})
+            
+            # Check for actual transcript files directly (real-time check)
+            audio_types = ['incoming', 'outgoing', 'mixed']
+            for audio_type in audio_types:
+                # Look for .txt files matching the audio type
+                txt_files = list(session_dir.glob(f"*{audio_type}*.txt"))
                 
-                # Read transcript content
-                with open(transcript_path, 'r', encoding='utf-8') as f:
-                    transcript_content = f.read()
+                # Filter out non-transcript files (like transcript_*.json)
+                txt_files = [f for f in txt_files if f.suffix == '.txt' and 'transcript' not in f.stem or f.stem.startswith(audio_type)]
                 
-                # Get metadata from session_info if available, otherwise use defaults
-                transcript_info = transcripts_info.get(audio_type, {})
-                
-                # Parse metadata from file if it exists in the standard format
-                lines = transcript_content.split('\n')
-                file_metadata = {}
-                if lines and lines[0].startswith('Audio File:'):
-                    # Parse the header
-                    for line in lines[:10]:  # Check first 10 lines for metadata
-                        if ':' in line and not line.startswith('-'):
-                            key, value = line.split(':', 1)
-                            file_metadata[key.strip()] = value.strip()
-                    # Find the separator line
-                    separator_idx = next((i for i, line in enumerate(lines) if line.startswith('---')), -1)
-                    if separator_idx >= 0 and separator_idx + 1 < len(lines):
-                        # Content starts after the separator
-                        transcript_content = '\n'.join(lines[separator_idx + 1:]).strip()
+                if txt_files:
+                    # Use the first matching file
+                    transcript_path = txt_files[0]
                     
-                    transcripts[audio_type] = {
-                    "filename": transcript_path.name,
-                    "language": transcript_info.get('language') or file_metadata.get('Language', 'unknown'),
-                    "text_length": len(transcript_content),
-                        "confidence": transcript_info.get('confidence'),
-                    "transcribed_at": transcript_info.get('transcribed_at') or file_metadata.get('Transcribed'),
-                    "success": True,
-                    "content": transcript_content,
-                    "method": file_metadata.get('Method', transcript_info.get('method', 'unknown'))
-                }
+                    # Read transcript content
+                    with open(transcript_path, 'r', encoding='utf-8') as f:
+                        transcript_content = f.read()
+                    
+                    # Get metadata from session_info if available, otherwise use defaults
+                    transcript_info = transcripts_info.get(audio_type, {})
+                    
+                    # Parse metadata from file if it exists in the standard format
+                    lines = transcript_content.split('\n')
+                    file_metadata = {}
+                    if lines and lines[0].startswith('Audio File:'):
+                        # Parse the header
+                        for line in lines[:10]:  # Check first 10 lines for metadata
+                            if ':' in line and not line.startswith('-'):
+                                key, value = line.split(':', 1)
+                                file_metadata[key.strip()] = value.strip()
+                        # Find the separator line
+                        separator_idx = next((i for i, line in enumerate(lines) if line.startswith('---')), -1)
+                        if separator_idx >= 0 and separator_idx + 1 < len(lines):
+                            # Content starts after the separator
+                            transcript_content = '\n'.join(lines[separator_idx + 1:]).strip()
+                        
+                        transcripts[audio_type] = {
+                        "filename": transcript_path.name,
+                        "language": transcript_info.get('language') or file_metadata.get('Language', 'unknown'),
+                        "text_length": len(transcript_content),
+                            "confidence": transcript_info.get('confidence'),
+                        "transcribed_at": transcript_info.get('transcribed_at') or file_metadata.get('Transcribed'),
+                        "success": True,
+                        "content": transcript_content,
+                        "method": file_metadata.get('Method', transcript_info.get('method', 'unknown'))
+                    }
         
         return {
             "status": "success",
             "session_id": session_id,
             "session_info": {
-                "caller_id": session_info.get('caller_id'),
-                "called_number": session_info.get('called_number'),
-                "start_time": session_info.get('start_time'),
-                "end_time": session_info.get('end_time'),
-                "duration_seconds": session_info.get('duration_seconds')
+                "caller_id": session_info_data.get('caller_id'),
+                "called_number": session_info_data.get('called_number'),
+                "start_time": session_info_data.get('start_time'),
+                "end_time": session_info_data.get('end_time'),
+                "duration_seconds": session_info_data.get('duration_seconds')
             },
             "transcripts": transcripts
         }
@@ -6070,8 +6092,65 @@ async def retranscribe_session(session_id: str, background_tasks: BackgroundTask
         session_dir = Path(f"sessions/{session_id}")
         
         if not session_dir.exists():
-            raise HTTPException(status_code=404, detail="Session not found")
+            # Session directory doesn't exist, but check if we have asterisk_linkedid in database
+            try:
+                from crm_database_mongodb import CallSession, MongoDB
+                db = MongoDB.get_db()
+                call_session_doc = db.call_sessions.find_one({"session_id": session_id})
+                
+                if call_session_doc and call_session_doc.get('asterisk_linkedid'):
+                    # We have a linkedid, create session directory and proceed with PBX recording
+                    session_dir.mkdir(parents=True, exist_ok=True)
+                    asterisk_linkedid = call_session_doc['asterisk_linkedid']
+                    
+                    # Add background task for PBX transcription
+                    background_tasks.add_task(
+                        _background_transcribe_pbx_recording,
+                        session_dir,
+                        session_id,
+                        asterisk_linkedid
+                    )
+                    
+                    return {
+                        "status": "success",
+                        "message": f"Transcription started for PBX recording (linked_id: {asterisk_linkedid})",
+                        "session_id": session_id,
+                        "source": "pbx"
+                    }
+                else:
+                    raise HTTPException(status_code=404, detail="Session not found and no PBX recording available")
+            except Exception as e:
+                logger.error(f"Error checking for PBX recording: {e}")
+                raise HTTPException(status_code=404, detail="Session not found")
         
+        # Check if we should use PBX recording (asterisk_linkedid available)
+        try:
+            from crm_database_mongodb import CallSession, MongoDB
+            db = MongoDB.get_db()
+            call_session_doc = db.call_sessions.find_one({"session_id": session_id})
+            
+            if call_session_doc and call_session_doc.get('asterisk_linkedid'):
+                asterisk_linkedid = call_session_doc['asterisk_linkedid']
+                logger.info(f"🔗 Found asterisk_linkedid: {asterisk_linkedid}, using PBX recording")
+                
+                # Add background task for PBX transcription
+                background_tasks.add_task(
+                    _background_transcribe_pbx_recording,
+                    session_dir,
+                    session_id,
+                    asterisk_linkedid
+                )
+                
+                return {
+                    "status": "success",
+                    "message": f"Transcription started for PBX recording (linked_id: {asterisk_linkedid})",
+                    "session_id": session_id,
+                    "source": "pbx"
+                }
+        except Exception as e:
+            logger.warning(f"Could not check for asterisk_linkedid: {e}, falling back to local files")
+        
+        # Fallback to local audio files
         # Check if audio files exist
         audio_files_found = []
         for pattern in ["*incoming*.wav", "*outgoing*.wav", "*mixed*.wav"]:
@@ -6099,7 +6178,8 @@ async def retranscribe_session(session_id: str, background_tasks: BackgroundTask
             "status": "success",
             "message": f"Transcription started for session {session_id}",
             "session_id": session_id,
-            "audio_files_found": len(audio_files_found)
+            "audio_files_found": len(audio_files_found),
+            "source": "local"
         }
         
     except HTTPException:
@@ -6278,6 +6358,106 @@ async def _background_transcribe_session(session_dir: Path, caller_id: str):
         logger.error(f"❌ Transcription timed out for {session_dir.name}")
     except Exception as e:
         logger.error(f"❌ Error in background transcription for {session_dir.name}: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+
+
+async def _background_transcribe_pbx_recording(session_dir: Path, session_id: str, asterisk_linkedid: str):
+    """Background task function for transcribing PBX recording (single MP3 file)"""
+    try:
+        logger.info(f"🎤 Background PBX transcription started for {session_id}")
+        logger.info(f"🔗 Asterisk Linked ID: {asterisk_linkedid}")
+        
+        # Construct PBX recording URL
+        pbx_url = f"http://192.168.50.50/play.php?api=R0SHJIU9w55wRR&uniq={asterisk_linkedid}"
+        logger.info(f"📥 Downloading recording from: {pbx_url}")
+        
+        # Download the MP3 file temporarily
+        import requests
+        import tempfile
+        
+        temp_mp3_file = None
+        try:
+            # Download the recording
+            response = requests.get(pbx_url, timeout=60)
+            response.raise_for_status()
+            
+            # Save to temporary file
+            with tempfile.NamedTemporaryFile(mode='wb', suffix='.mp3', delete=False) as temp_file:
+                temp_mp3_file = temp_file.name
+                temp_file.write(response.content)
+            
+            logger.info(f"✅ Downloaded recording to temporary file: {temp_mp3_file}")
+            
+            # Transcribe using Gemini API
+            from transcribe_audio import AudioTranscriber
+            transcriber = AudioTranscriber()
+            
+            if not transcriber.available:
+                raise Exception("Transcription service not available")
+            
+            logger.info(f"🚀 Starting transcription of PBX recording...")
+            
+            # Transcribe with updated prompt for conversation
+            result = transcriber.transcribe_audio_file(
+                temp_mp3_file, 
+                language=None,  # Auto-detect language
+                is_conversation=True  # Flag to use conversation-specific prompt
+            )
+            
+            if result.get('success'):
+                transcript_text = result.get('text', '')
+                logger.info(f"✅ Transcription completed successfully")
+                logger.info(f"📝 Transcript length: {len(transcript_text)} characters")
+                
+                # Save transcript to session directory as "mixed" (since it's a full conversation)
+                transcript_file = session_dir / "mixed_transcript.txt"
+                with open(transcript_file, 'w', encoding='utf-8') as f:
+                    f.write(transcript_text)
+                
+                logger.info(f"💾 Saved transcript to: {transcript_file}")
+                
+                # Update session_info.json
+                session_info_path = session_dir / "session_info.json"
+                session_info = {}
+                if session_info_path.exists():
+                    with open(session_info_path, 'r', encoding='utf-8') as f:
+                        session_info = json.load(f)
+                
+                session_info['transcription_completed'] = True
+                session_info['transcription_source'] = 'pbx'
+                session_info['asterisk_linkedid'] = asterisk_linkedid
+                session_info['transcribed_at'] = datetime.now().isoformat()
+                
+                with open(session_info_path, 'w', encoding='utf-8') as f:
+                    json.dump(session_info, f, indent=2, ensure_ascii=False)
+                
+                # Save transcripts to MongoDB
+                try:
+                    from session_mongodb_helper import save_transcripts_to_mongodb
+                    save_transcripts_to_mongodb(session_id, session_dir)
+                    logger.info(f"✅ Saved transcript to MongoDB")
+                except Exception as mongo_error:
+                    logger.warning(f"⚠️ Could not save transcript to MongoDB: {mongo_error}")
+                
+            else:
+                error_msg = result.get('error', 'Unknown error')
+                logger.error(f"❌ Transcription failed: {error_msg}")
+                raise Exception(f"Transcription failed: {error_msg}")
+                
+        finally:
+            # Clean up temporary MP3 file
+            if temp_mp3_file and os.path.exists(temp_mp3_file):
+                try:
+                    os.unlink(temp_mp3_file)
+                    logger.info(f"🗑️ Deleted temporary file: {temp_mp3_file}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not delete temporary file: {e}")
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Error downloading PBX recording: {e}")
+    except Exception as e:
+        logger.error(f"❌ Error in PBX transcription for {session_id}: {e}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
 

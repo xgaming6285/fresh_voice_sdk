@@ -62,14 +62,9 @@ TRANSCRIPTION_METHOD = None
 TRANSCRIPTION_AVAILABLE = False
 GEMINI_API_AVAILABLE = False
 
-# Set up environment variable - support both GOOGLE_API_KEY and GEMINI_API_KEY
-if not os.getenv('GEMINI_API_KEY') and os.getenv('GOOGLE_API_KEY'):
-    os.environ['GEMINI_API_KEY'] = os.getenv('GOOGLE_API_KEY')
-    print("ℹ️  Using GOOGLE_API_KEY as GEMINI_API_KEY")
-
 try:
     from google import genai
-    if os.getenv('GEMINI_API_KEY') or os.getenv('GOOGLE_API_KEY'):
+    if os.getenv('GEMINI_API_KEY'):
         GEMINI_API_AVAILABLE = True
         TRANSCRIPTION_METHOD = "gemini_api"
         TRANSCRIPTION_AVAILABLE = True
@@ -89,15 +84,24 @@ class AudioTranscriber:
             try:
                 from google import genai
                 self.gemini_client = genai.Client(
-                    api_key=os.getenv('GEMINI_API_KEY') or os.getenv('GOOGLE_API_KEY'),
-                    http_options={"api_version": "v1alpha"}
+                    api_key=os.getenv('GEMINI_API_KEY'),
+                    http_options={"api_version": "v1"}  # Explicitly use v1 API for gemini-1.5-flash
                 )
             except Exception as e:
                 print(f"❌ Failed to initialize Gemini client: {e}")
                 self.available = False
     
-    def transcribe_audio_file(self, audio_path: str, language: str = None) -> dict:
-        """Transcribe audio file using Gemini API"""
+    def transcribe_audio_file(self, audio_path: str, language: str = None, is_conversation: bool = False) -> dict:
+        """Transcribe audio file using Gemini API
+        
+        Args:
+            audio_path: Path to the audio file (WAV or MP3)
+            language: Optional language hint (e.g., 'bg', 'en', 'ro')
+            is_conversation: If True, indicates this is a full conversation between agent and user
+        
+        Returns:
+            dict with keys: text, success, error (if any)
+        """
         if not self.available:
             return {
                 "text": "",
@@ -113,28 +117,46 @@ class AudioTranscriber:
             with open(audio_path, 'rb') as audio_file:
                 audio_data = audio_file.read()
             
+            # Determine MIME type based on file extension
+            file_ext = Path(audio_path).suffix.lower()
+            mime_type = "audio/wav" if file_ext == ".wav" else "audio/mp3"
+            
             # Prepare audio for Gemini
             audio_file_part = {
                 "inline_data": {
-                    "mime_type": "audio/wav",
+                    "mime_type": mime_type,
                     "data": base64.b64encode(audio_data).decode('utf-8')
                 }
             }
             
-            # Create prompt with language hint
-            if language:
-                lang_names = {
-                    'bg': 'Bulgarian', 'en': 'English', 'ro': 'Romanian',
-                    'el': 'Greek', 'de': 'German', 'fr': 'French',
-                    'es': 'Spanish', 'it': 'Italian', 'ru': 'Russian'
-                }
-                lang_name = lang_names.get(language, language)
-                prompt = f"Please transcribe this audio in {lang_name}. Provide only the transcription text, nothing else."
+            # Create prompt based on context
+            if is_conversation:
+                # For full conversation recordings (PBX)
+                if language:
+                    lang_names = {
+                        'bg': 'Bulgarian', 'en': 'English', 'ro': 'Romanian',
+                        'el': 'Greek', 'de': 'German', 'fr': 'French',
+                        'es': 'Spanish', 'it': 'Italian', 'ru': 'Russian'
+                    }
+                    lang_name = lang_names.get(language, language)
+                    prompt = f"We are passing 1 audio file and this is a conversation between agent and user. The language is {lang_name}. Return only the transcript of the call, nothing else."
+                else:
+                    prompt = "We are passing 1 audio file and this is a conversation between agent and user. Return only the transcript of the call, nothing else."
             else:
-                prompt = "Please transcribe this audio. Provide only the transcription text, nothing else."
+                # For individual channel recordings (incoming/outgoing/mixed)
+                if language:
+                    lang_names = {
+                        'bg': 'Bulgarian', 'en': 'English', 'ro': 'Romanian',
+                        'el': 'Greek', 'de': 'German', 'fr': 'French',
+                        'es': 'Spanish', 'it': 'Italian', 'ru': 'Russian'
+                    }
+                    lang_name = lang_names.get(language, language)
+                    prompt = f"Please transcribe this audio in {lang_name}. Provide only the transcription text, nothing else."
+                else:
+                    prompt = "Please transcribe this audio. Provide only the transcription text, nothing else."
             
-            # Use Gemini 2.0 Flash model
-            model_id = "gemini-2.0-flash-exp"
+            # Use Gemini 2.5 Flash model (paid, supports audio transcription)
+            model_id = "gemini-2.5-flash"
             
             # Generate transcription
             response = self.gemini_client.models.generate_content(
