@@ -15,6 +15,9 @@ import socket
 import struct
 import threading
 import time
+import warnings
+# Suppress audioop deprecation warning
+warnings.filterwarnings('ignore', message='.*audioop.*', category=DeprecationWarning)
 import audioop
 import os
 import re
@@ -2257,6 +2260,7 @@ class RTPSession:
         self.buffer_lock = threading.Lock()
         self.asyncio_loop = None  # Will hold the dedicated event loop
         self.asyncio_thread = None  # Dedicated thread for asyncio
+        self.asyncio_thread_started = False  # Flag to prevent duplicate thread starts
         
         # Output audio queue for paced delivery
         self.output_queue = queue.Queue()
@@ -2373,8 +2377,9 @@ class RTPSession:
                 processed_pcm = pcm_data
             
             # Start asyncio thread if not already running
-            if not self.input_processing:
+            if not self.input_processing and not self.asyncio_thread_started:
                 self.input_processing = True
+                self.asyncio_thread_started = True  # Set flag before starting thread
                 self.asyncio_thread = threading.Thread(target=self._run_asyncio_thread, daemon=True)
                 self.asyncio_thread.start()
                 # Give it a moment to initialize
@@ -2430,8 +2435,14 @@ class RTPSession:
             
             logger.info("🎤 Voice session initialized - starting audio streaming")
             
+            # Wait a bit for WebSocket to fully stabilize before starting audio transmission
+            await asyncio.sleep(0.2)
+            
             # Start continuous receiver task
             receiver_task = asyncio.create_task(self._continuous_receive_responses())
+            
+            # Give receiver time to start
+            await asyncio.sleep(0.1)
             
             # Main loop: process audio from queue and send to Gemini with minimal latency
             audio_chunks_sent = 0
@@ -2492,11 +2503,22 @@ class RTPSession:
                 logger.info(f"📤 Sent {self._audio_send_count} audio packets ({self._audio_send_bytes} bytes total) to Gemini")
             
             # Send audio to Gemini with correct MIME type format
-            await self.voice_session.gemini_session.send(
-                input={"data": processed_audio, "mime_type": "audio/pcm"}
-            )
+            try:
+                await self.voice_session.gemini_session.send(
+                    input={"data": processed_audio, "mime_type": "audio/pcm"}
+                )
+            except Exception as send_err:
+                # Only log the error once to avoid spam, don't re-raise
+                error_str = str(send_err)
+                if "no close frame" in error_str.lower():
+                    # Connection closed - silently ignore to avoid log spam
+                    if not hasattr(self, '_connection_closed_logged'):
+                        logger.warning("⚠️ Gemini WebSocket connection closed unexpectedly")
+                        self._connection_closed_logged = True
+                else:
+                    logger.error(f"Error sending audio to Gemini: {send_err}")
         except Exception as e:
-            logger.error(f"Error sending audio to Gemini: {e}")
+            logger.error(f"Error in _send_audio_to_gemini: {e}")
             
     async def _continuous_receive_responses(self):
         """Continuously receive responses from Gemini in a separate task"""
@@ -3730,11 +3752,14 @@ Content-Length: 0
             def start_voice_session():
                 try:
                     # Start the RTP session's async processing loop (which will initialize Gemini)
-                    if rtp_session:
+                    if rtp_session and not rtp_session.asyncio_thread_started:
                         rtp_session.input_processing = True
+                        rtp_session.asyncio_thread_started = True  # Set flag before starting thread
                         rtp_session.asyncio_thread = threading.Thread(target=rtp_session._run_asyncio_thread, daemon=True)
                         rtp_session.asyncio_thread.start()
                         logger.info(f"🎧 Started RTP async loop for session {session_id}")
+                    elif rtp_session and rtp_session.asyncio_thread_started:
+                        logger.info(f"🎧 RTP async loop already started for session {session_id}")
                     
                     # Wait for Gemini to connect (check every 0.5s, timeout after 30s)
                     logger.info(f"⏳ Waiting for Gemini to connect...")
@@ -4607,11 +4632,14 @@ Content-Length: {len(sdp_content)}
             def start_voice_session():
                 try:
                     # Start the RTP session's async processing loop (which will initialize Gemini)
-                    if rtp_session:
+                    if rtp_session and not rtp_session.asyncio_thread_started:
                         rtp_session.input_processing = True
+                        rtp_session.asyncio_thread_started = True  # Set flag before starting thread
                         rtp_session.asyncio_thread = threading.Thread(target=rtp_session._run_asyncio_thread, daemon=True)
                         rtp_session.asyncio_thread.start()
                         logger.info(f"🎧 Started RTP async loop for outbound session {session_id}")
+                    elif rtp_session and rtp_session.asyncio_thread_started:
+                        logger.info(f"🎧 RTP async loop already started for outbound session {session_id}")
                     
                     # Wait for Gemini to connect (check every 0.5s, timeout after 30s)
                     logger.info(f"⏳ Waiting for Gemini to connect for outbound call...")
@@ -4669,7 +4697,7 @@ Content-Length: {len(sdp_content)}
                                     rtp_sess = active_sessions[session_id].get('rtp_session')
                                     if rtp_sess and hasattr(rtp_sess, 'packets_received') and rtp_sess.packets_received > 5:
                                         logger.info(f"✅ RTP activity detected after {elapsed:.1f}s - user has picked up")
-                                        time.sleep(0.5)  # Small delay to let audio settle
+                                        time.sleep(2.0)  # Wait 2 seconds to ensure phone is ready to receive audio
                                         break
                                     
                                     time.sleep(wait_interval)
