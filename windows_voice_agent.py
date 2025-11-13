@@ -6190,8 +6190,43 @@ async def retranscribe_session(session_id: str, background_tasks: BackgroundTask
 
 @app.post("/api/transcripts/{session_id}/generate_summary")
 async def generate_summary(session_id: str, request: GenerateSummaryRequest, background_tasks: BackgroundTasks):
-    """Generate AI summary for a specific session using transcript files"""
+    """Generate AI summary for a specific session using transcripts from MongoDB or files"""
     try:
+        # First, try to get transcripts from MongoDB
+        transcripts_content = []
+        try:
+            from crm_database_mongodb import MongoDB
+            db = MongoDB.get_db()
+            call_session_doc = db.call_sessions.find_one({"session_id": session_id})
+            
+            if call_session_doc and call_session_doc.get('transcripts'):
+                mongo_transcripts = call_session_doc['transcripts']
+                for audio_type, transcript_data in mongo_transcripts.items():
+                    if transcript_data.get('content'):
+                        transcripts_content.append(transcript_data['content'])
+                
+                if transcripts_content:
+                    logger.info(f"📖 Using transcripts from MongoDB for summary generation")
+                    # Add background task with MongoDB transcripts
+                    background_tasks.add_task(
+                        _background_generate_summary_from_content,
+                        session_id,
+                        transcripts_content,
+                        request.language
+                    )
+                    
+                    return {
+                        "status": "success",
+                        "message": f"Summary generation started for session {session_id}",
+                        "session_id": session_id,
+                        "transcripts_found": len(transcripts_content),
+                        "language": request.language,
+                        "source": "mongodb"
+                    }
+        except Exception as e:
+            logger.warning(f"Could not load transcripts from MongoDB: {e}")
+        
+        # Fallback to file-based transcripts
         session_dir = Path(f"sessions/{session_id}")
         
         if not session_dir.exists():
@@ -6203,6 +6238,9 @@ async def generate_summary(session_id: str, request: GenerateSummaryRequest, bac
             files = list(session_dir.glob(pattern))
             # Filter to only include .txt files (exclude .wav files)
             transcript_files.extend([f for f in files if f.suffix == '.txt'])
+        
+        # Remove duplicates by converting to set and back
+        transcript_files = list(set(transcript_files))
         
         if not transcript_files:
             raise HTTPException(status_code=404, detail="No transcript files found. Please transcribe the session first.")
@@ -6220,7 +6258,8 @@ async def generate_summary(session_id: str, request: GenerateSummaryRequest, bac
             "message": f"Summary generation started for session {session_id}",
             "session_id": session_id,
             "transcript_files_found": len(transcript_files),
-            "language": request.language
+            "language": request.language,
+            "source": "files"
         }
         
     except HTTPException:
@@ -6231,8 +6270,26 @@ async def generate_summary(session_id: str, request: GenerateSummaryRequest, bac
 
 @app.get("/api/transcripts/{session_id}/summary")
 async def get_session_summary(session_id: str):
-    """Get AI summary for a specific session"""
+    """Get AI summary for a specific session - reads from MongoDB or files"""
     try:
+        # First, try to get summary from MongoDB
+        try:
+            from crm_database_mongodb import MongoDB
+            db = MongoDB.get_db()
+            call_session_doc = db.call_sessions.find_one({"session_id": session_id})
+            
+            if call_session_doc and call_session_doc.get('analysis'):
+                summary_data = call_session_doc['analysis']
+                logger.info(f"📊 Loaded summary from MongoDB for session {session_id}")
+                return {
+                    "status": "success",
+                    "session_id": session_id,
+                    "summary": summary_data
+                }
+        except Exception as e:
+            logger.warning(f"Could not load summary from MongoDB: {e}")
+        
+        # If not in MongoDB, try loading from file
         session_dir = Path(f"sessions/{session_id}")
         
         if not session_dir.exists():
@@ -6531,6 +6588,65 @@ async def _background_generate_summary(session_dir: Path, transcript_files: list
         logger.error(f"❌ Summary generation timed out for {session_dir.name}")
     except Exception as e:
         logger.error(f"❌ Error in background summary generation for {session_dir.name}: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+
+
+async def _background_generate_summary_from_content(session_id: str, transcripts_content: list, language: str = "English"):
+    """Background task function for generating AI summary directly from MongoDB transcript content"""
+    try:
+        logger.info(f"📊 Background summary generation started for {session_id} (from MongoDB)")
+        logger.info(f"📝 Found {len(transcripts_content)} transcripts")
+        logger.info(f"🌐 Summary language: {language}")
+        
+        # Import the summarizer directly
+        from summary.file_summarizer import summarize_from_content
+        
+        # Combine all transcript content
+        combined_content = "\n\n".join(transcripts_content)
+        
+        logger.info(f"📄 Combined transcript length: {len(combined_content)} characters")
+        
+        # Generate summary
+        result = summarize_from_content(combined_content, language=language)
+        
+        if result:
+            logger.info(f"✅ Summary generated successfully")
+            logger.info(f"Summary: {result.get('summary', 'N/A')[:100]}...")
+            
+            # Save analysis to MongoDB
+            try:
+                from crm_database_mongodb import MongoDB
+                db = MongoDB.get_db()
+                
+                update_data = {
+                    'analysis': result,
+                    'updated_at': datetime.utcnow()
+                }
+                
+                db.call_sessions.update_one(
+                    {"session_id": session_id},
+                    {"$set": update_data}
+                )
+                
+                logger.info(f"✅ Saved summary to MongoDB for session {session_id}")
+            except Exception as mongo_error:
+                logger.warning(f"⚠️ Could not save summary to MongoDB: {mongo_error}")
+            
+            # Also save to file system for compatibility
+            session_dir = Path(f"sessions/{session_id}")
+            if session_dir.exists():
+                summary_file = session_dir / "analysis_result.json"
+                with open(summary_file, 'w', encoding='utf-8') as f:
+                    json.dump(result, f, indent=2, ensure_ascii=False)
+                logger.info(f"✅ Saved summary to file: {summary_file}")
+            
+            logger.info(f"✅ Background summary generation completed for {session_id}")
+        else:
+            logger.error(f"❌ Summary generation returned no result")
+        
+    except Exception as e:
+        logger.error(f"❌ Error in background summary generation for {session_id}: {e}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
 

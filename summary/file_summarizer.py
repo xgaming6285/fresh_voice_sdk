@@ -8,12 +8,12 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Configure the API
-API_KEY = os.getenv("GOOGLE_API_KEY_SUMMARY")
+# Configure the API - Use GEMINI_API_KEY
+API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
-    raise ValueError("GOOGLE_API_KEY_SUMMARY not found in .env file")
+    raise ValueError("GEMINI_API_KEY not found in .env file")
 
-MODEL_NAME = "gemini-2.5-flash-lite"  # As requested
+MODEL_NAME = "gemini-2.5-flash"  # Use same model as transcription
 
 genai.configure(api_key=API_KEY)
 
@@ -219,6 +219,86 @@ def summarize_files(file_paths=None, directory=".", language="English"):
         "summary": result.get("summary", ""),
         "status": result.get("status", "not interested")
     }
+
+
+def summarize_from_content(transcript_content: str, language: str = "English") -> dict:
+    """
+    Generate summary directly from transcript content (for MongoDB transcripts)
+    
+    Args:
+        transcript_content: The combined transcript text
+        language: Target language for the summary
+    
+    Returns:
+        Dict with 'summary' and 'status' keys
+    """
+    try:
+        # Create files_content dict with single entry
+        files_content = {"transcript": transcript_content}
+        
+        print(f"Analyzing transcript ({len(transcript_content)} characters) with Gemini API...")
+        
+        # Create the model
+        model = genai.GenerativeModel(MODEL_NAME)
+        
+        # Create prompt
+        prompt = create_prompt(files_content, language=language)
+        
+        # Generate response
+        response = model.generate_content(prompt)
+        
+        # Parse response
+        response_text = response.text.strip()
+        
+        # Try to extract JSON from the response
+        try:
+            # Remove markdown code blocks if present
+            if response_text.startswith("```json"):
+                response_text = response_text.split("```json")[1]
+                response_text = response_text.split("```")[0]
+            elif response_text.startswith("```"):
+                response_text = response_text.split("```")[1]
+                response_text = response_text.split("```")[0]
+            
+            result = json.loads(response_text.strip())
+            
+            # Clean up the summary - replace newlines with spaces
+            if "summary" in result:
+                result["summary"] = result["summary"].replace('\n', ' ').replace('\r', ' ')
+                # Remove multiple spaces
+                result["summary"] = ' '.join(result["summary"].split())
+                # Remove special characters
+                result["summary"] = clean_text(result["summary"])
+            
+            # Normalize the status
+            if "status" in result:
+                result["status"] = normalize_status(result["status"])
+            else:
+                result["status"] = "not interested"
+                
+        except json.JSONDecodeError:
+            # If JSON parsing fails, create a structured response
+            cleaned_text = response_text.replace('\n', ' ').replace('\r', ' ')
+            cleaned_text = ' '.join(cleaned_text.split())
+            cleaned_text = clean_text(cleaned_text)
+            result = {
+                "summary": cleaned_text,
+                "status": "not interested"
+            }
+        
+        # Only return summary and status
+        return {
+            "summary": result.get("summary", ""),
+            "status": result.get("status", "not interested")
+        }
+        
+    except Exception as e:
+        print(f"Error generating summary: {e}")
+        return {
+            "summary": f"Error generating summary: {str(e)}",
+            "status": "not interested"
+        }
+
 
 if __name__ == "__main__":
     # Parse command line arguments
