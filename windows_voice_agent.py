@@ -6464,8 +6464,11 @@ async def _background_transcribe_pbx_recording(session_dir: Path, session_id: st
             
             if result.get('success'):
                 transcript_text = result.get('text', '')
+                conversation_data = result.get('conversation')
                 logger.info(f"✅ Transcription completed successfully")
                 logger.info(f"📝 Transcript length: {len(transcript_text)} characters")
+                if conversation_data:
+                    logger.info(f"💬 Conversation has {len(conversation_data)} turns")
                 
                 # Save transcript to session directory as "mixed" (since it's a full conversation)
                 transcript_file = session_dir / "mixed_transcript.txt"
@@ -6485,17 +6488,28 @@ async def _background_transcribe_pbx_recording(session_dir: Path, session_id: st
                 session_info['transcription_source'] = 'pbx'
                 session_info['asterisk_linkedid'] = asterisk_linkedid
                 session_info['transcribed_at'] = datetime.now().isoformat()
+                session_info['has_conversation_structure'] = conversation_data is not None
                 
                 with open(session_info_path, 'w', encoding='utf-8') as f:
                     json.dump(session_info, f, indent=2, ensure_ascii=False)
                 
-                # Save transcripts to MongoDB
+                # Save transcripts to MongoDB with conversation structure
                 try:
-                    from session_mongodb_helper import save_transcripts_to_mongodb
-                    save_transcripts_to_mongodb(session_id, session_dir)
+                    from session_mongodb_helper import save_transcripts_to_mongodb_with_conversation
+                    save_transcripts_to_mongodb_with_conversation(
+                        session_id, 
+                        session_dir,
+                        conversation_data
+                    )
                     logger.info(f"✅ Saved transcript to MongoDB")
                 except Exception as mongo_error:
                     logger.warning(f"⚠️ Could not save transcript to MongoDB: {mongo_error}")
+                    # Fallback to regular save
+                    try:
+                        from session_mongodb_helper import save_transcripts_to_mongodb
+                        save_transcripts_to_mongodb(session_id, session_dir)
+                    except:
+                        pass
                 
             else:
                 error_msg = result.get('error', 'Unknown error')

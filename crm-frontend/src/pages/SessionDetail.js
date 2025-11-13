@@ -517,7 +517,60 @@ function SessionDetail() {
                         Transcription failed:{" "}
                         {transcript.error || "Unknown error"}
                       </Alert>
+                    ) : transcript.conversation &&
+                      Array.isArray(transcript.conversation) ? (
+                      // Display as conversation if structured data is available
+                      <Box>
+                        {transcript.conversation.map((turn, index) => (
+                          <Box
+                            key={index}
+                            sx={{
+                              mb: 1.5,
+                              display: "flex",
+                              flexDirection:
+                                turn.speaker === "agent"
+                                  ? "row"
+                                  : "row-reverse",
+                            }}
+                          >
+                            <Box
+                              sx={{
+                                maxWidth: "75%",
+                                p: 1.5,
+                                borderRadius: 2,
+                                backgroundColor:
+                                  turn.speaker === "agent"
+                                    ? "primary.light"
+                                    : "secondary.light",
+                                color:
+                                  turn.speaker === "agent"
+                                    ? "primary.contrastText"
+                                    : "secondary.contrastText",
+                              }}
+                            >
+                              <Typography
+                                variant="caption"
+                                sx={{
+                                  display: "block",
+                                  mb: 0.5,
+                                  fontWeight: "bold",
+                                  opacity: 0.8,
+                                }}
+                              >
+                                {turn.speaker === "agent" ? "AGENT" : "USER"}
+                              </Typography>
+                              <Typography
+                                variant="body2"
+                                style={{ whiteSpace: "pre-wrap" }}
+                              >
+                                {turn.text}
+                              </Typography>
+                            </Box>
+                          </Box>
+                        ))}
+                      </Box>
                     ) : (
+                      // Fallback to plain text if no structured data
                       <Typography
                         variant="body2"
                         style={{ whiteSpace: "pre-wrap" }}

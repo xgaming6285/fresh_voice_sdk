@@ -139,9 +139,43 @@ class AudioTranscriber:
                         'es': 'Spanish', 'it': 'Italian', 'ru': 'Russian'
                     }
                     lang_name = lang_names.get(language, language)
-                    prompt = f"We are passing 1 audio file and this is a conversation between agent and user. The language is {lang_name}. Return only the transcript of the call, nothing else."
+                    prompt = f"""We are passing 1 audio file and this is a conversation between agent and user. The language is {lang_name}. 
+
+Please transcribe the call and return it as a JSON array where each element represents a turn in the conversation with the speaker identified.
+
+Return ONLY a JSON array in this exact format:
+[
+  {{"speaker": "agent", "text": "what the agent said"}},
+  {{"speaker": "user", "text": "what the user said"}},
+  {{"speaker": "agent", "text": "agent's next message"}},
+  ...
+]
+
+Important:
+- "speaker" must be either "agent" or "user"
+- "text" is what was said
+- Return ONLY the JSON array, nothing else
+- The agent is the AI assistant making the call
+- The user is the person receiving the call"""
                 else:
-                    prompt = "We are passing 1 audio file and this is a conversation between agent and user. Return only the transcript of the call, nothing else."
+                    prompt = """We are passing 1 audio file and this is a conversation between agent and user.
+
+Please transcribe the call and return it as a JSON array where each element represents a turn in the conversation with the speaker identified.
+
+Return ONLY a JSON array in this exact format:
+[
+  {"speaker": "agent", "text": "what the agent said"},
+  {"speaker": "user", "text": "what the user said"},
+  {"speaker": "agent", "text": "agent's next message"},
+  ...
+]
+
+Important:
+- "speaker" must be either "agent" or "user"
+- "text" is what was said
+- Return ONLY the JSON array, nothing else
+- The agent is the AI assistant making the call
+- The user is the person receiving the call"""
             else:
                 # For individual channel recordings (incoming/outgoing/mixed)
                 if language:
@@ -166,6 +200,8 @@ class AudioTranscriber:
             
             # Extract text
             transcript_text = ""
+            conversation_data = None
+            
             if hasattr(response, 'text'):
                 transcript_text = response.text.strip()
             elif hasattr(response, 'candidates') and response.candidates:
@@ -177,7 +213,36 @@ class AudioTranscriber:
             
             transcript_text = transcript_text.strip()
             
-            return {
+            # For conversation transcripts, try to parse JSON structure
+            if is_conversation and transcript_text:
+                try:
+                    # Remove markdown code blocks if present
+                    clean_text = transcript_text
+                    if clean_text.startswith("```json"):
+                        clean_text = clean_text.split("```json")[1].split("```")[0].strip()
+                    elif clean_text.startswith("```"):
+                        clean_text = clean_text.split("```")[1].split("```")[0].strip()
+                    
+                    # Try to parse as JSON
+                    conversation_data = json.loads(clean_text)
+                    
+                    # Validate structure
+                    if isinstance(conversation_data, list) and len(conversation_data) > 0:
+                        # Create plain text version from JSON for backward compatibility
+                        plain_text_parts = []
+                        for turn in conversation_data:
+                            speaker = turn.get('speaker', 'unknown')
+                            text = turn.get('text', '')
+                            plain_text_parts.append(f"{speaker.upper()}: {text}")
+                        transcript_text = "\n".join(plain_text_parts)
+                    else:
+                        # Invalid structure, treat as plain text
+                        conversation_data = None
+                except (json.JSONDecodeError, ValueError):
+                    # Not valid JSON, keep as plain text
+                    conversation_data = None
+            
+            result = {
                 "text": transcript_text,
                 "language": language or 'unknown',
                 "segments": [],
@@ -185,6 +250,12 @@ class AudioTranscriber:
                 "success": True,
                 "method": "gemini_api"
             }
+            
+            # Add conversation structure if available
+            if conversation_data:
+                result["conversation"] = conversation_data
+            
+            return result
             
         except Exception as e:
             return {

@@ -117,6 +117,63 @@ def save_transcripts_to_mongodb(session_id, session_dir):
         print(f"ERROR saving transcripts to MongoDB: {e}")
         return False
 
+
+def save_transcripts_to_mongodb_with_conversation(session_id, session_dir, conversation_data=None):
+    """
+    Read transcript files and save to MongoDB with conversation structure
+    
+    Args:
+        session_id: The session ID
+        session_dir: Path to session directory
+        conversation_data: Optional structured conversation data [{"speaker": "agent", "text": "..."}, ...]
+    """
+    try:
+        transcripts = {}
+        
+        for transcript_type in ['incoming', 'outgoing', 'mixed']:
+            # Find transcript file
+            transcript_files = list(Path(session_dir).glob(f"{transcript_type}_*.txt"))
+            
+            if transcript_files:
+                transcript_file = transcript_files[0]
+                try:
+                    with open(transcript_file, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    # Parse transcript file - skip header lines
+                    lines = content.split('\n')
+                    transcript_text = '\n'.join(lines[6:]).strip() if len(lines) > 6 else content
+                    
+                    transcript_entry = {
+                        'content': transcript_text,   # Frontend expects 'content'
+                        'success': True,
+                        'file': transcript_file.name,
+                        'length': len(transcript_text),
+                        'transcribed_at': datetime.utcnow().isoformat()
+                    }
+                    
+                    # Add conversation structure for mixed (full conversation)
+                    if transcript_type == 'mixed' and conversation_data:
+                        transcript_entry['conversation'] = conversation_data
+                    
+                    transcripts[transcript_type] = transcript_entry
+                    
+                except Exception as e:
+                    print(f"ERROR reading {transcript_type} transcript: {e}")
+        
+        if transcripts:
+            update_session_in_mongodb(session_id, {'transcripts': transcripts})
+            print(f"✅ Saved {len(transcripts)} transcripts to MongoDB for session {session_id}")
+            if conversation_data:
+                print(f"💬 Including structured conversation with {len(conversation_data)} turns")
+            return True
+        
+        return False
+    
+    except Exception as e:
+        print(f"ERROR saving transcripts to MongoDB: {e}")
+        return False
+
 def save_analysis_to_mongodb(session_id, session_dir):
     """
     Read analysis_result.json and save to MongoDB
