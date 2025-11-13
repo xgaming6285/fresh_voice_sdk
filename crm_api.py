@@ -147,6 +147,7 @@ class CallSessionResponse(BaseModel):
     analysis: Optional[Dict[str, Any]] = None
     audio_files: Optional[Dict[str, str]] = None
     session_info: Optional[Dict[str, Any]] = None
+    asterisk_linkedid: Optional[str] = None
 
 # Helper functions
 def build_call_session_response(call_session: CallSession) -> CallSessionResponse:
@@ -186,7 +187,8 @@ def build_call_session_response(call_session: CallSession) -> CallSessionRespons
         transcripts=getattr(call_session, 'transcripts', None),
         analysis=getattr(call_session, 'analysis', None),
         audio_files=getattr(call_session, 'audio_files', None),
-        session_info=session_info
+        session_info=session_info,
+        asterisk_linkedid=getattr(call_session, 'asterisk_linkedid', None)
     )
 
 def build_lead_response(lead: Lead, session) -> LeadResponse:

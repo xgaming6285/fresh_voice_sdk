@@ -3434,6 +3434,9 @@ class WindowsSIPHandler:
                 crm_session = db.query(CallSession).filter(CallSession.session_id == session_id).first()
                 if crm_session:
                     crm_session.status = CallStatus.ANSWERED
+                    # Update asterisk_linkedid if available
+                    if asterisk_headers.get('linkedid'):
+                        crm_session.asterisk_linkedid = asterisk_headers.get('linkedid')
                 else:
                     # Create new session for incoming calls
                     # Get default owner for incoming calls (first admin user)
@@ -3454,10 +3457,15 @@ class WindowsSIPHandler:
                         owner_id=default_owner_id,  # Assign to default admin user
                         status=CallStatus.ANSWERED,
                         started_at=datetime.utcnow(),
-                        answered_at=datetime.utcnow()
+                        answered_at=datetime.utcnow(),
+                        asterisk_linkedid=asterisk_headers.get('linkedid')  # Store Asterisk Linked ID
                     )
                     db.add(crm_session)
                 db.commit()
+                
+                # Log the saved linkedid
+                if asterisk_headers.get('linkedid'):
+                    logger.info(f"💾 Saved Asterisk Linked ID to database: {asterisk_headers.get('linkedid')}")
             except Exception as e:
                 logger.error(f"Error updating CRM session status: {e}")
             finally:
@@ -4678,8 +4686,8 @@ Content-Length: {len(sdp_content)}
                             
                             if was_ringing:
                                 # Normal case: We saw 180/183 ringing, so 200 OK means user picked up
-                                # Small delay to ensure audio pipeline is ready
-                                time.sleep(0.5)
+                                # Wait 1.5 seconds for user to bring phone to ear
+                                time.sleep(1.5)
                             else:
                                 # Special case: No 180/183 ringing seen, 200 OK may be premature
                                 # Wait for actual RTP activity to confirm user picked up
@@ -4697,7 +4705,7 @@ Content-Length: {len(sdp_content)}
                                     rtp_sess = active_sessions[session_id].get('rtp_session')
                                     if rtp_sess and hasattr(rtp_sess, 'packets_received') and rtp_sess.packets_received > 5:
                                         logger.info(f"✅ RTP activity detected after {elapsed:.1f}s - user has picked up")
-                                        time.sleep(2.0)  # Wait 2 seconds to ensure phone is ready to receive audio
+                                        time.sleep(1.5)  # Wait 1.5 seconds for user to bring phone to ear
                                         break
                                     
                                     time.sleep(wait_interval)

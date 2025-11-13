@@ -985,6 +985,7 @@ class CallSession:
     analysis = Column('analysis')
     audio_files = Column('audio_files')
     session_info = Column('session_info')
+    asterisk_linkedid = Column('asterisk_linkedid')
     
     def __init__(self, **kwargs):
         self.id = kwargs.get('id')
@@ -1024,6 +1025,7 @@ class CallSession:
         self.analysis = kwargs.get('analysis')
         self.audio_files = kwargs.get('audio_files')
         self.session_info = kwargs.get('session_info')
+        self.asterisk_linkedid = kwargs.get('asterisk_linkedid')
         
         # Lazy load lead if needed
         self._lead = None
@@ -1040,7 +1042,7 @@ class CallSession:
     
     def to_dict(self):
         """Convert to dictionary"""
-        return {
+        data = {
             "id": self.id,
             "session_id": self.session_id,
             "campaign_id": self.campaign_id,
@@ -1066,6 +1068,20 @@ class CallSession:
             "created_at": self.created_at,
             "updated_at": self.updated_at
         }
+        
+        # Add MongoDB-specific fields if they exist
+        if hasattr(self, 'asterisk_linkedid') and self.asterisk_linkedid is not None:
+            data['asterisk_linkedid'] = self.asterisk_linkedid
+        if hasattr(self, 'transcripts') and self.transcripts is not None:
+            data['transcripts'] = self.transcripts
+        if hasattr(self, 'analysis') and self.analysis is not None:
+            data['analysis'] = self.analysis
+        if hasattr(self, 'audio_files') and self.audio_files is not None:
+            data['audio_files'] = self.audio_files
+        if hasattr(self, 'session_info') and self.session_info is not None:
+            data['session_info'] = self.session_info
+            
+        return data
     
     @classmethod
     def from_dict(cls, data):

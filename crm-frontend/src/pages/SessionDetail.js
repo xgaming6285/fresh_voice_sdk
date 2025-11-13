@@ -67,6 +67,12 @@ function SessionDetail() {
     return `http://localhost:8000/static/${audioPath}`;
   };
 
+  // Helper to get PBX recording URL using asterisk_linkedid
+  const getPBXRecordingUrl = (linkedId) => {
+    if (!linkedId) return null;
+    return `http://192.168.50.50/play.php?api=R0SHJIU9w55wRR&uniq=${linkedId}`;
+  };
+
   const loadSessionData = useCallback(async () => {
     setLoading(true);
     try {
@@ -159,7 +165,14 @@ function SessionDetail() {
   };
 
   const handlePlayAudio = (audioType) => {
-    // For local recordings, use the audio file path
+    // Check if we have PBX recording (asterisk_linkedid)
+    const pbxUrl = getPBXRecordingUrl(session?.asterisk_linkedid);
+    if (pbxUrl) {
+      window.open(pbxUrl, "_blank");
+      return;
+    }
+
+    // Fallback to local recordings
     const audioFile = recording?.audio_files?.[audioType];
     if (audioFile?.path) {
       window.open(getRecordingUrl(audioFile.path), "_blank");
@@ -167,7 +180,17 @@ function SessionDetail() {
   };
 
   const handleDownloadAudio = (audioType) => {
-    // For local recordings, use the audio file path
+    // Check if we have PBX recording (asterisk_linkedid)
+    const pbxUrl = getPBXRecordingUrl(session?.asterisk_linkedid);
+    if (pbxUrl) {
+      const link = document.createElement("a");
+      link.href = pbxUrl;
+      link.download = `recording_${session.asterisk_linkedid}.mp3`;
+      link.click();
+      return;
+    }
+
+    // Fallback to local recordings
     const audioFile = recording?.audio_files?.[audioType];
     if (audioFile?.path) {
       const link = document.createElement("a");
@@ -346,8 +369,52 @@ function SessionDetail() {
             Audio Recordings
           </Typography>
 
-          {recording?.audio_files ? (
-            // Local Recording Display
+          {session?.asterisk_linkedid ? (
+            // PBX Recording Display (Single MP3 stream)
+            <Grid container spacing={2}>
+              <Grid item xs={12} md={12}>
+                <Card>
+                  <CardContent>
+                    <Typography variant="subtitle1" gutterBottom>
+                      Call Recording (PBX)
+                    </Typography>
+                    <Typography
+                      variant="body2"
+                      color="text.secondary"
+                      gutterBottom
+                    >
+                      Linked ID: {session.asterisk_linkedid}
+                    </Typography>
+                    <Box mt={2} mb={2}>
+                      <audio
+                        controls
+                        style={{ width: "100%" }}
+                        src={getPBXRecordingUrl(session.asterisk_linkedid)}
+                      >
+                        Your browser does not support the audio element.
+                      </audio>
+                    </Box>
+                    <Box mt={2}>
+                      <Button
+                        startIcon={<PlayIcon />}
+                        onClick={() => handlePlayAudio(null)}
+                        sx={{ mr: 1 }}
+                      >
+                        Open in New Tab
+                      </Button>
+                      <Button
+                        startIcon={<DownloadIcon />}
+                        onClick={() => handleDownloadAudio(null)}
+                      >
+                        Download
+                      </Button>
+                    </Box>
+                  </CardContent>
+                </Card>
+              </Grid>
+            </Grid>
+          ) : recording?.audio_files ? (
+            // Local Recording Display (3 WAV files)
             <Grid container spacing={2}>
               {Object.entries(recording.audio_files).map(([type, file]) => (
                 <Grid item xs={12} md={4} key={type}>
