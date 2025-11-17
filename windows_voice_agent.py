@@ -124,49 +124,71 @@ else:
     logger.warning("💡 Or for local transcription: pip install faster-whisper")
 
 class VoiceActivityDetector:
-    """Voice Activity Detector to distinguish speech from background noise"""
+    """Robust Voice Activity Detector with adaptive thresholds to minimize false positives"""
     
-    def __init__(self, sample_rate: int = 8000, energy_threshold: float = 500.0):
+    def __init__(self, sample_rate: int = 8000, energy_threshold: float = 1500.0):
         self.sample_rate = sample_rate
         self.energy_threshold = energy_threshold
         self.speech_frame_count = 0
         self.silence_frame_count = 0
-        self.min_speech_frames = 3  # Minimum consecutive frames to consider it speech
-        logger.info(f"🎤 VoiceActivityDetector initialized (sample_rate={sample_rate}, threshold={energy_threshold})")
+        self.min_speech_frames = 5  # Require 5 consecutive frames (~100ms) to trigger
+        self.min_silence_frames = 3  # Require 3 silence frames to reset
+        
+        # Adaptive background noise estimation
+        self.background_energy = 300.0
+        self.noise_alpha = 0.98  # Slow adaptation for background estimation
+        
+        logger.info(f"🎤 VoiceActivityDetector initialized (sample_rate={sample_rate}, threshold={energy_threshold}, adaptive=enabled)")
     
     def is_speech(self, audio_data: bytes) -> bool:
         """
         Detect if audio contains speech (not just background noise/music)
-        Uses energy-based detection with frame counting for stability
+        Uses robust energy + ZCR detection with hysteresis to prevent false positives
         """
         try:
             # Convert bytes to numpy array for analysis
             audio_array = np.frombuffer(audio_data, dtype=np.int16)
             
+            if len(audio_array) < 16:  # Too short to analyze
+                return False
+            
             # Calculate RMS energy
             rms = np.sqrt(np.mean(audio_array.astype(np.float32) ** 2))
             
-            # Calculate zero crossing rate (speech has higher ZCR than music/noise)
+            # Calculate zero crossing rate (speech has moderate ZCR)
             zero_crossings = np.sum(np.abs(np.diff(np.sign(audio_array)))) / 2
             zcr = zero_crossings / len(audio_array)
             
-            # Speech typically has:
-            # - Moderate to high energy (RMS > threshold)
-            # - Higher zero crossing rate (0.02 - 0.15 for speech at 8kHz)
-            # - Short bursts with pauses
+            # Update background noise estimate (only when no speech detected)
+            if self.speech_frame_count == 0:
+                self.background_energy = self.noise_alpha * self.background_energy + (1 - self.noise_alpha) * rms
             
-            is_energetic = rms > self.energy_threshold
-            is_speech_like_zcr = 0.015 < zcr < 0.20  # Adjusted for 8kHz
+            # Adaptive threshold: at least 4x background noise
+            adaptive_threshold = max(self.energy_threshold, self.background_energy * 4.0)
             
-            # Current frame has speech-like characteristics
+            # Speech characteristics:
+            # - Energy significantly above background
+            # - Moderate zero crossing rate (0.02 - 0.12 for speech at 8kHz)
+            # - Music typically has either very low or very high ZCR
+            
+            is_energetic = rms > adaptive_threshold
+            is_speech_like_zcr = 0.025 < zcr < 0.12  # Narrower range to reject music
+            
+            # Check if current frame has speech characteristics
             if is_energetic and is_speech_like_zcr:
                 self.speech_frame_count += 1
                 self.silence_frame_count = 0
             else:
-                self.speech_frame_count = max(0, self.speech_frame_count - 1)
+                # Decay speech counter gradually
+                if self.speech_frame_count > 0:
+                    self.speech_frame_count -= 1
                 self.silence_frame_count += 1
+                
+                # Reset completely after sustained silence
+                if self.silence_frame_count >= self.min_silence_frames:
+                    self.speech_frame_count = 0
             
-            # Require multiple consecutive speech frames to avoid false positives
+            # Require sustained speech to trigger (prevents single noise spikes)
             return self.speech_frame_count >= self.min_speech_frames
             
         except Exception as e:
@@ -2346,27 +2368,44 @@ class RTPSession:
 
                 # 🚀 CLIENT-SIDE IMMEDIATE INTERRUPTION
                 # If user speaks while assistant is active,
-                # immediately clear the output audio queue.
-                # This provides instant <100ms interruption
-                # without waiting for the server.
+                # smartly clear the output audio queue to prevent lag
+                # while allowing current audio chunk to finish for smoother interruption
                 if self.audio_output_active:
-                    logger.info(f"🎙️ Client-side VAD: User spoke while assistant was active. Clearing output queue NOW.")
-                    
-                    # Clear all pending output audio
-                    cleared_chunks = 0
-                    try:
-                        while not self.output_queue.empty():
-                            self.output_queue.get_nowait()
-                            cleared_chunks += 1
-                    except queue.Empty:
-                        pass  # Queue is empty
-                    
-                    if cleared_chunks > 0:
-                        logger.debug(f"🔇 Cleared {cleared_chunks} pending audio chunks for instant client-side interruption.")
-                    
-                    # Immediately mark assistant as not speaking
-                    self.audio_output_active = False
-                    self.last_output_time = 0
+                    # Only log and clear if we haven't already triggered in the last 100ms
+                    current_time_ms = time.time() * 1000
+                    if not hasattr(self, '_last_interrupt_time_ms') or (current_time_ms - self._last_interrupt_time_ms) > 100:
+                        self._last_interrupt_time_ms = current_time_ms
+                        logger.info(f"🎙️ Client-side VAD: User spoke while assistant was active. Clearing output queue NOW.")
+                        
+                        # Smart queue clearing: Keep 1-2 chunks to prevent abrupt cutoff
+                        # This allows current audio to finish smoothly while stopping future speech
+                        cleared_chunks = 0
+                        keep_chunks = []
+                        
+                        try:
+                            # Extract all chunks from queue
+                            while not self.output_queue.empty():
+                                chunk = self.output_queue.get_nowait()
+                                if len(keep_chunks) < 2:  # Keep first 2 chunks for smooth transition
+                                    keep_chunks.append(chunk)
+                                else:
+                                    cleared_chunks += 1
+                        except queue.Empty:
+                            pass  # Queue is empty
+                        
+                        # Put back the chunks we want to keep
+                        for chunk in keep_chunks:
+                            try:
+                                self.output_queue.put_nowait(chunk)
+                            except queue.Full:
+                                pass
+                        
+                        if cleared_chunks > 0:
+                            logger.debug(f"🔇 Cleared {cleared_chunks} pending audio chunks (kept {len(keep_chunks)} for smooth transition).")
+                        
+                        # Mark that interruption happened but don't immediately mark as not speaking
+                        # Let the queue naturally drain the kept chunks
+                        self._interrupt_pending = True
             
             # ⚡ FULL-DUPLEX MODE: Always send user audio to Gemini for instant interruption detection
             # Gemini Live API has built-in server-side interruption detection and echo handling
@@ -2870,7 +2909,7 @@ class RTPSession:
     def _process_output_queue(self):
         """
         Dequeue G.711 payloads and transmit with a high-precision, self-correcting
-        RTP pacing loop for smooth, real-time voice.
+        RTP pacing loop for smooth, real-time voice with minimal latency.
         """
         import time  # Ensure time is available
         import queue # Ensure queue is available (for queue.Empty)
@@ -2880,14 +2919,14 @@ class RTPSession:
         # Use perf_counter for high-resolution timing
         try:
             # Wait for the first packet to arrive to set the start time
-            payload = self.output_queue.get(timeout=1.0)
+            payload = self.output_queue.get(timeout=0.5)  # Reduced from 1.0s
             # Mark that we're actively outputting audio
             self.audio_output_active = True
             self.last_output_time = time.time()
             # Reset inactivity timer when agent starts speaking
             self.last_voice_activity_time = time.time()
         except queue.Empty:
-            # No audio for 1 second, just start the loop
+            # No audio for 0.5 second, just start the loop
             pass
         except Exception:
             pass # Handle other errors
@@ -2897,8 +2936,9 @@ class RTPSession:
         
         while self.output_processing:
             try:
-                # Use a tighter timeout (e.g., 2-3 packet intervals)
-                payload = self.output_queue.get(timeout=0.060)
+                # Reduced timeout to 40ms (2 packet intervals) for lower latency
+                # This prevents building up lag in the queue
+                payload = self.output_queue.get(timeout=0.040)
                 # We got audio - mark as active and reset inactivity timer
                 self.audio_output_active = True
                 self.last_output_time = time.time()
@@ -2947,10 +2987,13 @@ class RTPSession:
                 # We are running late (loop took too long or sleep overslept)
                 # Do not sleep; proceed immediately to send the next packet
                 
-                # If we're severely late (by more than one packet time), 
+                # If we're severely late (by more than 1.5 packet times), 
                 # reset the timer to prevent a massive burst of packets.
-                if sleep_duration < -ptime_seconds:
-                    logger.warning(f"RTP output queue running late, resetting pacer (lag: {sleep_duration:.3f}s)")
+                if sleep_duration < -(ptime_seconds * 1.5):
+                    # Only log occasionally to avoid spam
+                    if not hasattr(self, '_last_lag_warning') or (time.time() - self._last_lag_warning) > 2.0:
+                        logger.warning(f"RTP output queue running late, resetting pacer (lag: {sleep_duration:.3f}s)")
+                        self._last_lag_warning = time.time()
                     next_packet_time = time.perf_counter() + ptime_seconds
     
     def _send_rtp(self, payload: bytes):
