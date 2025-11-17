@@ -2343,6 +2343,30 @@ class RTPSession:
                 if not hasattr(self, '_last_voice_log_time') or (time.time() - self._last_voice_log_time) > 5.0:
                     self._last_voice_log_time = time.time()
                     logger.debug(f"🗣️ Voice activity detected in session {self.session_id}")
+
+                # 🚀 CLIENT-SIDE IMMEDIATE INTERRUPTION
+                # If user speaks while assistant is active,
+                # immediately clear the output audio queue.
+                # This provides instant <100ms interruption
+                # without waiting for the server.
+                if self.audio_output_active:
+                    logger.info(f"🎙️ Client-side VAD: User spoke while assistant was active. Clearing output queue NOW.")
+                    
+                    # Clear all pending output audio
+                    cleared_chunks = 0
+                    try:
+                        while not self.output_queue.empty():
+                            self.output_queue.get_nowait()
+                            cleared_chunks += 1
+                    except queue.Empty:
+                        pass  # Queue is empty
+                    
+                    if cleared_chunks > 0:
+                        logger.debug(f"🔇 Cleared {cleared_chunks} pending audio chunks for instant client-side interruption.")
+                    
+                    # Immediately mark assistant as not speaking
+                    self.audio_output_active = False
+                    self.last_output_time = 0
             
             # ⚡ FULL-DUPLEX MODE: Always send user audio to Gemini for instant interruption detection
             # Gemini Live API has built-in server-side interruption detection and echo handling
@@ -2450,7 +2474,7 @@ class RTPSession:
                 try:
                     # Check for audio in queue (non-blocking with short timeout for responsiveness)
                     try:
-                        audio_chunk = self.audio_input_queue.get(timeout=0.02)  # Reduced from 0.1s to 0.02s
+                        audio_chunk = self.audio_input_queue.get(timeout=0.01)  # 10ms timeout for hyper-low latency
                         
                         # Send audio to Gemini immediately
                         if self.voice_session.gemini_session:
@@ -2460,7 +2484,7 @@ class RTPSession:
                             logger.warning("⚠️ No Gemini session available to send audio")
                     except queue.Empty:
                         # No audio available, yield control very briefly
-                        await asyncio.sleep(0.005)  # Reduced from 0.01s to 0.005s
+                        await asyncio.sleep(0.001)  # 1ms sleep for hyper-aggressive polling
                         
                 except Exception as e:
                     logger.error(f"Error in main audio loop: {e}")
@@ -2638,7 +2662,7 @@ class RTPSession:
                                 
                                 # 3) ⚡ INSTANT INTERRUPTION HANDLING - stop model speech immediately
                                 if hasattr(sc, "interrupted") and sc.interrupted:
-                                    logger.info("🔄 User interrupted model - stopping speech immediately!")
+                                    logger.info(f"🔄 User interrupted model in session {self.session_id} - stopping speech immediately!")
                                     self._cancel_hangup()
                                     
                                     # Clear output state immediately for instant response
@@ -4697,6 +4721,13 @@ Content-Length: {len(sdp_content)}
                 voice_session.from_tag = from_tag
                 voice_session.to_tag = to_tag
                 voice_session.call_id = call_id
+                
+                # ⚠️ CRITICAL FIX: Check if RTP session already exists before creating a new one
+                # This prevents orphaned RTP sessions that cause cross-session contamination
+                if session_id in self.rtp_server.sessions:
+                    logger.warning(f"⚠️ RTP session {session_id} already exists! Cleaning up old session before creating new one")
+                    # Clean up the old session first to prevent orphaned threads
+                    self.rtp_server.remove_session(session_id)
                 
                 # Create RTP session - for outbound calls, we need to get the remote address from SDP
                 # For now, we'll use the Gate VoIP address as the RTP destination
