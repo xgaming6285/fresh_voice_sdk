@@ -4452,6 +4452,101 @@ Content-Length: {len(sdp_content)}
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
     
+    def _initialize_gemini_early(self, call_id: str):
+        """Initialize Gemini connection early (during ringing phase) to reduce post-answer delay"""
+        try:
+            if call_id not in self.pending_invites:
+                logger.warning(f"⚠️ Call ID {call_id} not found in pending invites")
+                return
+            
+            invite_info = self.pending_invites[call_id]
+            phone_number = invite_info['phone_number']
+            original_number = invite_info.get('original_number', phone_number)
+            session_id = invite_info['session_id']
+            owner_id = invite_info.get('owner_id')
+            custom_config = invite_info.get('custom_config', None)
+            
+            logger.info(f"🎧 Initializing Gemini connection for {phone_number} (during ringing)...")
+            
+            # Detect caller's country and language
+            caller_country = detect_caller_country(original_number)
+            language_info = get_language_config(caller_country)
+            voice_config = create_voice_config(language_info, custom_config)
+            
+            # Get the user's API key for this call
+            user_api_key = None
+            if owner_id:
+                try:
+                    from crm_database_mongodb import UserManager
+                    db = get_session()
+                    user_manager = UserManager(db)
+                    user = user_manager.get_user_by_id(owner_id)
+                    if user and user.google_api_key:
+                        user_api_key = user.google_api_key
+                        logger.info(f"🔑 Retrieved API key for user {user.username} (ID: {owner_id})")
+                    else:
+                        logger.warning(f"⚠️ No API key found for user ID {owner_id}, using default")
+                    db.close()
+                except Exception as e:
+                    logger.error(f"❌ Error retrieving user API key: {e}")
+            
+            # Create voice session
+            voice_session = WindowsVoiceSession(
+                session_id, 
+                self.phone_number,  # We are calling
+                phone_number,       # They are receiving
+                voice_config,
+                custom_config=custom_config,
+                api_key=user_api_key
+            )
+            
+            # Store voice session in pending invites for later use
+            self.pending_invites[call_id]['voice_session'] = voice_session
+            self.pending_invites[call_id]['language_info'] = language_info
+            
+            # Create RTP session
+            remote_addr = (self.gate_ip, 5004)
+            rtp_session = self.rtp_server.create_session(session_id, remote_addr, voice_session, voice_session.call_recorder)
+            self.pending_invites[call_id]['rtp_session'] = rtp_session
+            
+            # Start RTP async loop to initialize Gemini
+            if rtp_session and not rtp_session.asyncio_thread_started:
+                rtp_session.input_processing = True
+                rtp_session.asyncio_thread_started = True
+                rtp_session.asyncio_thread = threading.Thread(target=rtp_session._run_asyncio_thread, daemon=True)
+                rtp_session.asyncio_thread.start()
+                logger.info(f"🎧 Started RTP async loop (Gemini initializing)...")
+            
+            # Wait for Gemini to connect (with timeout)
+            logger.info(f"⏳ Waiting for Gemini to connect (during ringing)...")
+            max_wait_time = 30
+            wait_interval = 0.5
+            elapsed_time = 0
+            
+            while elapsed_time < max_wait_time:
+                if call_id not in self.pending_invites:
+                    logger.warning("⚠️ Call cancelled while initializing Gemini")
+                    return
+                
+                if voice_session.gemini_session:
+                    logger.info(f"✅ Gemini connected in {elapsed_time:.1f}s (ready for when user picks up!)")
+                    self.pending_invites[call_id]['gemini_ready'] = True
+                    break
+                
+                time.sleep(wait_interval)
+                elapsed_time += wait_interval
+            
+            if not voice_session.gemini_session:
+                logger.error(f"❌ Gemini failed to connect within {max_wait_time}s")
+                self.pending_invites[call_id]['gemini_failed'] = True
+            
+        except Exception as e:
+            logger.error(f"❌ Error initializing Gemini early: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            if call_id in self.pending_invites:
+                self.pending_invites[call_id]['gemini_failed'] = True
+    
     def _handle_outbound_call_success(self, message: str):
         """Handle successful outbound call establishment (200 OK for INVITE)"""
         try:
@@ -4548,45 +4643,65 @@ Content-Length: {len(sdp_content)}
             
             logger.info(f"🌍 Language: {language_info['lang']} ({caller_country})")
             
-            # Get the user's API key for this call
-            user_api_key = None
-            if owner_id:
-                try:
-                    from crm_database_mongodb import UserManager
-                    db = get_session()
-                    user_manager = UserManager(db)
-                    user = user_manager.get_user_by_id(owner_id)
-                    if user and user.google_api_key:
-                        user_api_key = user.google_api_key
-                        logger.info(f"🔑 Retrieved API key for user {user.username} (ID: {owner_id})")
-                    else:
-                        logger.warning(f"⚠️ No API key found for user ID {owner_id}, using default")
-                    db.close()
-                except Exception as e:
-                    logger.error(f"❌ Error retrieving user API key: {e}")
+            # 🚀 NEW: Check if Gemini was already initialized during ringing
+            gemini_ready = invite_info.get('gemini_ready', False)
+            voice_session = invite_info.get('voice_session', None)
+            rtp_session = invite_info.get('rtp_session', None)
+            
+            if gemini_ready and voice_session and rtp_session:
+                logger.info("✅ Reusing Gemini connection initialized during ringing (FAST PATH)")
+                
+                # Store SIP details in voice session for sending BYE later
+                voice_session.sip_handler = self
+                voice_session.from_tag = from_tag
+                voice_session.to_tag = to_tag
+                voice_session.call_id = call_id
             else:
-                logger.warning(f"⚠️ No owner_id for outbound call, using default API key")
-            
-            # Create voice session for outbound call (we are the caller)
-            voice_session = WindowsVoiceSession(
-                session_id, 
-                self.phone_number,  # We are calling
-                phone_number,       # They are receiving
-                voice_config,
-                custom_config=custom_config,
-                api_key=user_api_key
-            )
-            
-            # Store SIP details in voice session for sending BYE later
-            voice_session.sip_handler = self
-            voice_session.from_tag = from_tag
-            voice_session.to_tag = to_tag
-            voice_session.call_id = call_id
-            
-            # Create RTP session - for outbound calls, we need to get the remote address from SDP
-            # For now, we'll use the Gate VoIP address as the RTP destination
-            remote_addr = (self.gate_ip, 5004)  # Default RTP port
-            rtp_session = self.rtp_server.create_session(session_id, remote_addr, voice_session, voice_session.call_recorder)
+                # FALLBACK: Old behavior - initialize Gemini after answer
+                if gemini_ready:
+                    logger.warning("⚠️ Gemini was ready but sessions missing, recreating...")
+                else:
+                    logger.warning("⚠️ Gemini not initialized during ringing, initializing now (SLOW PATH)")
+                
+                # Get the user's API key for this call
+                user_api_key = None
+                if owner_id:
+                    try:
+                        from crm_database_mongodb import UserManager
+                        db = get_session()
+                        user_manager = UserManager(db)
+                        user = user_manager.get_user_by_id(owner_id)
+                        if user and user.google_api_key:
+                            user_api_key = user.google_api_key
+                            logger.info(f"🔑 Retrieved API key for user {user.username} (ID: {owner_id})")
+                        else:
+                            logger.warning(f"⚠️ No API key found for user ID {owner_id}, using default")
+                        db.close()
+                    except Exception as e:
+                        logger.error(f"❌ Error retrieving user API key: {e}")
+                else:
+                    logger.warning(f"⚠️ No owner_id for outbound call, using default API key")
+                
+                # Create voice session for outbound call (we are the caller)
+                voice_session = WindowsVoiceSession(
+                    session_id, 
+                    self.phone_number,  # We are calling
+                    phone_number,       # They are receiving
+                    voice_config,
+                    custom_config=custom_config,
+                    api_key=user_api_key
+                )
+                
+                # Store SIP details in voice session for sending BYE later
+                voice_session.sip_handler = self
+                voice_session.from_tag = from_tag
+                voice_session.to_tag = to_tag
+                voice_session.call_id = call_id
+                
+                # Create RTP session - for outbound calls, we need to get the remote address from SDP
+                # For now, we'll use the Gate VoIP address as the RTP destination
+                remote_addr = (self.gate_ip, 5004)  # Default RTP port
+                rtp_session = self.rtp_server.create_session(session_id, remote_addr, voice_session, voice_session.call_recorder)
             
             # Store the active session
             active_sessions[session_id] = {
@@ -4639,40 +4754,44 @@ Content-Length: {len(sdp_content)}
             # NOW start voice session after ACK is sent
             def start_voice_session():
                 try:
-                    # Start the RTP session's async processing loop (which will initialize Gemini)
-                    if rtp_session and not rtp_session.asyncio_thread_started:
-                        rtp_session.input_processing = True
-                        rtp_session.asyncio_thread_started = True  # Set flag before starting thread
-                        rtp_session.asyncio_thread = threading.Thread(target=rtp_session._run_asyncio_thread, daemon=True)
-                        rtp_session.asyncio_thread.start()
-                        logger.info(f"🎧 Started RTP async loop for outbound session {session_id}")
-                    elif rtp_session and rtp_session.asyncio_thread_started:
-                        logger.info(f"🎧 RTP async loop already started for outbound session {session_id}")
-                    
-                    # Wait for Gemini to connect (check every 0.5s, timeout after 30s)
-                    logger.info(f"⏳ Waiting for Gemini to connect for outbound call...")
-                    max_wait_time = 30  # seconds
-                    wait_interval = 0.5  # seconds
-                    elapsed_time = 0
-                    
-                    while elapsed_time < max_wait_time:
-                        if session_id not in active_sessions:
-                            logger.warning("⚠️ Outbound call ended while waiting for Gemini")
+                    # Check if Gemini was already initialized during ringing
+                    if gemini_ready and voice_session.gemini_session:
+                        logger.info("🚀 Gemini already connected (fast path - no wait needed!)")
+                    else:
+                        # Start the RTP session's async processing loop (which will initialize Gemini)
+                        if rtp_session and not rtp_session.asyncio_thread_started:
+                            rtp_session.input_processing = True
+                            rtp_session.asyncio_thread_started = True  # Set flag before starting thread
+                            rtp_session.asyncio_thread = threading.Thread(target=rtp_session._run_asyncio_thread, daemon=True)
+                            rtp_session.asyncio_thread.start()
+                            logger.info(f"🎧 Started RTP async loop for outbound session {session_id}")
+                        elif rtp_session and rtp_session.asyncio_thread_started:
+                            logger.info(f"🎧 RTP async loop already started for outbound session {session_id}")
+                        
+                        # Wait for Gemini to connect (check every 0.5s, timeout after 30s)
+                        logger.info(f"⏳ Waiting for Gemini to connect for outbound call...")
+                        max_wait_time = 30  # seconds
+                        wait_interval = 0.5  # seconds
+                        elapsed_time = 0
+                        
+                        while elapsed_time < max_wait_time:
+                            if session_id not in active_sessions:
+                                logger.warning("⚠️ Outbound call ended while waiting for Gemini")
+                                return
+                            
+                            # Check if Gemini session is ready
+                            if voice_session.gemini_session:
+                                logger.info(f"✅ Gemini connected for outbound call after {elapsed_time:.1f}s")
+                                break
+                            
+                            time.sleep(wait_interval)
+                            elapsed_time += wait_interval
+                        
+                        if not voice_session.gemini_session:
+                            logger.error(f"❌ Gemini failed to connect for outbound call within {max_wait_time}s")
+                            if session_id in active_sessions:
+                                del active_sessions[session_id]
                             return
-                        
-                        # Check if Gemini session is ready
-                        if voice_session.gemini_session:
-                            logger.info(f"✅ Gemini connected for outbound call after {elapsed_time:.1f}s")
-                            break
-                        
-                        time.sleep(wait_interval)
-                        elapsed_time += wait_interval
-                    
-                    if not voice_session.gemini_session:
-                        logger.error(f"❌ Gemini failed to connect for outbound call within {max_wait_time}s")
-                        if session_id in active_sessions:
-                            del active_sessions[session_id]
-                        return
 
                     # Mark as active once voice session is ready
                     if session_id in active_sessions:
@@ -4686,8 +4805,8 @@ Content-Length: {len(sdp_content)}
                             
                             if was_ringing:
                                 # Normal case: We saw 180/183 ringing, so 200 OK means user picked up
-                                # Wait 1.5 seconds for user to bring phone to ear
-                                time.sleep(1.5)
+                                # 🚀 NEW: Wait only 1.0 second (reduced from 1.5s)
+                                time.sleep(1.0)
                             else:
                                 # Special case: No 180/183 ringing seen, 200 OK may be premature
                                 # Wait for actual RTP activity to confirm user picked up
@@ -4705,7 +4824,8 @@ Content-Length: {len(sdp_content)}
                                     rtp_sess = active_sessions[session_id].get('rtp_session')
                                     if rtp_sess and hasattr(rtp_sess, 'packets_received') and rtp_sess.packets_received > 5:
                                         logger.info(f"✅ RTP activity detected after {elapsed:.1f}s - user has picked up")
-                                        time.sleep(1.5)  # Wait 1.5 seconds for user to bring phone to ear
+                                        # 🚀 NEW: Wait only 1.0 second (reduced from 1.5s)
+                                        time.sleep(1.0)
                                         break
                                     
                                     time.sleep(wait_interval)
@@ -4892,6 +5012,13 @@ Content-Length: 0
                             logger.info(f"🔗 Asterisk Linked ID: {asterisk_headers['linkedid']}")
                             # Store it in pending_invites for later use
                             self.pending_invites[call_id]['asterisk_linkedid'] = asterisk_headers['linkedid']
+                        
+                        # 🚀 NEW: Initialize Gemini connection early (during ringing, not after answer)
+                        # This reduces the 6-7s delay before greeting playback
+                        if not self.pending_invites[call_id].get('gemini_initializing'):
+                            self.pending_invites[call_id]['gemini_initializing'] = True
+                            logger.info("🎧 Starting Gemini connection early (during ringing)...")
+                            threading.Thread(target=self._initialize_gemini_early, args=(call_id,), daemon=True).start()
                     else:
                         logger.info("🔔 Phone ringing - waiting for answer")
                 else:
@@ -4918,6 +5045,13 @@ Content-Length: 0
                             logger.info(f"🔗 Asterisk Linked ID: {asterisk_headers['linkedid']}")
                             # Store it in pending_invites for later use
                             self.pending_invites[call_id]['asterisk_linkedid'] = asterisk_headers['linkedid']
+                        
+                        # 🚀 NEW: Initialize Gemini connection early (during ringing, not after answer)
+                        # This reduces the 6-7s delay before greeting playback
+                        if not self.pending_invites[call_id].get('gemini_initializing'):
+                            self.pending_invites[call_id]['gemini_initializing'] = True
+                            logger.info("🎧 Starting Gemini connection early (during ringing)...")
+                            threading.Thread(target=self._initialize_gemini_early, args=(call_id,), daemon=True).start()
                     else:
                         logger.info("🔔 Phone ringing with early media - waiting for answer")
                 else:
