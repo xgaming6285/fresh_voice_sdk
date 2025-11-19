@@ -2434,46 +2434,8 @@ class RTPSession:
                     self._last_voice_log_time = time.time()
                     logger.debug(f"🗣️ Voice activity detected in session {self.session_id}")
 
-                # 🚀 CLIENT-SIDE IMMEDIATE INTERRUPTION
-                # If user speaks while assistant is active,
-                # smartly clear the output audio queue to prevent lag
-                # while allowing current audio chunk to finish for smoother interruption
-                if self.audio_output_active:
-                    # Only log and clear if we haven't already triggered in the last 100ms
-                    current_time_ms = time.time() * 1000
-                    if not hasattr(self, '_last_interrupt_time_ms') or (current_time_ms - self._last_interrupt_time_ms) > 100:
-                        self._last_interrupt_time_ms = current_time_ms
-                        logger.info(f"🎙️ Client-side VAD: User spoke while assistant was active. Clearing output queue NOW.")
-                        
-                        # Smart queue clearing: Keep 1-2 chunks to prevent abrupt cutoff
-                        # This allows current audio to finish smoothly while stopping future speech
-                        cleared_chunks = 0
-                        keep_chunks = []
-                        
-                        try:
-                            # Extract all chunks from queue
-                            while not self.output_queue.empty():
-                                chunk = self.output_queue.get_nowait()
-                                if len(keep_chunks) < 2:  # Keep first 2 chunks for smooth transition
-                                    keep_chunks.append(chunk)
-                                else:
-                                    cleared_chunks += 1
-                        except queue.Empty:
-                            pass  # Queue is empty
-                        
-                        # Put back the chunks we want to keep
-                        for chunk in keep_chunks:
-                            try:
-                                self.output_queue.put_nowait(chunk)
-                            except queue.Full:
-                                pass
-                        
-                        if cleared_chunks > 0:
-                            logger.debug(f"🔇 Cleared {cleared_chunks} pending audio chunks (kept {len(keep_chunks)} for smooth transition).")
-                        
-                        # Mark that interruption happened but don't immediately mark as not speaking
-                        # Let the queue naturally drain the kept chunks
-                        self._interrupt_pending = True
+                # REMOVED CLIENT-SIDE INTERRUPTION - Relying on Gemini's server-side VAD (like JS client)
+                # This avoids false positives from local VAD canceling the bot response prematurely.
             
             # ⚡ FULL-DUPLEX MODE: Always send user audio to Gemini for instant interruption detection
             # Gemini Live API has built-in server-side interruption detection and echo handling
@@ -2523,10 +2485,11 @@ class RTPSession:
             with self.buffer_lock:
                 self.audio_buffer += processed_pcm
                 
-                # ⚡ Send in 10ms chunks for minimal latency and instant interruption detection
-                # 10ms at 8kHz = 80 samples * 2 bytes = 160 bytes
-                # This allows Gemini to detect interruptions within 10ms of user starting to speak
-                min_chunk = 160  # Reduced from 640 bytes (40ms) to 160 bytes (10ms) for 4x faster response
+                # ⚡ Send in larger chunks to match JS client behavior (approx 170ms)
+                # 170ms at 8kHz = 1360 samples * 2 bytes = 2720 bytes
+                # JS client uses 8192 bytes at 24kHz (~170ms).
+                # Larger chunks reduce packet overhead and match the stability of the JS implementation.
+                min_chunk = 2720  # Increased to ~170ms to match JS client buffering behavior
                 if len(self.audio_buffer) >= min_chunk:
                     chunk_to_send = self.audio_buffer
                     self.audio_buffer = b""  # Clear buffer
@@ -2639,7 +2602,8 @@ class RTPSession:
             # Send audio to Gemini with correct MIME type format
             try:
                 await self.voice_session.gemini_session.send(
-                    input={"data": processed_audio, "mime_type": "audio/pcm"}
+                    input={"data": processed_audio, "mime_type": "audio/pcm;rate=24000"},
+                    end_of_turn=False
                 )
             except Exception as send_err:
                 # Only log the error once to avoid spam, don't re-raise
@@ -5681,7 +5645,8 @@ class WindowsVoiceSession:
                 try:
                     # Send audio in the correct format for Gemini Live API
                     await self.gemini_session.send(
-                        input={"data": processed_audio, "mime_type": "audio/pcm;rate=16000"}
+                        input={"data": processed_audio, "mime_type": "audio/pcm;rate=24000"},
+                        end_of_turn=False
                     )
                     send_success = True
                     break
@@ -5762,17 +5727,17 @@ class WindowsVoiceSession:
     def convert_telephony_to_gemini(self, audio_data: bytes) -> bytes:
         """
         Input: 16-bit mono PCM at 8000 Hz.
-        Output: 16-bit mono PCM at 16000 Hz for the model.
+        Output: 16-bit mono PCM at 24000 Hz for the model.
         Uses high-quality polyphase resampling.
         """
         try:
             # Convert bytes to numpy array
             in_array = np.frombuffer(audio_data, dtype=np.int16)
             
-            # 8kHz -> 16kHz (2x upsample)
+            # 8kHz -> 24kHz (3x upsample)
             # Use resample_poly for high-quality upsampling
             # This preserves formants better than linear interpolation
-            out_array = resample_poly(in_array, 2, 1) # Up=2, Down=1
+            out_array = resample_poly(in_array, 3, 1) # Up=3, Down=1
             
             # Convert back to int16 with clipping check
             out_array = np.clip(out_array, -32768, 32767).astype(np.int16)
@@ -5780,11 +5745,11 @@ class WindowsVoiceSession:
             # Convert back to bytes
             return out_array.tobytes()
         except Exception as e:
-            logger.warning(f"Resample poly (8k->16k) failed: {e}")
-            # Fallback: if scipy fails, use simple doubling but log it
+            logger.warning(f"Resample poly (8k->24k) failed: {e}")
+            # Fallback: if scipy fails, use simple repetition but log it
             # We want to avoid this path if possible
             in_array = np.frombuffer(audio_data, dtype=np.int16)
-            out_array = np.repeat(in_array, 2)
+            out_array = np.repeat(in_array, 3)
             return out_array.tobytes()
 
     def convert_gemini_to_telephony(self, model_pcm: bytes) -> bytes:
