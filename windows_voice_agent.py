@@ -315,24 +315,93 @@ class GoodbyeDetector:
 
 
 class AudioPreprocessor:
-    """Ultra-minimal audio preprocessing for lowest latency"""
+    """Audio preprocessing with AGC, Noise Gate, and soft clipping for clear voice input"""
     
     def __init__(self, sample_rate: int = 8000):
         self.sample_rate = sample_rate
-        logger.info("🎵 AudioPreprocessor initialized in PASS-THROUGH mode (minimal latency)")
+        
+        # Noise Gate settings
+        self.noise_gate_threshold = 500.0  # RMS threshold for silence (approx -36dB)
+        self.noise_gate_attack = 0.1       # Fast attack to catch speech
+        self.noise_gate_release = 0.2      # Moderate release
+        self.gate_envelope = 0.0
+        
+        # AGC settings
+        self.target_level = 4000.0         # Target RMS level
+        self.max_gain = 6.0                # Max amplification
+        self.agc_speed = 0.05              # Speed of gain adjustment
+        self.current_gain = 1.0
+        
+        # DC Offset Removal
+        self.dc_offset = 0.0
+        
+        logger.info(f"🎵 AudioPreprocessor initialized (AGC + Noise Gate enabled, threshold={self.noise_gate_threshold})")
     
     def process_audio(self, audio_data: bytes) -> bytes:
         """
-        Pass-through mode for ultra-low latency.
-        No processing, just return the audio as-is.
-        
-        Args:
-            audio_data: Raw PCM audio data (16-bit, mono, 8kHz)
-            
-        Returns:
-            Unmodified audio data for lowest latency
+        Process audio with noise gating and AGC to ensure clean input for Gemini.
         """
-        return audio_data
+        try:
+            if not audio_data:
+                return b""
+                
+            # Convert to numpy for processing
+            samples = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
+            
+            if len(samples) == 0:
+                return audio_data
+                
+            # 1. DC Offset Removal (Simple mean subtraction)
+            mean_val = np.mean(samples)
+            self.dc_offset = self.dc_offset * 0.95 + mean_val * 0.05
+            samples = samples - self.dc_offset
+            
+            # 2. Noise Gate
+            rms = np.sqrt(np.mean(samples ** 2))
+            
+            # Envelope follower
+            if rms > self.gate_envelope:
+                self.gate_envelope = self.gate_envelope * (1 - self.noise_gate_attack) + rms * self.noise_gate_attack
+            else:
+                self.gate_envelope = self.gate_envelope * (1 - self.noise_gate_release) + rms * self.noise_gate_release
+            
+            # Gate logic
+            if self.gate_envelope < self.noise_gate_threshold:
+                # Apply strong attenuation for silence
+                gate_gain = max(0.0, (self.gate_envelope / self.noise_gate_threshold) ** 2)
+                samples = samples * gate_gain
+                
+                # If effectively silent, return zeros to save bandwidth/processing on API side
+                if gate_gain < 0.05:
+                    return bytes(len(audio_data)) # Return silence
+            
+            # 3. AGC (Automatic Gain Control)
+            # Only adjust gain if we have significant signal (above noise floor)
+            if rms > self.noise_gate_threshold * 1.5:
+                target_gain = self.target_level / (rms + 1.0)
+                target_gain = min(target_gain, self.max_gain)
+                target_gain = max(target_gain, 1.0)  # Don't attenuate, only boost
+                
+                # Smoothly adjust current gain
+                self.current_gain = self.current_gain * (1 - self.agc_speed) + target_gain * self.agc_speed
+            else:
+                # Decay gain slowly during silence
+                self.current_gain = max(1.0, self.current_gain * 0.98)
+            
+            # Apply gain
+            samples = samples * self.current_gain
+            
+            # 4. Soft Clipping / Limiting
+            # Simple hard limit to preventing wrapping
+            np.clip(samples, -32767, 32767, out=samples)
+            
+            # Convert back to int16
+            processed_data = samples.astype(np.int16).tobytes()
+            return processed_data
+            
+        except Exception as e:
+            logger.error(f"Error in AudioPreprocessor: {e}")
+            return audio_data  # Fallback to original
 
 # Import our existing voice agent components
 from main import SessionLogger, SEND_SAMPLE_RATE, RECEIVE_SAMPLE_RATE, FORMAT, CHANNELS
@@ -2306,7 +2375,7 @@ class RTPSession:
         # Voice Activity Detection for timeout monitoring
         self.vad = VoiceActivityDetector(sample_rate=8000)
         self.last_voice_activity_time = time.time()
-        self.voice_timeout_seconds = 15.0  # 15 seconds of no USER voice = end call
+        self.voice_timeout_seconds = 30.0  # 15 seconds of no USER voice = end call
         self.timeout_monitor_thread = None
         self.timeout_monitoring = True
         self._cleanup_lock = threading.Lock()  # Prevent concurrent cleanup
@@ -2428,7 +2497,10 @@ class RTPSession:
             
             # Process audio normally
             try:
-                processed_pcm = pcm_data  # Skip preprocessing for now
+                # processed_pcm = pcm_data  # Skip preprocessing for now
+                
+                # Use our improved preprocessor
+                processed_pcm = self.audio_preprocessor.process_audio(pcm_data)
                 
                 # Log once to show audio is flowing
                 if not hasattr(self, '_audio_packet_count'):
