@@ -26,7 +26,8 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
 import queue
-from scipy.signal import resample_poly
+import scipy.signal
+from scipy.signal import resample_poly, butter, sosfilt, sosfilt_zi
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -315,88 +316,85 @@ class GoodbyeDetector:
 
 
 class AudioPreprocessor:
-    """Audio preprocessing with AGC, Noise Gate, and soft clipping for clear voice input"""
+    """
+    Advanced Audio Preprocessing Pipeline:
+    1. Bandpass Filter (300-3400Hz): Removes rumble and hiss.
+    2. Dynamic Range Compression: Boosts low voices, limits loud voices.
+    3. Normalization: Ensures consistent signal level for Gemini.
+    """
     
     def __init__(self, sample_rate: int = 8000):
         self.sample_rate = sample_rate
         
-        # Noise Gate settings
-        self.noise_gate_threshold = 500.0  # RMS threshold for silence (approx -36dB)
-        self.noise_gate_attack = 0.1       # Fast attack to catch speech
-        self.noise_gate_release = 0.2      # Moderate release
-        self.gate_envelope = 0.0
+        # 1. Bandpass Filter State (Telephony standard: 300Hz - 3400Hz)
+        # Using SOS (Second-Order Sections) for stability with int16
+        self.sos = butter(4, [300, 3400], btype='bandpass', fs=sample_rate, output='sos')
+        self.filter_state = sosfilt_zi(self.sos)
         
-        # AGC settings
-        self.target_level = 4000.0         # Target RMS level
-        self.max_gain = 6.0                # Max amplification
-        self.agc_speed = 0.05              # Speed of gain adjustment
+        # 2. Dynamics Processing (Compressor/AGC)
+        self.target_level_db = -20.0  # Target RMS in dB
+        self.max_gain_db = 15.0       # Max boost for quiet voices (Aggressive boost)
         self.current_gain = 1.0
+        self.alpha_attack = 0.1       # Fast attack
+        self.alpha_release = 0.05     # Slower release
         
-        # DC Offset Removal
-        self.dc_offset = 0.0
-        
-        logger.info(f"🎵 AudioPreprocessor initialized (AGC + Noise Gate enabled, threshold={self.noise_gate_threshold})")
+        logger.info(f"🎵 Advanced AudioPreprocessor initialized (Bandpass 300-3400Hz + Dynamics Compressor)")
     
     def process_audio(self, audio_data: bytes) -> bytes:
         """
-        Process audio with noise gating and AGC to ensure clean input for Gemini.
+        Process audio: Filter -> Compress -> Limit -> Output
         """
         try:
             if not audio_data:
                 return b""
                 
-            # Convert to numpy for processing
-            samples = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
+            # Convert to float32 numpy array for processing (-1.0 to 1.0 range)
+            # We strictly normalize to float for consistent DSP math
+            samples = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
             
             if len(samples) == 0:
                 return audio_data
                 
-            # 1. DC Offset Removal (Simple mean subtraction)
-            mean_val = np.mean(samples)
-            self.dc_offset = self.dc_offset * 0.95 + mean_val * 0.05
-            samples = samples - self.dc_offset
+            # --- STEP 1: Bandpass Filtering (Remove Rumble & Hiss) ---
+            # This removes DC offset automatically and cleans up the signal
+            samples, self.filter_state = sosfilt(self.sos, samples, zi=self.filter_state)
             
-            # 2. Noise Gate
+            # --- STEP 2: RMS Calculation & Dynamics ---
+            # Calculate RMS of current chunk
             rms = np.sqrt(np.mean(samples ** 2))
+            rms_db = 20 * np.log10(rms + 1e-9)  # Avoid log(0)
             
-            # Envelope follower
-            if rms > self.gate_envelope:
-                self.gate_envelope = self.gate_envelope * (1 - self.noise_gate_attack) + rms * self.noise_gate_attack
+            # Calculate desired gain
+            # If signal is quiet (e.g., -40dB), we want to boost it towards target (-20dB)
+            # If signal is loud (e.g., -10dB), we want to attenuate it
+            
+            error_db = self.target_level_db - rms_db
+            
+            # Soft Knee Logic:
+            # If it's absolute silence (likely < -60dB), don't boost noise
+            if rms_db < -60.0:
+                target_gain = 1.0 # Don't boost silence
             else:
-                self.gate_envelope = self.gate_envelope * (1 - self.noise_gate_release) + rms * self.noise_gate_release
+                # Calculate boost needed, capped at max_gain
+                gain_db = min(max(error_db, -10.0), self.max_gain_db)
+                target_gain = 10 ** (gain_db / 20.0)
             
-            # Gate logic
-            if self.gate_envelope < self.noise_gate_threshold:
-                # Apply strong attenuation for silence
-                gate_gain = max(0.0, (self.gate_envelope / self.noise_gate_threshold) ** 2)
-                samples = samples * gate_gain
-                
-                # If effectively silent, return zeros to save bandwidth/processing on API side
-                if gate_gain < 0.05:
-                    return bytes(len(audio_data)) # Return silence
-            
-            # 3. AGC (Automatic Gain Control)
-            # Only adjust gain if we have significant signal (above noise floor)
-            if rms > self.noise_gate_threshold * 1.5:
-                target_gain = self.target_level / (rms + 1.0)
-                target_gain = min(target_gain, self.max_gain)
-                target_gain = max(target_gain, 1.0)  # Don't attenuate, only boost
-                
-                # Smoothly adjust current gain
-                self.current_gain = self.current_gain * (1 - self.agc_speed) + target_gain * self.agc_speed
+            # Smooth gain application (Attack/Release)
+            if target_gain > self.current_gain:
+                self.current_gain = (1 - self.alpha_attack) * self.current_gain + self.alpha_attack * target_gain
             else:
-                # Decay gain slowly during silence
-                self.current_gain = max(1.0, self.current_gain * 0.98)
-            
-            # Apply gain
+                self.current_gain = (1 - self.alpha_release) * self.current_gain + self.alpha_release * target_gain
+                
+            # Apply Gain
             samples = samples * self.current_gain
             
-            # 4. Soft Clipping / Limiting
-            # Simple hard limit to preventing wrapping
-            np.clip(samples, -32767, 32767, out=samples)
+            # --- STEP 3: Soft Limiter ---
+            # Ensure we never wrap around (digital clipping distortion)
+            # Tanh gives a nice analog saturation sound instead of harsh digital clipping
+            samples = np.tanh(samples) 
             
             # Convert back to int16
-            processed_data = samples.astype(np.int16).tobytes()
+            processed_data = (samples * 32767).astype(np.int16).tobytes()
             return processed_data
             
         except Exception as e:
@@ -2368,9 +2366,10 @@ class RTPSession:
         # Crossfade buffer for smooth transitions
         self.last_audio_tail = b""  # Last 10ms of previous chunk
         
-        # Initialize audio preprocessor for incoming audio
+        # Initialize new audio preprocessor
+        # We no longer rely on the old simple AGC/Gate logic
         self.audio_preprocessor = AudioPreprocessor(sample_rate=8000)
-        logger.info(f"🎵 Audio preprocessor initialized for session {session_id} - noise filtering enabled")
+        logger.info(f"🎵 Audio preprocessor initialized for session {session_id} - Bandpass+Compression enabled")
         
         # Voice Activity Detection for timeout monitoring
         self.vad = VoiceActivityDetector(sample_rate=8000)
@@ -5764,7 +5763,7 @@ class WindowsVoiceSession:
         """
         Input: 16-bit mono PCM at 8000 Hz.
         Output: 16-bit mono PCM at 16000 Hz for the model.
-        Uses high-quality polyphase resampling instead of simple repetition.
+        Uses high-quality polyphase resampling.
         """
         try:
             # Convert bytes to numpy array
@@ -5772,16 +5771,18 @@ class WindowsVoiceSession:
             
             # 8kHz -> 16kHz (2x upsample)
             # Use resample_poly for high-quality upsampling
+            # This preserves formants better than linear interpolation
             out_array = resample_poly(in_array, 2, 1) # Up=2, Down=1
             
-            # Convert back to int16
+            # Convert back to int16 with clipping check
             out_array = np.clip(out_array, -32768, 32767).astype(np.int16)
             
             # Convert back to bytes
             return out_array.tobytes()
         except Exception as e:
-            logger.warning(f"Resample poly (8k->16k) failed: {e}, falling back to sample repetition")
-            # Fallback to the original fast (but low-quality) method
+            logger.warning(f"Resample poly (8k->16k) failed: {e}")
+            # Fallback: if scipy fails, use simple doubling but log it
+            # We want to avoid this path if possible
             in_array = np.frombuffer(audio_data, dtype=np.int16)
             out_array = np.repeat(in_array, 2)
             return out_array.tobytes()
