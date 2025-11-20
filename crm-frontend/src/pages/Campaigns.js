@@ -194,7 +194,7 @@ function Campaigns() {
   };
 
   return (
-    <Box className="fade-in">
+    <Box className="fade-in" sx={{ height: 'calc(100vh - 100px)', display: 'flex', flexDirection: 'column', overflow: 'auto' }}>
       <SubscriptionBanner />
       {loading ? (
         <Box display="flex" justifyContent="center" p={4}>
@@ -207,8 +207,8 @@ function Campaigns() {
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            minHeight: "60vh",
-            py: 8,
+            flex: 1,
+            py: 4,
           }}
         >
           <Box
@@ -428,9 +428,9 @@ function Campaigns() {
         </Box>
       ) : (
         /* Campaigns Grid with Template Card */
-        <Grid container spacing={3}>
+        <Grid container spacing={3} sx={{ pb: 3 }}>
           {/* Add Campaign Template Card */}
-          <Grid item xs={4} md={3} lg={2}>
+          <Grid item xs={12} sm={6} md={4} lg={3}>
             <Tooltip
               title={
                 !hasActiveSubscription()
@@ -444,8 +444,7 @@ function Campaigns() {
                 }
                 className="glass-effect ios-card hover-lift"
                 sx={{
-                  height: "100%",
-                  minHeight: 120,
+                  height: 180,
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
@@ -476,8 +475,8 @@ function Campaigns() {
                   <Box
                     className="hover-rotate"
                     sx={{
-                      width: 35,
-                      height: 35,
+                      width: 50,
+                      height: 50,
                       borderRadius: "50%",
                       background:
                         "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
@@ -487,18 +486,18 @@ function Campaigns() {
                       transition: "all 0.3s ease",
                     }}
                   >
-                    <AddIcon sx={{ fontSize: 20, color: "white" }} />
+                    <AddIcon sx={{ fontSize: 28, color: "white" }} />
                   </Box>
                   <Typography
-                    variant="body2"
-                    fontWeight={600}
+                    variant="body1"
+                    fontWeight={700}
                     sx={{
                       background:
                         "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
                       WebkitBackgroundClip: "text",
                       WebkitTextFillColor: "transparent",
                       backgroundClip: "text",
-                      fontSize: "0.75rem",
+                      fontSize: "0.95rem",
                     }}
                   >
                     New Campaign
@@ -510,12 +509,13 @@ function Campaigns() {
 
           {/* Existing Campaigns */}
           {campaigns.map((campaign, index) => (
-            <Grid item xs={4} md={3} lg={2} key={campaign.id}>
+            <Grid item xs={12} sm={6} md={4} lg={3} key={campaign.id}>
               <Card
                 className="glass-effect ios-card"
                 sx={{
-                  height: "100%",
-                  minHeight: 120,
+                  height: 180,
+                  display: 'flex',
+                  flexDirection: 'column',
                   animation: "springIn 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)",
                   animationDelay: `${index * 0.1}s`,
                   animationFillMode: "both",
@@ -526,15 +526,15 @@ function Campaigns() {
                   },
                 }}
               >
-                <CardContent sx={{ p: 1.5 }}>
+                <CardContent sx={{ p: 2, flex: 1, display: 'flex', flexDirection: 'column' }}>
                   <Box
                     display="flex"
                     justifyContent="space-between"
-                    alignItems="center"
-                    mb={1}
+                    alignItems="flex-start"
+                    mb={1.5}
                   >
                     <Typography
-                      variant="body2"
+                      variant="h6"
                       component="div"
                       fontWeight={700}
                       noWrap
@@ -544,7 +544,7 @@ function Campaigns() {
                         WebkitBackgroundClip: "text",
                         WebkitTextFillColor: "transparent",
                         backgroundClip: "text",
-                        fontSize: "0.875rem",
+                        fontSize: "1rem",
                         maxWidth: "70%",
                       }}
                     >
@@ -560,22 +560,22 @@ function Campaigns() {
                         backdropFilter: "blur(10px)",
                         transition:
                           "all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
-                        height: 18,
-                        fontSize: "0.65rem",
+                        height: 22,
+                        fontSize: "0.7rem",
                       }}
                     />
                   </Box>
 
                   {/* Show owner name for admins */}
                   {isAdmin() && campaign.owner_name && (
-                    <Box mb={1}>
+                    <Box mb={1.5}>
                       <Chip
-                        icon={<PersonIcon sx={{ fontSize: 12 }} />}
+                        icon={<PersonIcon sx={{ fontSize: 14 }} />}
                         label={campaign.owner_name}
                         size="small"
                         sx={{
-                          height: 20,
-                          fontSize: "0.65rem",
+                          height: 24,
+                          fontSize: "0.7rem",
                           fontWeight: 600,
                           bgcolor: "rgba(200, 92, 60, 0.08)",
                           color: "primary.main",
@@ -587,33 +587,36 @@ function Campaigns() {
                     </Box>
                   )}
 
-                  <Box mb={1}>
+                  <Box flex={1} display="flex" alignItems="flex-end">
                     <Box
                       display="flex"
                       alignItems="center"
                       justifyContent="space-between"
+                      width="100%"
                       sx={{
-                        p: 0.75,
-                        borderRadius: 1,
+                        p: 1,
+                        borderRadius: 1.5,
                         background: "rgba(248, 243, 239, 0.5)",
                         backdropFilter: "blur(10px)",
                       }}
                     >
-                      <PeopleIcon
-                        sx={{ fontSize: 14, mr: 0.5, color: "primary.main" }}
-                      />
-                      <Typography variant="caption" fontWeight={500}>
-                        {campaign.total_leads}
-                      </Typography>
+                      <Box display="flex" alignItems="center" gap={0.5}>
+                        <PeopleIcon
+                          sx={{ fontSize: 18, color: "primary.main" }}
+                        />
+                        <Typography variant="body2" fontWeight={600}>
+                          {campaign.total_leads} leads
+                        </Typography>
+                      </Box>
                     </Box>
                   </Box>
                 </CardContent>
 
-                <CardActions sx={{ p: 1, pt: 0, justifyContent: "center" }}>
+                <CardActions sx={{ p: 1.5, pt: 0, justifyContent: "center", gap: 1 }}>
                   {campaign.status === "draft" ||
                   campaign.status === "ready" ? (
                     <IconButton
-                      size="small"
+                      size="medium"
                       onClick={() => handleStartCampaign(campaign.id)}
                       disabled={campaign.total_leads === 0}
                       sx={{
@@ -623,11 +626,11 @@ function Campaigns() {
                         },
                       }}
                     >
-                      <PlayIcon sx={{ fontSize: 16 }} />
+                      <PlayIcon sx={{ fontSize: 20 }} />
                     </IconButton>
                   ) : campaign.status === "running" ? (
                     <IconButton
-                      size="small"
+                      size="medium"
                       onClick={() => handlePauseCampaign(campaign.id)}
                       sx={{
                         color: "warning.main",
@@ -636,11 +639,11 @@ function Campaigns() {
                         },
                       }}
                     >
-                      <PauseIcon sx={{ fontSize: 16 }} />
+                      <PauseIcon sx={{ fontSize: 20 }} />
                     </IconButton>
                   ) : campaign.status === "paused" ? (
                     <IconButton
-                      size="small"
+                      size="medium"
                       onClick={() => handleStartCampaign(campaign.id)}
                       sx={{
                         color: "success.main",
@@ -649,12 +652,12 @@ function Campaigns() {
                         },
                       }}
                     >
-                      <PlayIcon sx={{ fontSize: 16 }} />
+                      <PlayIcon sx={{ fontSize: 20 }} />
                     </IconButton>
                   ) : null}
 
                   <IconButton
-                    size="small"
+                    size="medium"
                     onClick={() => handleOpenEditDialog(campaign)}
                     sx={{
                       color: "primary.main",
@@ -667,7 +670,7 @@ function Campaigns() {
                   </IconButton>
 
                   <IconButton
-                    size="small"
+                    size="medium"
                     onClick={() => navigate(`/campaigns/${campaign.id}`)}
                     sx={{
                       color: "primary.main",

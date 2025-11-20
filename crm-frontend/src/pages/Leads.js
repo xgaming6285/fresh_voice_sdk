@@ -506,18 +506,21 @@ Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
   };
 
   return (
-    <Box className="fade-in">
+    <Box className="fade-in" sx={{ height: 'calc(100vh - 100px)', display: 'flex', flexDirection: 'column' }}>
       <SubscriptionBanner />
       <Paper
         className="glass-effect ios-blur-container"
         sx={{
-          height: 600,
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
           width: "100%",
           borderRadius: 3,
           overflow: "hidden",
           position: "relative",
           "& .MuiDataGrid-root": {
             border: "none",
+            flex: 1,
           },
           "& .MuiDataGrid-main": {
             overflow: "auto",

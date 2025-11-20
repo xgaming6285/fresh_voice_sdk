@@ -438,7 +438,7 @@ function Sessions() {
   ];
 
   return (
-    <Box className="fade-in">
+    <Box className="fade-in" sx={{ height: 'calc(100vh - 100px)', display: 'flex', flexDirection: 'column' }}>
       {/* Bulk Processing Progress */}
       {bulkProcessing && (
         <Paper
@@ -594,7 +594,9 @@ function Sessions() {
       <Paper
         className="glass-effect ios-blur-container"
         sx={{
-          mb: 4,
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
           overflow: "hidden",
           animation: "springIn 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)",
           animationDelay: "0.1s",
@@ -664,10 +666,13 @@ function Sessions() {
         <DataGrid
           rows={sessions}
           columns={columns}
-          pageSize={10}
-          rowsPerPageOptions={[10, 25, 50]}
+          initialState={{
+            pagination: {
+              paginationModel: { pageSize: 25 },
+            },
+          }}
+          pageSizeOptions={[10, 25, 50, 100]}
           loading={loading}
-          autoHeight
           checkboxSelection
           disableRowSelectionOnClick
           onRowSelectionModelChange={(newSelection) => {
@@ -675,10 +680,12 @@ function Sessions() {
           }}
           rowSelectionModel={selectedRows}
           sx={{
+            flex: 1,
+            border: 'none',
             "& .MuiDataGrid-cell": {
-              borderBottom: "3px solid rgba(224, 224, 224, 0.8)",
-              borderRight: "1px solid rgba(224, 224, 224, 0.3)",
+              borderBottom: "1px solid rgba(224, 224, 224, 0.15)",
               fontSize: "0.875rem",
+              py: 1.5,
               "&:focus": {
                 outline: "none",
               },
@@ -699,30 +706,35 @@ function Sessions() {
               padding: "4px",
             },
             "& .MuiDataGrid-columnHeaders": {
-              backgroundColor: "#F3B3F3",
+              backgroundColor: "rgba(248, 243, 239, 0.95)",
               backdropFilter: "blur(10px)",
-              borderBottom: "2px solid rgba(238, 130, 238, 0.5)",
+              borderBottom: "2px solid rgba(200, 92, 60, 0.2)",
               "& .MuiDataGrid-columnHeaderTitle": {
                 fontWeight: 700,
-                fontSize: "0.875rem",
+                fontSize: "0.8125rem",
+                letterSpacing: "0.5px",
+                textTransform: "uppercase",
               },
             },
             "& .MuiDataGrid-columnSeparator": {
-              visibility: "visible !important",
-              opacity: "1 !important",
-              color: "rgba(255, 255, 255, 0.8)",
+              visibility: "hidden",
             },
             "& .MuiDataGrid-footerContainer": {
-              borderTop: "2px solid rgba(200, 92, 60, 0.15)",
-              backgroundColor: "rgba(248, 243, 239, 0.8)",
+              borderTop: "2px solid rgba(200, 92, 60, 0.2)",
+              backgroundColor: "rgba(248, 243, 239, 0.95)",
               backdropFilter: "blur(10px)",
             },
             "& .MuiDataGrid-row": {
-              backgroundColor: "rgba(255, 255, 255, 0.6)",
-              "&:hover": {
-                backgroundColor: "rgba(200, 92, 60, 0.08)",
+              transition: "all 0.2s ease",
+              "&:nth-of-type(even)": {
+                backgroundColor: "rgba(248, 243, 239, 0.3)",
               },
-              cursor: "default",
+              "&:hover": {
+                backgroundColor: "rgba(200, 92, 60, 0.06)",
+                transform: "translateX(2px)",
+                boxShadow: "0 2px 8px rgba(200, 92, 60, 0.1)",
+              },
+              cursor: "pointer",
             },
           }}
           slotProps={{
