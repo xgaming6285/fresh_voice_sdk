@@ -2497,18 +2497,15 @@ class RTPSession:
             
             # Process audio normally
             try:
-                # --- FIX START: BYPASS HEAVY LOCAL PROCESSING ---
-                # The local VAD/Noise Gate was blocking the thread and occasionally muting the user.
-                # Gemini has excellent server-side noise cancellation. We pass raw audio to reduce latency.
-                
-                # processed_pcm = self.audio_preprocessor.process_audio(pcm_data) # <--- OLD LINE (Disabled)
-                processed_pcm = pcm_data  # <--- NEW LINE (Pass-through)
+                # --- RESTORED LOCAL PROCESSING ---
+                # Re-enabling Noise Gate as it is critical for quality.
+                processed_pcm = self.audio_preprocessor.process_audio(pcm_data)
+                # processed_pcm = pcm_data  # <--- BYPASS DISABLED
 
                 # Log once to show audio is flowing (keep existing logic)
                 if not hasattr(self, '_audio_packet_count'):
                     self._audio_packet_count = 0
-                    logger.info(f"🎤 Full-duplex streaming active - RAW audio sent to Gemini (Local DSP bypassed)")
-                # --- FIX END ---
+                    logger.info(f"🎤 Full-duplex streaming active - Processed audio sent to Gemini")
                     
             except Exception as preprocess_error:
                 logger.warning(f"⚠️ Audio preprocessing failed, using original: {preprocess_error}")
@@ -3026,21 +3023,23 @@ class RTPSession:
                     self.audio_output_active = False
                     self.assistant_stop_time = time.time()
                     logger.debug(f"🔊 Assistant stopped speaking - enabling grace period")
-                    # Clear any buffered audio to prevent processing stale data
-                    with self.buffer_lock:
-                        if self.audio_buffer:
-                            logger.debug(f"🧹 Clearing {len(self.audio_buffer)} bytes of buffered audio")
-                            self.audio_buffer = b""
-                    # Also clear the input queue
-                    try:
-                        cleared_count = 0
-                        while not self.audio_input_queue.empty():
-                            self.audio_input_queue.get_nowait()
-                            cleared_count += 1
-                        if cleared_count > 0:
-                            logger.debug(f"🧹 Cleared {cleared_count} queued audio chunks")
-                    except:
-                        pass
+                    # DISABLED QUEUE CLEARING: This was deleting user speech if they spoke/interrupted 
+                    # right as the assistant stopped. We rely on Gemini's server-side echo cancellation now.
+                    
+                    # with self.buffer_lock:
+                    #     if self.audio_buffer:
+                    #         logger.debug(f"🧹 Clearing {len(self.audio_buffer)} bytes of buffered audio")
+                    #         self.audio_buffer = b""
+                    # # Also clear the input queue
+                    # try:
+                    #     cleared_count = 0
+                    #     while not self.audio_input_queue.empty():
+                    #         self.audio_input_queue.get_nowait()
+                    #         cleared_count += 1
+                    #     if cleared_count > 0:
+                    #         logger.debug(f"🧹 Cleared {cleared_count} queued audio chunks")
+                    # except:
+                    #     pass
                 # Reset the pacer to avoid building up "missed" time
                 next_packet_time = time.perf_counter() + ptime_seconds
                 continue
