@@ -317,89 +317,93 @@ class GoodbyeDetector:
 
 class AudioPreprocessor:
     """
-    Advanced Audio Preprocessing Pipeline:
-    1. Bandpass Filter (300-3400Hz): Removes rumble and hiss.
-    2. Dynamic Range Compression: Boosts low voices, limits loud voices.
-    3. Normalization: Ensures consistent signal level for Gemini.
+    Advanced Audio Preprocessing Pipeline for AI:
+    1. Noise Gate: Silences background hiss/static so Gemini doesn't hallucinate words.
+    2. Bandpass Filter: Removes 50Hz hum and high-pitch whine.
+    3. Smart Compressor: Boosts voice volume without boosting noise.
     """
     
     def __init__(self, sample_rate: int = 8000):
         self.sample_rate = sample_rate
         
-        # 1. Bandpass Filter State (Telephony standard: 300Hz - 3400Hz)
-        # Using SOS (Second-Order Sections) for stability with int16
+        # 1. Bandpass Filter (300Hz - 3400Hz)
+        # Removes power line hum and high-freq noise that confuses AI
         self.sos = butter(4, [300, 3400], btype='bandpass', fs=sample_rate, output='sos')
         self.filter_state = sosfilt_zi(self.sos)
         
-        # 2. Dynamics Processing (Compressor/AGC)
-        self.target_level_db = -20.0  # Target RMS in dB
-        self.max_gain_db = 15.0       # Max boost for quiet voices (Aggressive boost)
-        self.current_gain = 1.0
-        self.alpha_attack = 0.1       # Fast attack
-        self.alpha_release = 0.05     # Slower release
+        # 2. Noise Gate Settings (CRITICAL FOR AI)
+        # If audio is quieter than this, we assume it's noise and mute it.
+        # GSM lines are usually around -50dB noise floor.
+        self.noise_gate_threshold_db = -45.0 
+        self.attack_time = 0.02  # Open gate quickly (20ms)
+        self.release_time = 0.20 # Close gate slowly (200ms) to not cut off word ends
+        self.gate_envelope = 0.0
         
-        logger.info(f"🎵 Advanced AudioPreprocessor initialized (Bandpass 300-3400Hz + Dynamics Compressor)")
+        # 3. Dynamics (Compressor)
+        self.target_level_db = -18.0  # Target volume for AI
+        self.max_gain_db = 12.0       # Don't boost more than this (prevents screaming static)
+        self.current_gain = 1.0
+        
+        logger.info(f"🎵 AI AudioPreprocessor initialized (Noise Gate @ {self.noise_gate_threshold_db}dB)")
     
     def process_audio(self, audio_data: bytes) -> bytes:
-        """
-        Process audio: Filter -> Compress -> Limit -> Output
-        """
         try:
             if not audio_data:
                 return b""
                 
-            # Convert to float32 numpy array for processing (-1.0 to 1.0 range)
-            # We strictly normalize to float for consistent DSP math
+            # Convert to float32 (-1.0 to 1.0)
             samples = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
             
             if len(samples) == 0:
                 return audio_data
                 
-            # --- STEP 1: Bandpass Filtering (Remove Rumble & Hiss) ---
-            # This removes DC offset automatically and cleans up the signal
+            # --- STEP 1: Bandpass Filtering ---
+            # Removes low rumble and high hiss immediately
             samples, self.filter_state = sosfilt(self.sos, samples, zi=self.filter_state)
             
-            # --- STEP 2: RMS Calculation & Dynamics ---
-            # Calculate RMS of current chunk
+            # --- STEP 2: RMS & Noise Gate Calculation ---
             rms = np.sqrt(np.mean(samples ** 2))
-            rms_db = 20 * np.log10(rms + 1e-9)  # Avoid log(0)
+            rms_db = 20 * np.log10(rms + 1e-9)
             
-            # Calculate desired gain
-            # If signal is quiet (e.g., -40dB), we want to boost it towards target (-20dB)
-            # If signal is loud (e.g., -10dB), we want to attenuate it
-            
-            error_db = self.target_level_db - rms_db
-            
-            # Soft Knee Logic:
-            # If it's absolute silence (likely < -60dB), don't boost noise
-            if rms_db < -60.0:
-                target_gain = 1.0 # Don't boost silence
+            # Determine if this chunk is "Speech" or "Noise"
+            if rms_db > self.noise_gate_threshold_db:
+                target_envelope = 1.0 # Open gate
+                alpha = np.exp(-1.0 / (self.sample_rate * 0.020 * self.attack_time)) # Fast attack
             else:
-                # Calculate boost needed, capped at max_gain
-                gain_db = min(max(error_db, -10.0), self.max_gain_db)
-                target_gain = 10 ** (gain_db / 20.0)
-            
-            # Smooth gain application (Attack/Release)
-            if target_gain > self.current_gain:
-                self.current_gain = (1 - self.alpha_attack) * self.current_gain + self.alpha_attack * target_gain
-            else:
-                self.current_gain = (1 - self.alpha_release) * self.current_gain + self.alpha_release * target_gain
+                target_envelope = 0.0 # Close gate
+                alpha = np.exp(-1.0 / (self.sample_rate * 0.020 * self.release_time)) # Slow release
                 
-            # Apply Gain
+            # Smooth the gate envelope
+            self.gate_envelope = alpha * self.gate_envelope + (1 - alpha) * target_envelope
+            
+            # Apply Noise Gate (Soft Mute)
+            # If envelope is 0 (noise), samples become 0. If 1 (speech), they pass.
+            samples = samples * self.gate_envelope
+            
+            # --- STEP 3: Smart Gain (Compressor) ---
+            # ONLY calculate gain if the gate is open (we are detecting speech)
+            if self.gate_envelope > 0.1:
+                error_db = self.target_level_db - rms_db
+                # Cap the boost. If signal is -40dB, we boost, but max +12dB.
+                gain_db = min(max(error_db, -5.0), self.max_gain_db)
+                target_gain = 10 ** (gain_db / 20.0)
+            else:
+                # If noise, reset gain to unity (don't boost silence)
+                target_gain = 1.0
+            
+            # Smooth gain application
+            self.current_gain = 0.95 * self.current_gain + 0.05 * target_gain
             samples = samples * self.current_gain
             
-            # --- STEP 3: Soft Limiter ---
-            # Ensure we never wrap around (digital clipping distortion)
-            # Tanh gives a nice analog saturation sound instead of harsh digital clipping
+            # --- STEP 4: Limiter ---
+            # Prevent digital distortion
             samples = np.tanh(samples) 
             
-            # Convert back to int16
-            processed_data = (samples * 32767).astype(np.int16).tobytes()
-            return processed_data
+            return (samples * 32767).astype(np.int16).tobytes()
             
         except Exception as e:
             logger.error(f"Error in AudioPreprocessor: {e}")
-            return audio_data  # Fallback to original
+            return audio_data
 
 # Import our existing voice agent components
 from main import SessionLogger, SEND_SAMPLE_RATE, RECEIVE_SAMPLE_RATE, FORMAT, CHANNELS
@@ -989,6 +993,13 @@ IMPORTANT:
         
         system_text += f"Always maintain professionalism and use formal address ({formal_address}). Speak clearly, enthusiastically, and with confidence."
         
+        # Add technical context about audio quality
+        system_text += " You are speaking over a legacy telephone line. "
+        system_text += "The audio quality may be low, muffled, or contain static. "
+        system_text += "If you cannot clearly understand what the user said, DO NOT GUESS. "
+        system_text += "Instead, politely ask them to repeat themselves or ask 'I'm sorry, the connection is bad, could you say that again?' "
+        system_text += "Do not hallucinate answers based on static noise."
+        
         # Add additional prompt if provided
         if additional_prompt:
             system_text += f" Additional instructions: {additional_prompt}"
@@ -1095,6 +1106,13 @@ IMPORTANT:
         
         # Critical: reduce excessive questioning
         system_text += "ВАЖНО ЗА СТИЛ: Давайте повече ИНФОРМАЦИЯ и по-малко ВЪПРОСИ. Нека клиентът задава въпросите. Вие отговаряйте кратко и ясно (2-3 изречения). Максимум 1 въпрос на всеки 3-4 изречения. Говорете естествено, НЕ като робот."
+        
+        # Add technical context about audio quality (in Bulgarian)
+        system_text += " Вие говорите по остаряла телефонна линия. "
+        system_text += "Качеството на аудиото може да е ниско, приглушено или със статични шумове. "
+        system_text += "Ако не можете ясно да разберете какво е казал потребителят, НЕ отгатвайте. "
+        system_text += "Вместо това учтиво го помолете да повтори или попитайте 'Извинете, връзката е лоша, можете ли да повторите?' "
+        system_text += "Не измисляйте отговори въз основа на статичен шум."
         
         # Add additional prompt if provided
         if additional_prompt:
@@ -1230,6 +1248,13 @@ IMPORTANT:
             system_text += "Handle objections persistently. Push back on concerns and maintain strong sales pressure. "
         
         system_text += f"Always maintain professionalism and use formal address ({formal_address}). Speak clearly, enthusiastically, and with confidence."
+        
+        # Add technical context about audio quality
+        system_text += " You are speaking over a legacy telephone line. "
+        system_text += "The audio quality may be low, muffled, or contain static. "
+        system_text += "If you cannot clearly understand what the user said, DO NOT GUESS. "
+        system_text += "Instead, politely ask them to repeat themselves or ask 'I'm sorry, the connection is bad, could you say that again?' "
+        system_text += "Do not hallucinate answers based on static noise."
         
         # Add additional prompt if provided
         if additional_prompt:
@@ -2199,6 +2224,16 @@ class RTPServer:
         """Start RTP server"""
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            
+            # --- FIX START: INCREASE SOCKET BUFFER ---
+            # Increase buffer to 2MB to prevent packet drops during thread contention
+            try:
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2 * 1024 * 1024)
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2 * 1024 * 1024)
+            except Exception as e:
+                logger.warning(f"Could not increase socket buffer: {e}")
+            # --- FIX END ---
+
             self.socket.bind((self.local_ip, self.rtp_port))
             self.running = True
             
@@ -2458,15 +2493,18 @@ class RTPSession:
             
             # Process audio normally
             try:
-                # processed_pcm = pcm_data  # Skip preprocessing for now
+                # --- FIX START: BYPASS HEAVY LOCAL PROCESSING ---
+                # The local VAD/Noise Gate was blocking the thread and occasionally muting the user.
+                # Gemini has excellent server-side noise cancellation. We pass raw audio to reduce latency.
                 
-                # Use our improved preprocessor
-                processed_pcm = self.audio_preprocessor.process_audio(pcm_data)
-                
-                # Log once to show audio is flowing
+                # processed_pcm = self.audio_preprocessor.process_audio(pcm_data) # <--- OLD LINE (Disabled)
+                processed_pcm = pcm_data  # <--- NEW LINE (Pass-through)
+
+                # Log once to show audio is flowing (keep existing logic)
                 if not hasattr(self, '_audio_packet_count'):
                     self._audio_packet_count = 0
-                    logger.info(f"🎤 Full-duplex streaming active - all user audio sent to Gemini in real-time")
+                    logger.info(f"🎤 Full-duplex streaming active - RAW audio sent to Gemini (Local DSP bypassed)")
+                # --- FIX END ---
                     
             except Exception as preprocess_error:
                 logger.warning(f"⚠️ Audio preprocessing failed, using original: {preprocess_error}")
@@ -3009,27 +3047,20 @@ class RTPSession:
             # Transmit the packet
             self._send_rtp(payload)
             
-            # Calculate the precise time for the next packet
+            # --- FIX START: PREVENT CATCH-UP LOOP ---
             next_packet_time += ptime_seconds
-            
-            # Calculate how long to sleep
-            sleep_duration = next_packet_time - time.perf_counter()
+            current_time = time.perf_counter()
+            sleep_duration = next_packet_time - current_time
             
             if sleep_duration > 0:
-                # We have time to spare, sleep for the calculated duration
                 time.sleep(sleep_duration)
             else:
-                # We are running late (loop took too long or sleep overslept)
-                # Do not sleep; proceed immediately to send the next packet
-                
-                # If we're severely late (by more than 1.5 packet times), 
-                # reset the timer to prevent a massive burst of packets.
-                if sleep_duration < -(ptime_seconds * 1.5):
-                    # Only log occasionally to avoid spam
-                    if not hasattr(self, '_last_lag_warning') or (time.time() - self._last_lag_warning) > 2.0:
-                        logger.warning(f"RTP output queue running late, resetting pacer (lag: {sleep_duration:.3f}s)")
-                        self._last_lag_warning = time.time()
-                    next_packet_time = time.perf_counter() + ptime_seconds
+                # We are lagging.
+                # If we are behind by more than 1 packet (20ms), do NOT try to catch up.
+                # Just reset the clock. This prevents the "Running Late" spam/CPU hog.
+                if sleep_duration < -0.020:
+                    next_packet_time = current_time + ptime_seconds
+            # --- FIX END ---
     
     def _send_rtp(self, payload: bytes):
         """Send RTP packet with payload"""
@@ -5728,26 +5759,22 @@ class WindowsVoiceSession:
         """
         Input: 16-bit mono PCM at 8000 Hz.
         Output: 16-bit mono PCM at 24000 Hz for the model.
-        Uses high-quality polyphase resampling.
         """
         try:
-            # Convert bytes to numpy array
-            in_array = np.frombuffer(audio_data, dtype=np.int16)
+            # Convert bytes to numpy array (float for precision)
+            in_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
             
             # 8kHz -> 24kHz (3x upsample)
-            # Use resample_poly for high-quality upsampling
-            # This preserves formants better than linear interpolation
-            out_array = resample_poly(in_array, 3, 1) # Up=3, Down=1
+            # Use a Kaiser window for better anti-aliasing than standard resampling
+            out_array = resample_poly(in_array, 3, 1, window=('kaiser', 5.0))
             
             # Convert back to int16 with clipping check
             out_array = np.clip(out_array, -32768, 32767).astype(np.int16)
             
-            # Convert back to bytes
             return out_array.tobytes()
         except Exception as e:
-            logger.warning(f"Resample poly (8k->24k) failed: {e}")
-            # Fallback: if scipy fails, use simple repetition but log it
-            # We want to avoid this path if possible
+            logger.warning(f"Resample poly failed: {e}")
+            # Fallback
             in_array = np.frombuffer(audio_data, dtype=np.int16)
             out_array = np.repeat(in_array, 3)
             return out_array.tobytes()
