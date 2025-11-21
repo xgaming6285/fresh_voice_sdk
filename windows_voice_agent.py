@@ -2404,6 +2404,11 @@ class RTPSession:
         # Crossfade buffer for smooth transitions
         self.last_audio_tail = b""  # Last 10ms of previous chunk
         
+        # Jitter buffer for smooth playback
+        self.jitter_buffer = b""
+        self.playback_started = False
+        self.jitter_buffer_threshold = 2400  # 150ms at 8kHz 16-bit (0.15 * 8000 * 2)
+
         # Initialize new audio preprocessor
         # We no longer rely on the old simple AGC/Gate logic
         self.audio_preprocessor = AudioPreprocessor(sample_rate=8000)
@@ -2524,11 +2529,12 @@ class RTPSession:
             with self.buffer_lock:
                 self.audio_buffer += processed_pcm
                 
-                # ⚡ Send in larger chunks to match JS client behavior (approx 170ms)
-                # 170ms at 8kHz = 1360 samples * 2 bytes = 2720 bytes
-                # JS client uses 8192 bytes at 24kHz (~170ms).
-                # Larger chunks reduce packet overhead and match the stability of the JS implementation.
-                min_chunk = 2720  # Increased to ~170ms to match JS client buffering behavior
+                # ⚡ OPTIMIZED: Send in smaller chunks (20-40ms) for lower latency
+                # 20ms at 8kHz = 160 samples * 2 bytes = 320 bytes
+                # 40ms at 8kHz = 320 samples * 2 bytes = 640 bytes
+                # User requested 20-40ms frames. 320 bytes is 20ms.
+                min_chunk = 320 
+                
                 if len(self.audio_buffer) >= min_chunk:
                     chunk_to_send = self.audio_buffer
                     self.audio_buffer = b""  # Clear buffer
@@ -2656,6 +2662,28 @@ class RTPSession:
                     logger.error(f"Error sending audio to Gemini: {send_err}")
         except Exception as e:
             logger.error(f"Error in _send_audio_to_gemini: {e}")
+
+    def buffer_and_play(self, pcm_data: bytes):
+        """
+        Buffer audio before playback to ensure smoothness (Jitter Buffer).
+        
+        Gemini 24kHz -> Resampled 8kHz -> Jitter Buffer -> Playback Queue
+        """
+        # If we are already playing, just send directly to the output queue
+        if self.playback_started:
+             self._send_audio_immediate(pcm_data)
+             return
+
+        # Append to buffer
+        self.jitter_buffer += pcm_data
+        
+        # Check if we have enough to start (150ms)
+        if len(self.jitter_buffer) >= self.jitter_buffer_threshold:
+            logger.info(f"🌊 Jitter buffer full ({len(self.jitter_buffer)} bytes) - Starting playback")
+            self.playback_started = True
+            # Flush the buffer to the output queue
+            self._send_audio_immediate(self.jitter_buffer)
+            self.jitter_buffer = b""
             
     async def _continuous_receive_responses(self):
         """Continuously receive responses from Gemini in a separate task"""
@@ -2725,14 +2753,14 @@ class RTPSession:
                                 
                                 # Convert from 24kHz to 8kHz telephony format
                                 telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_bytes)
-                                # Send immediately in small chunks for lowest latency
-                                self._send_audio_immediate(telephony_audio)
+                                # Buffer and play for smoothness
+                                self.buffer_and_play(telephony_audio)
                             elif isinstance(audio_bytes, str):
                                 try:
                                     # Decode base64 if needed
                                     decoded = base64.b64decode(audio_bytes)
                                     telephony_audio = self.voice_session.convert_gemini_to_telephony(decoded)
-                                    self._send_audio_immediate(telephony_audio)
+                                    self.buffer_and_play(telephony_audio)
                                 except:
                                     pass
                         
@@ -2779,6 +2807,10 @@ class RTPSession:
                                     
                                     # ACTIVATE KILL SWITCH
                                     self.is_interrupted = True
+                                    
+                                    # Clear Jitter Buffer and Reset Playback
+                                    self.playback_started = False
+                                    self.jitter_buffer = b""
                                     
                                     self._cancel_hangup()
                                     self.audio_output_active = False
