@@ -2225,11 +2225,14 @@ class RTPServer:
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             
-            # --- FIX START: INCREASE SOCKET BUFFER ---
-            # Increase buffer to 2MB to prevent packet drops during thread contention
+            # --- FIX START: OPTIMIZED SOCKET BUFFER ---
+            # Low latency settings: Keep Receive buffer large for safety, 
+            # but drastically REDUCE Send buffer to prevent "ghost audio" after interruption.
             try:
                 self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2 * 1024 * 1024)
-                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2 * 1024 * 1024)
+                # Set Send buffer to ~1 second max (8KB/s * 1s = ~8192 bytes). 
+                # 16384 gives us a safe margin without buffering seconds of audio.
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16 * 1024)
             except Exception as e:
                 logger.warning(f"Could not increase socket buffer: {e}")
             # --- FIX END ---
@@ -2413,6 +2416,7 @@ class RTPSession:
         self.timeout_monitor_thread = None
         self.timeout_monitoring = True
         self._cleanup_lock = threading.Lock()  # Prevent concurrent cleanup
+        self.is_interrupted = False  # <--- ADD THIS
         self._cleanup_done = False  # Track if cleanup has been performed
         logger.info(f"⏱️ Voice activity timeout monitoring enabled: {self.voice_timeout_seconds}s (user turn only)")
         
@@ -2775,28 +2779,20 @@ class RTPSession:
                                 # 3) ⚡ INSTANT INTERRUPTION HANDLING - stop model speech immediately
                                 if hasattr(sc, "interrupted") and sc.interrupted:
                                     logger.info(f"🔄 User interrupted model in session {self.session_id} - stopping speech immediately!")
+                                    
+                                    # ACTIVATE KILL SWITCH
+                                    self.is_interrupted = True
+                                    
                                     self._cancel_hangup()
-                                    
-                                    # Clear output state immediately for instant response
                                     self.audio_output_active = False
-                                    self.last_output_time = 0  # Reset to allow immediate input processing
+                                    self.last_output_time = 0
                                     
-                                    # CRITICAL: Clear all pending output audio to stop model voice instantly
-                                    # This prevents the model from continuing to speak after user interrupts
-                                    cleared_chunks = 0
+                                    # Aggressive flush
                                     try:
                                         while not self.output_queue.empty():
                                             self.output_queue.get_nowait()
-                                            cleared_chunks += 1
                                     except:
                                         pass
-                                    
-                                    if cleared_chunks > 0:
-                                        logger.debug(f"🔇 Cleared {cleared_chunks} pending audio chunks to stop model speech")
-                                    
-                                    # Reset duplex logging flag so next user audio is logged
-                                    if hasattr(self, '_duplex_mode_logged'):
-                                        delattr(self, '_duplex_mode_logged')
                                     
                         except Exception as e:
                             logger.debug(f"Error checking transcripts: {e}")
@@ -3009,9 +3005,16 @@ class RTPSession:
         
         while self.output_processing:
             try:
-                # Reduced timeout to 40ms (2 packet intervals) for lower latency
-                # This prevents building up lag in the queue
+                # Reset interruption flag if queue was empty (start of new phrase)
+                if self.output_queue.empty():
+                    self.is_interrupted = False
+
                 payload = self.output_queue.get(timeout=0.040)
+                
+                # KILL SWITCH CHECK: If interrupted, drop this packet and skip sleep
+                if self.is_interrupted:
+                    continue
+
                 # We got audio - mark as active and reset inactivity timer
                 self.audio_output_active = True
                 self.last_output_time = time.time()
@@ -5759,25 +5762,18 @@ class WindowsVoiceSession:
         """
         Input: 16-bit mono PCM at 8000 Hz.
         Output: 16-bit mono PCM at 24000 Hz for the model.
+        OPTIMIZED: Uses linear repetition for lowest latency.
         """
         try:
-            # Convert bytes to numpy array (float for precision)
-            in_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
-            
-            # 8kHz -> 24kHz (3x upsample)
-            # Use a Kaiser window for better anti-aliasing than standard resampling
-            out_array = resample_poly(in_array, 3, 1, window=('kaiser', 5.0))
-            
-            # Convert back to int16 with clipping check
-            out_array = np.clip(out_array, -32768, 32767).astype(np.int16)
-            
-            return out_array.tobytes()
-        except Exception as e:
-            logger.warning(f"Resample poly failed: {e}")
-            # Fallback
+            import numpy as np
+            # FASTEST METHOD: Simple repetition (Nearest Neighbor)
+            # 8kHz -> 24kHz is exactly 3x. This is extremely fast (0ms latency cost).
             in_array = np.frombuffer(audio_data, dtype=np.int16)
             out_array = np.repeat(in_array, 3)
             return out_array.tobytes()
+        except Exception as e:
+            logger.warning(f"Conversion failed: {e}")
+            return audio_data # Fallback
 
     def convert_gemini_to_telephony(self, model_pcm: bytes) -> bytes:
         """
