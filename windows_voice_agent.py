@@ -2299,10 +2299,11 @@ class RTPServer:
                         # Second, try to match by IP and port (works for most cases)
                         if rtp_session.remote_addr == addr:
                             matched_session = rtp_session
-                            # Store the SSRC for future matching
-                            if not hasattr(rtp_session, 'remote_ssrc'):
+                            # Store OR Update the SSRC (in case it changes mid-call)
+                            if not hasattr(rtp_session, 'remote_ssrc') or rtp_session.remote_ssrc != ssrc:
+                                old_ssrc = getattr(rtp_session, 'remote_ssrc', 'None')
                                 rtp_session.remote_ssrc = ssrc
-                                logger.info(f"🔒 Locked RTP session {session_id} to SSRC {ssrc} from {addr}")
+                                logger.info(f"🔒 Updated RTP session {session_id} SSRC from {old_ssrc} to {ssrc} (Address Match)")
                             session_found = True
                             break
                         
@@ -2463,9 +2464,17 @@ class RTPSession:
                 pcm_data = self.ulaw_to_pcm(audio_data)
             elif payload_type == 8:  # PCMA/A-law  
                 pcm_data = self.alaw_to_pcm(audio_data)
+            elif payload_type == 13: # CN (Comfort Noise)
+                # Generate silence for CN packets to keep stream alive
+                # Standard frame is 20ms (160 samples at 8kHz)
+                pcm_data = b'\x00' * 320 
             else:
-                # Assume it's already PCM
+                # Assume it's already PCM or unknown
                 pcm_data = audio_data
+            
+            # Validate PCM data length to prevent filter corruption
+            if len(pcm_data) < 10:
+                return
             
             # Record the ORIGINAL audio (before preprocessing) for authentic recordings
             if self.call_recorder:
@@ -2588,6 +2597,8 @@ class RTPSession:
             
             # Main loop: process audio from queue and send to Gemini with minimal latency
             audio_chunks_sent = 0
+            last_send_time = time.time()  # Track last send time for Keep-Alive
+            
             while self.input_processing:
                 try:
                     # Check for audio in queue (non-blocking with short timeout for responsiveness)
@@ -2598,9 +2609,19 @@ class RTPSession:
                         if self.voice_session.gemini_session:
                             await self._send_audio_to_gemini(audio_chunk)
                             audio_chunks_sent += 1
+                            last_send_time = time.time()
                         else:
                             logger.warning("⚠️ No Gemini session available to send audio")
                     except queue.Empty:
+                        # --- FIX: KEEP-ALIVE SILENCE INJECTION ---
+                        # If no audio for > 200ms (e.g. DTX/Silence), send silence to keep Gemini session alive
+                        if time.time() - last_send_time > 0.2:
+                             if self.voice_session and self.voice_session.gemini_session:
+                                 # Generate 20ms of silence (320 bytes for 8kHz 16-bit mono)
+                                 silence_chunk = b'\x00' * 320
+                                 await self._send_audio_to_gemini(silence_chunk)
+                                 last_send_time = time.time()
+                        
                         # No audio available, yield control very briefly
                         await asyncio.sleep(0.001)  # 1ms sleep for hyper-aggressive polling
                         
