@@ -36,8 +36,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import uvicorn
 
-# Configure logging first
-logging.basicConfig(level=logging.INFO)
+# Configure logging with millisecond-precision timestamps
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s.%(msecs)03d | %(levelname)-8s | %(name)s | %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 
 # Suppress repetitive Google Generative AI warnings about inline_data (we intentionally use audio)
@@ -2405,25 +2409,38 @@ class RTPSession:
         # Crossfade buffer for smooth transitions
         self.last_audio_tail = b""  # Last 10ms of previous chunk
         
-        # Jitter buffer for smooth playback
+        # Jitter buffer for smooth playback - tuned for low latency while handling gaps
+        # REDUCED from previous values to minimize perceived latency
         self.jitter_buffer = b""
         self.playback_started = False
-        self.jitter_buffer_threshold = 2400  # 150ms at 8kHz 16-bit (0.15 * 8000 * 2)
+        self.jitter_buffer_threshold = 1600  # 100ms at 8kHz 16-bit (0.1 * 8000 * 2) - start faster
+        self.jitter_buffer_min = 800   # 50ms minimum chunk size for smooth playback
+        self.jitter_buffer_max = 4800  # 300ms maximum buffer to prevent delay buildup
 
         # Initialize new audio preprocessor
         # We no longer rely on the old simple AGC/Gate logic
         self.audio_preprocessor = AudioPreprocessor(sample_rate=8000)
         logger.info(f"🎵 Audio preprocessor initialized for session {session_id} - Bandpass+Compression enabled")
         
-        # Voice Activity Detection for timeout monitoring
+        # Voice Activity Detection for timeout monitoring and barge-in
         self.vad = VoiceActivityDetector(sample_rate=8000)
         self.last_voice_activity_time = time.time()
-        self.voice_timeout_seconds = 30.0  # 15 seconds of no USER voice = end call
+        # CHANGE: Set to 1 hour (effectively disabled) to prevent local VAD from killing the call
+        # The local VAD was too aggressive and would think the user was silent even when speaking
+        self.voice_timeout_seconds = 3600.0  # 1 hour timeout (effectively disabled)
         self.timeout_monitor_thread = None
         self.timeout_monitoring = True
         self._cleanup_lock = threading.Lock()  # Prevent concurrent cleanup
-        self.is_interrupted = False  # <--- ADD THIS
+        self.is_interrupted = False  # Barge-in interruption flag
         self._cleanup_done = False  # Track if cleanup has been performed
+        
+        # Barge-in VAD thread - runs independently to detect user speech and interrupt playback
+        self.vad_queue = queue.Queue(maxsize=100)  # Queue for VAD audio samples
+        self.vad_thread = None
+        self.vad_thread_running = False
+        self._user_speaking = False  # Track if user is currently speaking
+        self._user_speech_start_time = 0  # Track when user started speaking
+        self._barge_in_threshold_ms = 100  # Require 100ms of speech before interrupting
         logger.info(f"⏱️ Voice activity timeout monitoring enabled: {self.voice_timeout_seconds}s (user turn only)")
         
         # Goodbye detection for graceful hangup
@@ -2449,6 +2466,12 @@ class RTPSession:
         self.timeout_monitor_thread = threading.Thread(target=self._monitor_voice_timeout, daemon=True)
         self.timeout_monitor_thread.start()
         logger.info(f"⏱️ Started voice timeout monitoring for session {session_id}")
+        
+        # Start barge-in VAD thread - separate thread for interruption detection
+        self.vad_thread_running = True
+        self.vad_thread = threading.Thread(target=self._vad_barge_in_thread, daemon=True)
+        self.vad_thread.start()
+        logger.info(f"🎤 Started barge-in VAD thread for session {session_id}")
         
         # Keep processing flag for backward compatibility with other parts of the code
         self.processing = self.output_processing
@@ -2479,6 +2502,14 @@ class RTPSession:
             # Record the ORIGINAL audio (before preprocessing) for authentic recordings
             if self.call_recorder:
                 self.call_recorder.record_incoming_audio(pcm_data)
+            
+            # Queue audio for VAD barge-in thread (non-blocking)
+            # This allows VAD to run in separate thread for instant interruption detection
+            try:
+                if self.vad_thread_running and not self.vad_queue.full():
+                    self.vad_queue.put_nowait(pcm_data)
+            except:
+                pass  # Non-critical - skip if queue is full
             
             # Check for voice activity (update last activity time if speech detected)
             if self.vad.is_speech(pcm_data):
@@ -2511,10 +2542,13 @@ class RTPSession:
             
             # Process audio normally
             try:
-                # --- RESTORED LOCAL PROCESSING ---
-                # Re-enabling Noise Gate as it is critical for quality.
-                processed_pcm = self.audio_preprocessor.process_audio(pcm_data)
-                # processed_pcm = pcm_data  # <--- BYPASS DISABLED
+                # --- GATE DISABLED: PURE STREAM ---
+                # Sending raw PCM data directly to Gemini. 
+                # No bandpass filter, no noise gate, no compression.
+                # The AudioPreprocessor was causing "blank moments" where user audio 
+                # was gated to silence, preventing responses and interruptions.
+                # processed_pcm = self.audio_preprocessor.process_audio(pcm_data) 
+                processed_pcm = pcm_data  # <--- BYPASS ENABLED: Send raw audio
 
                 # Log once to show audio is flowing (keep existing logic)
                 if not hasattr(self, '_audio_packet_count'):
@@ -2596,40 +2630,53 @@ class RTPSession:
             await asyncio.sleep(0.1)
             
             # Main loop: process audio from queue and send to Gemini with minimal latency
+            # CRITICAL FIX: Use non-blocking queue access to prevent event loop starvation
             audio_chunks_sent = 0
             last_send_time = time.time()  # Track last send time for Keep-Alive
+            loop = asyncio.get_event_loop()
+            
+            # Batch processing for efficiency - collect multiple chunks before sending
+            pending_chunks = []
+            max_batch_size = 5  # Process up to 5 chunks at once for efficiency
             
             while self.input_processing:
                 try:
-                    # Check for audio in queue (non-blocking with short timeout for responsiveness)
-                    try:
-                        audio_chunk = self.audio_input_queue.get(timeout=0.01)  # 10ms timeout for hyper-low latency
-                        
-                        # Send audio to Gemini immediately
-                        if self.voice_session.gemini_session:
-                            await self._send_audio_to_gemini(audio_chunk)
+                    # NON-BLOCKING queue drain - collect all available audio immediately
+                    # This prevents the blocking queue.get() from starving the event loop
+                    chunks_collected = 0
+                    while chunks_collected < max_batch_size:
+                        try:
+                            audio_chunk = self.audio_input_queue.get_nowait()  # NON-BLOCKING!
+                            pending_chunks.append(audio_chunk)
+                            chunks_collected += 1
+                        except queue.Empty:
+                            break
+                    
+                    # Send collected chunks to Gemini
+                    if pending_chunks and self.voice_session.gemini_session:
+                        for chunk in pending_chunks:
+                            await self._send_audio_to_gemini(chunk)
                             audio_chunks_sent += 1
-                            last_send_time = time.time()
-                        else:
-                            logger.warning("⚠️ No Gemini session available to send audio")
-                    except queue.Empty:
-                        # --- FIX: KEEP-ALIVE SILENCE INJECTION ---
-                        # If no audio for > 200ms (e.g. DTX/Silence), send silence to keep Gemini session alive
+                        last_send_time = time.time()
+                        pending_chunks.clear()
+                    elif not pending_chunks:
+                        # No audio available - check for keep-alive
                         if time.time() - last_send_time > 0.2:
-                             if self.voice_session and self.voice_session.gemini_session:
-                                 # Generate 20ms of silence (320 bytes for 8kHz 16-bit mono)
-                                 silence_chunk = b'\x00' * 320
-                                 await self._send_audio_to_gemini(silence_chunk)
-                                 last_send_time = time.time()
-                        
-                        # No audio available, yield control very briefly
-                        await asyncio.sleep(0.001)  # 1ms sleep for hyper-aggressive polling
+                            if self.voice_session and self.voice_session.gemini_session:
+                                # Generate 20ms of silence (320 bytes for 8kHz 16-bit mono)
+                                silence_chunk = b'\x00' * 320
+                                await self._send_audio_to_gemini(silence_chunk)
+                                last_send_time = time.time()
+                    
+                    # CRITICAL: Yield control to allow receiver task to run
+                    # This prevents audio send from monopolizing the event loop
+                    await asyncio.sleep(0.005)  # 5ms yield - balance between latency and throughput
                         
                 except Exception as e:
                     logger.error(f"Error in main audio loop: {e}")
                     import traceback
                     logger.error(f"Traceback: {traceback.format_exc()}")
-                    await asyncio.sleep(0.05)  # Brief pause before retry (reduced from 0.1s)
+                    await asyncio.sleep(0.05)  # Brief pause before retry
             
             # Clean up receiver task
             receiver_task.cancel()
@@ -2644,7 +2691,7 @@ class RTPSession:
             logger.error(f"Traceback: {traceback.format_exc()}")
     
     async def _send_audio_to_gemini(self, audio_chunk: bytes):
-        """Send audio chunk to Gemini without waiting for response"""
+        """Send audio chunk to Gemini with optimized timeout and latency tracking"""
         try:
             if not self.voice_session.gemini_session:
                 logger.warning("No Gemini session available")
@@ -2653,56 +2700,91 @@ class RTPSession:
             # Convert telephony audio to Gemini format
             processed_audio = self.voice_session.convert_telephony_to_gemini(audio_chunk)
             
-            # Log audio transmission for debugging
+            # Initialize latency tracking
             if not hasattr(self, '_audio_send_count'):
                 self._audio_send_count = 0
                 self._audio_send_bytes = 0
+                self._last_send_log_time = time.time()
+                self._send_latency_samples = []
+                self._slow_send_count = 0
             
             self._audio_send_count += 1
             self._audio_send_bytes += len(processed_audio)
             
-            # Log every 50 packets to avoid log spam
-            if self._audio_send_count % 50 == 1:
-                logger.info(f"📤 Sent {self._audio_send_count} audio packets ({self._audio_send_bytes} bytes total) to Gemini")
-            
-            # Send audio to Gemini with correct MIME type format
+            # Send audio to Gemini with reduced 2-second timeout (fail fast)
             try:
-                await self.voice_session.gemini_session.send(
-                    input={"data": processed_audio, "mime_type": "audio/pcm;rate=24000"},
-                    end_of_turn=False
+                send_start = time.time()
+                await asyncio.wait_for(
+                    self.voice_session.gemini_session.send(
+                        input={"data": processed_audio, "mime_type": "audio/pcm;rate=24000"},
+                        end_of_turn=False
+                    ),
+                    timeout=2.0  # Reduced to 2s - fail fast on slow connections
                 )
+                send_duration = time.time() - send_start
+                
+                # Track latency samples (keep last 100)
+                self._send_latency_samples.append(send_duration)
+                if len(self._send_latency_samples) > 100:
+                    self._send_latency_samples.pop(0)
+                
+                # Log if send took longer than expected (potential latency indicator)
+                if send_duration > 0.05:  # 50ms threshold for warning
+                    self._slow_send_count += 1
+                    if self._slow_send_count <= 5 or self._slow_send_count % 20 == 0:
+                        logger.warning(f"⏱️ Slow Gemini send #{self._slow_send_count}: {send_duration*1000:.0f}ms")
+            
+            except asyncio.TimeoutError:
+                logger.error(f"❌ TIMEOUT: Gemini send took >2s - dropping audio chunk")
+                if not hasattr(self, '_send_timeout_count'):
+                    self._send_timeout_count = 0
+                self._send_timeout_count += 1
+                if self._send_timeout_count % 5 == 1:
+                    logger.error(f"⚠️ Total send timeouts: {self._send_timeout_count}")
+                return  # Exit early on timeout
             except Exception as send_err:
-                # Only log the error once to avoid spam, don't re-raise
                 error_str = str(send_err)
                 if "no close frame" in error_str.lower():
-                    # Connection closed - silently ignore to avoid log spam
                     if not hasattr(self, '_connection_closed_logged'):
                         logger.warning("⚠️ Gemini WebSocket connection closed unexpectedly")
                         self._connection_closed_logged = True
                 else:
                     logger.error(f"Error sending audio to Gemini: {send_err}")
+                return
+            
+            # Log every 50 packets with latency stats
+            if self._audio_send_count % 50 == 0:
+                elapsed = time.time() - self._last_send_log_time
+                avg_latency = sum(self._send_latency_samples) / len(self._send_latency_samples) if self._send_latency_samples else 0
+                max_latency = max(self._send_latency_samples) if self._send_latency_samples else 0
+                logger.info(f"📤 Sent {self._audio_send_count} pkts | elapsed={elapsed:.2f}s | avg_lat={avg_latency*1000:.1f}ms | max_lat={max_latency*1000:.1f}ms | slow={self._slow_send_count}")
+                self._last_send_log_time = time.time()
+                
         except Exception as e:
             logger.error(f"Error in _send_audio_to_gemini: {e}")
 
     def buffer_and_play(self, pcm_data: bytes):
         """
-        Buffer audio before playback to ensure smoothness (Jitter Buffer).
+        Streamlined Jitter Buffer - low latency with overflow protection.
         
         Gemini 24kHz -> Resampled 8kHz -> Jitter Buffer -> Playback Queue
         """
-        # If we are already playing, just send directly to the output queue
+        # If already playing, send immediately with minimal buffering
         if self.playback_started:
-             self._send_audio_immediate(pcm_data)
-             return
+            # Just send directly - the output queue handles pacing
+            self._send_audio_immediate(pcm_data)
+            return
 
-        # Append to buffer
+        # Initial buffering phase - wait for minimum threshold before starting
         self.jitter_buffer += pcm_data
         
-        # Check if we have enough to start (150ms)
+        # Start playback once we have enough initial buffer (100ms)
         if len(self.jitter_buffer) >= self.jitter_buffer_threshold:
-            logger.info(f"🌊 Jitter buffer full ({len(self.jitter_buffer)} bytes) - Starting playback")
+            buffer_time_ms = (len(self.jitter_buffer) / 16000) * 1000
+            logger.info(f"🌊 Jitter buffer ready ({len(self.jitter_buffer)} bytes / {buffer_time_ms:.0f}ms) - Starting playback")
             self.playback_started = True
-            # Flush the buffer to the output queue
+            
+            # Send all buffered audio
             self._send_audio_immediate(self.jitter_buffer)
             self.jitter_buffer = b""
             
@@ -3110,11 +3192,11 @@ class RTPSession:
             if sleep_duration > 0:
                 time.sleep(sleep_duration)
             else:
-                # We are lagging.
-                # If we are behind by more than 1 packet (20ms), do NOT try to catch up.
-                # Just reset the clock. This prevents the "Running Late" spam/CPU hog.
-                if sleep_duration < -0.020:
-                    next_packet_time = current_time + ptime_seconds
+                # We are lagging - just reset the clock immediately.
+                # Don't try to catch up as it causes CPU hogging and audio glitches.
+                next_packet_time = current_time + ptime_seconds
+                # Add a tiny sleep to yield CPU to the input thread
+                time.sleep(0.001) 
             # --- FIX END ---
     
     def _send_rtp(self, payload: bytes):
@@ -3227,6 +3309,90 @@ class RTPSession:
                 time.sleep(1.0)
         
         logger.info(f"⏱️ Voice timeout monitor stopped for session {self.session_id}")
+    
+    def _vad_barge_in_thread(self):
+        """
+        Dedicated VAD thread for barge-in detection.
+        Runs independently of audio processing to interrupt playback immediately when user speaks.
+        This enables natural conversation flow where users can interrupt the AI mid-sentence.
+        """
+        logger.info(f"🎤 VAD barge-in thread started for session {self.session_id}")
+        
+        consecutive_speech_frames = 0
+        min_frames_for_interrupt = 3  # ~60ms at 20ms frames - quick but filters noise
+        
+        while self.vad_thread_running and self.output_processing:
+            try:
+                # Get audio from VAD queue with timeout
+                try:
+                    pcm_data = self.vad_queue.get(timeout=0.05)  # 50ms timeout
+                except queue.Empty:
+                    # No audio, reset speech counter
+                    if consecutive_speech_frames > 0:
+                        consecutive_speech_frames = max(0, consecutive_speech_frames - 1)
+                    continue
+                
+                # Skip VAD check if we're not playing audio (no need to interrupt)
+                if not self.audio_output_active and self.output_queue.empty():
+                    consecutive_speech_frames = 0
+                    continue
+                
+                # Run VAD analysis
+                is_speech = self.vad.is_speech(pcm_data)
+                
+                if is_speech:
+                    consecutive_speech_frames += 1
+                    
+                    if not self._user_speaking:
+                        self._user_speaking = True
+                        self._user_speech_start_time = time.time()
+                        logger.debug(f"🎤 User started speaking (VAD thread)")
+                    
+                    # Check if we should trigger barge-in
+                    if consecutive_speech_frames >= min_frames_for_interrupt:
+                        speech_duration_ms = (time.time() - self._user_speech_start_time) * 1000
+                        
+                        if speech_duration_ms >= self._barge_in_threshold_ms:
+                            # Only trigger barge-in if AI is actively speaking
+                            if self.audio_output_active or not self.output_queue.empty():
+                                logger.info(f"🔄 BARGE-IN detected! User speaking for {speech_duration_ms:.0f}ms - interrupting playback")
+                                
+                                # Set interruption flag
+                                self.is_interrupted = True
+                                
+                                # Clear jitter buffer
+                                self.playback_started = False
+                                self.jitter_buffer = b""
+                                
+                                # Aggressive queue flush
+                                try:
+                                    cleared = 0
+                                    while not self.output_queue.empty():
+                                        self.output_queue.get_nowait()
+                                        cleared += 1
+                                    if cleared > 0:
+                                        logger.debug(f"🧹 Cleared {cleared} audio packets from output queue")
+                                except:
+                                    pass
+                                
+                                # Mark output as inactive
+                                self.audio_output_active = False
+                                self.last_output_time = 0
+                                
+                                # Reset speech tracking after barge-in
+                                consecutive_speech_frames = 0
+                                self._user_speaking = False
+                else:
+                    # Gradual decay of speech counter
+                    consecutive_speech_frames = max(0, consecutive_speech_frames - 1)
+                    if consecutive_speech_frames == 0:
+                        self._user_speaking = False
+                
+            except Exception as e:
+                logger.error(f"Error in VAD barge-in thread: {e}")
+                time.sleep(0.01)
+        
+        logger.info(f"🎤 VAD barge-in thread stopped for session {self.session_id}")
     
     def _trigger_hangup(self):
         """Trigger graceful hangup when goodbye is detected"""
@@ -3349,6 +3515,7 @@ Content-Length: 0
         self.output_processing = False
         self.processing = False
         self.timeout_monitoring = False
+        self.vad_thread_running = False  # Stop VAD barge-in thread
         
         # Clear queues to unblock threads
         try:
@@ -3360,6 +3527,13 @@ Content-Length: 0
         try:
             while not self.output_queue.empty():
                 self.output_queue.get_nowait()
+        except:
+            pass
+        
+        # Clear VAD queue
+        try:
+            while not self.vad_queue.empty():
+                self.vad_queue.get_nowait()
         except:
             pass
         
