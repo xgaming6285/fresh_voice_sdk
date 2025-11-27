@@ -2467,11 +2467,22 @@ class RTPSession:
         self.timeout_monitor_thread.start()
         logger.info(f"⏱️ Started voice timeout monitoring for session {session_id}")
         
-        # Start barge-in VAD thread - separate thread for interruption detection
-        self.vad_thread_running = True
-        self.vad_thread = threading.Thread(target=self._vad_barge_in_thread, daemon=True)
-        self.vad_thread.start()
-        logger.info(f"🎤 Started barge-in VAD thread for session {session_id}")
+        # DISABLED: Local barge-in VAD thread - Gemini handles interruption detection server-side
+        # This was causing issues with turn-taking. We now rely entirely on Gemini's native
+        # voice activity detection and interruption handling.
+        self.vad_thread_running = False
+        self.vad_thread = None
+        # self.vad_thread = threading.Thread(target=self._vad_barge_in_thread, daemon=True)
+        # self.vad_thread.start()
+        logger.info(f"🎤 Local VAD barge-in DISABLED - relying on Gemini server-side interruption detection")
+        
+        # End-of-turn detection state - signals Gemini when user stops speaking
+        self._silence_start_time = None  # When silence started
+        self._end_of_turn_sent = False  # Whether we've sent end_of_turn for current silence period
+        self._silence_threshold_sec = 1.2  # 1.2 seconds of silence triggers end-of-turn
+        self._speech_energy_threshold = 500  # RMS threshold for detecting speech
+        self._last_speech_time = time.time()  # Last time speech was detected
+        logger.info(f"📍 End-of-turn detection enabled: {self._silence_threshold_sec}s silence threshold")
         
         # Keep processing flag for backward compatibility with other parts of the code
         self.processing = self.output_processing
@@ -2691,7 +2702,13 @@ class RTPSession:
             logger.error(f"Traceback: {traceback.format_exc()}")
     
     async def _send_audio_to_gemini(self, audio_chunk: bytes):
-        """Send audio chunk to Gemini with optimized timeout and latency tracking"""
+        """Send audio chunk to Gemini with silence-based end-of-turn detection.
+        
+        When user stops speaking (silence detected for threshold period), we signal
+        end_of_turn=True to tell Gemini it's the model's turn to respond.
+        This fixes the issue where Gemini doesn't respond because it's waiting
+        for a turn signal.
+        """
         try:
             if not self.voice_session.gemini_session:
                 logger.warning("No Gemini session available")
@@ -2711,13 +2728,49 @@ class RTPSession:
             self._audio_send_count += 1
             self._audio_send_bytes += len(processed_audio)
             
+            # --- SILENCE-BASED END-OF-TURN DETECTION ---
+            # Detect if current audio chunk is speech or silence
+            # Calculate RMS energy of the 8kHz audio chunk (before upsampling)
+            try:
+                audio_array = np.frombuffer(audio_chunk, dtype=np.int16)
+                if len(audio_array) > 0:
+                    rms_energy = np.sqrt(np.mean(audio_array.astype(np.float32) ** 2))
+                else:
+                    rms_energy = 0
+            except Exception:
+                rms_energy = 0
+            
+            current_time = time.time()
+            is_speech = rms_energy > self._speech_energy_threshold
+            
+            # Determine end_of_turn flag
+            should_send_end_of_turn = False
+            
+            if is_speech:
+                # User is speaking - reset silence tracking
+                self._silence_start_time = None
+                self._end_of_turn_sent = False
+                self._last_speech_time = current_time
+            else:
+                # Silence detected
+                if self._silence_start_time is None:
+                    self._silence_start_time = current_time
+                
+                silence_duration = current_time - self._silence_start_time
+                
+                # If we've been silent long enough and haven't sent end_of_turn yet
+                if silence_duration >= self._silence_threshold_sec and not self._end_of_turn_sent:
+                    should_send_end_of_turn = True
+                    self._end_of_turn_sent = True
+                    logger.info(f"📍 END-OF-TURN: Silence detected for {silence_duration:.1f}s - signaling Gemini to respond")
+            
             # Send audio to Gemini with reduced 2-second timeout (fail fast)
             try:
                 send_start = time.time()
                 await asyncio.wait_for(
                     self.voice_session.gemini_session.send(
                         input={"data": processed_audio, "mime_type": "audio/pcm;rate=24000"},
-                        end_of_turn=False
+                        end_of_turn=should_send_end_of_turn
                     ),
                     timeout=2.0  # Reduced to 2s - fail fast on slow connections
                 )
@@ -2752,12 +2805,36 @@ class RTPSession:
                     logger.error(f"Error sending audio to Gemini: {send_err}")
                 return
             
-            # Log every 50 packets with latency stats
+            # Log every 50 packets with latency stats and end-of-turn status
             if self._audio_send_count % 50 == 0:
                 elapsed = time.time() - self._last_send_log_time
                 avg_latency = sum(self._send_latency_samples) / len(self._send_latency_samples) if self._send_latency_samples else 0
                 max_latency = max(self._send_latency_samples) if self._send_latency_samples else 0
-                logger.info(f"📤 Sent {self._audio_send_count} pkts | elapsed={elapsed:.2f}s | avg_lat={avg_latency*1000:.1f}ms | max_lat={max_latency*1000:.1f}ms | slow={self._slow_send_count}")
+                
+                # Calculate time since last response for NO_RESP warning
+                time_since_response = current_time - getattr(self, '_last_response_time', current_time)
+                silence_dur = current_time - self._silence_start_time if self._silence_start_time else 0
+                
+                # Build status string
+                status_parts = [
+                    f"📤 Sent {self._audio_send_count} pkts",
+                    f"elapsed={elapsed:.2f}s",
+                    f"avg_lat={avg_latency*1000:.1f}ms",
+                    f"max_lat={max_latency*1000:.1f}ms",
+                    f"slow={self._slow_send_count}",
+                    f"rms={rms_energy:.0f}",
+                    f"silence={silence_dur:.1f}s" if silence_dur > 0 else "speech=active"
+                ]
+                
+                # Add end-of-turn status
+                if self._end_of_turn_sent:
+                    status_parts.append("EOT=✓")
+                
+                # Add NO_RESP warning if no response for > 5 seconds
+                if time_since_response > 5:
+                    status_parts.append(f"⚠️ NO_RESP={time_since_response:.0f}s")
+                
+                logger.info(" | ".join(status_parts))
                 self._last_send_log_time = time.time()
                 
         except Exception as e:
@@ -2849,6 +2926,13 @@ class RTPSession:
                                 
                                 # Track last response time to detect Gemini freezes
                                 self._last_response_time = time.time()
+                                
+                                # Reset end-of-turn state when Gemini responds
+                                # This prepares for the next user turn detection
+                                if hasattr(self, '_end_of_turn_sent') and self._end_of_turn_sent:
+                                    self._end_of_turn_sent = False
+                                    self._silence_start_time = None
+                                    logger.debug("🔄 End-of-turn reset - Gemini is responding")
                                 
                                 # Log every 10 audio chunks received
                                 if self._audio_recv_count % 10 == 1:
