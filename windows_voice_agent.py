@@ -1268,6 +1268,15 @@ IMPORTANT:
     live_cfg = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         media_resolution="MEDIA_RESOLUTION_MEDIUM",
+        realtime_input_config=types.RealtimeInputConfig(
+            automatic_activity_detection=types.AutomaticActivityDetection(
+                disabled=False,
+                start_of_speech_sensitivity="START_SENSITIVITY_HIGH",
+                end_of_speech_sensitivity="END_SENSITIVITY_HIGH",
+                prefix_padding_ms=20,
+                silence_duration_ms=100,
+            )
+        ),
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)  # ✅ Use voice from CRM
@@ -2702,15 +2711,13 @@ class RTPSession:
             logger.error(f"Traceback: {traceback.format_exc()}")
     
     async def _send_audio_to_gemini(self, audio_chunk: bytes):
-        """Send audio chunk to Gemini with silence-based end-of-turn detection.
+        """Send audio chunk to Gemini directly.
         
-        When user stops speaking (silence detected for threshold period), we signal
-        end_of_turn=True to tell Gemini it's the model's turn to respond.
-        This fixes the issue where Gemini doesn't respond because it's waiting
-        for a turn signal.
+        We rely on Gemini's server-side VAD (automatic_activity_detection) to handle
+        end-of-turn detection. We always send end_of_turn=False.
         """
         try:
-            if not self.voice_session.gemini_session:
+            if not self.voice_session or not self.voice_session.gemini_session:
                 logger.warning("No Gemini session available")
                 return
                 
@@ -2728,49 +2735,16 @@ class RTPSession:
             self._audio_send_count += 1
             self._audio_send_bytes += len(processed_audio)
             
-            # --- SILENCE-BASED END-OF-TURN DETECTION ---
-            # Detect if current audio chunk is speech or silence
-            # Calculate RMS energy of the 8kHz audio chunk (before upsampling)
-            try:
-                audio_array = np.frombuffer(audio_chunk, dtype=np.int16)
-                if len(audio_array) > 0:
-                    rms_energy = np.sqrt(np.mean(audio_array.astype(np.float32) ** 2))
-                else:
-                    rms_energy = 0
-            except Exception:
-                rms_energy = 0
-            
             current_time = time.time()
-            is_speech = rms_energy > self._speech_energy_threshold
-            
-            # Determine end_of_turn flag
-            should_send_end_of_turn = False
-            
-            if is_speech:
-                # User is speaking - reset silence tracking
-                self._silence_start_time = None
-                self._end_of_turn_sent = False
-                self._last_speech_time = current_time
-            else:
-                # Silence detected
-                if self._silence_start_time is None:
-                    self._silence_start_time = current_time
-                
-                silence_duration = current_time - self._silence_start_time
-                
-                # If we've been silent long enough and haven't sent end_of_turn yet
-                if silence_duration >= self._silence_threshold_sec and not self._end_of_turn_sent:
-                    should_send_end_of_turn = True
-                    self._end_of_turn_sent = True
-                    logger.info(f"📍 END-OF-TURN: Silence detected for {silence_duration:.1f}s - signaling Gemini to respond")
             
             # Send audio to Gemini with reduced 2-second timeout (fail fast)
             try:
                 send_start = time.time()
+                # Always send end_of_turn=False, letting server VAD decide
                 await asyncio.wait_for(
                     self.voice_session.gemini_session.send(
                         input={"data": processed_audio, "mime_type": "audio/pcm;rate=24000"},
-                        end_of_turn=should_send_end_of_turn
+                        end_of_turn=False
                     ),
                     timeout=2.0  # Reduced to 2s - fail fast on slow connections
                 )
@@ -2805,7 +2779,7 @@ class RTPSession:
                     logger.error(f"Error sending audio to Gemini: {send_err}")
                 return
             
-            # Log every 50 packets with latency stats and end-of-turn status
+            # Log every 50 packets with latency stats
             if self._audio_send_count % 50 == 0:
                 elapsed = time.time() - self._last_send_log_time
                 avg_latency = sum(self._send_latency_samples) / len(self._send_latency_samples) if self._send_latency_samples else 0
@@ -2813,7 +2787,6 @@ class RTPSession:
                 
                 # Calculate time since last response for NO_RESP warning
                 time_since_response = current_time - getattr(self, '_last_response_time', current_time)
-                silence_dur = current_time - self._silence_start_time if self._silence_start_time else 0
                 
                 # Build status string
                 status_parts = [
@@ -2822,13 +2795,7 @@ class RTPSession:
                     f"avg_lat={avg_latency*1000:.1f}ms",
                     f"max_lat={max_latency*1000:.1f}ms",
                     f"slow={self._slow_send_count}",
-                    f"rms={rms_energy:.0f}",
-                    f"silence={silence_dur:.1f}s" if silence_dur > 0 else "speech=active"
                 ]
-                
-                # Add end-of-turn status
-                if self._end_of_turn_sent:
-                    status_parts.append("EOT=✓")
                 
                 # Add NO_RESP warning if no response for > 5 seconds
                 if time_since_response > 5:
