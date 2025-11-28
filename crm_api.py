@@ -310,12 +310,23 @@ async def get_leads(
     try:
         session = get_session()
         
-        # Build query with ownership filter
+        # Build query with ownership filter - directly filter by owner_id instead of pre-fetching IDs
         query = session.query(Lead)
         
-        # Filter by accessible leads (user's own + their agents' if admin)
-        accessible_lead_ids = get_accessible_lead_ids(current_user, session)
-        query = query.filter(Lead.id.in_(accessible_lead_ids))
+        # Get accessible owner IDs (not lead IDs) - more efficient
+        if current_user.role == UserRole.SUPERADMIN:
+            # Superadmin can see all leads
+            pass  # No filter needed
+        elif current_user.role == UserRole.ADMIN:
+            # Admin can see their own leads and their agents' leads
+            from crm_database import UserManager
+            user_manager = UserManager(session)
+            agents = user_manager.get_agents_by_admin(current_user.id)
+            accessible_owner_ids = [current_user.id] + [agent.id for agent in agents]
+            query = query.filter(Lead.owner_id.in_(accessible_owner_ids))
+        else:
+            # Agent can only see their own leads
+            query = query.filter(Lead.owner_id == current_user.id)
         
         if country:
             query = query.filter(Lead.country == country)
@@ -323,9 +334,41 @@ async def get_leads(
         total = query.count()
         offset = (page - 1) * per_page
         
-        leads = query.limit(per_page).offset(offset).all()
+        leads = query.order_by(Lead.id.desc()).limit(per_page).offset(offset).all()
         
-        leads_response = [build_lead_response(lead, session) for lead in leads]
+        # Batch-load all owners in ONE query to avoid N+1 problem
+        owner_ids = list(set(lead.owner_id for lead in leads if lead.owner_id))
+        owners_by_id = {}
+        if owner_ids:
+            from crm_database_mongodb import MongoDB
+            db = MongoDB.get_db()
+            owners_docs = db.users.find({"id": {"$in": owner_ids}})
+            owners_by_id = {doc["id"]: doc.get("full_name", "Unknown") for doc in owners_docs}
+        
+        # Build responses with pre-loaded owner names
+        leads_response = []
+        for lead in leads:
+            owner_name = owners_by_id.get(lead.owner_id, "Unknown")
+            leads_response.append(LeadResponse(
+                id=lead.id,
+                owner_id=lead.owner_id,
+                owner_name=owner_name,
+                first_name=lead.first_name,
+                last_name=lead.last_name,
+                email=lead.email,
+                phone=lead.phone,
+                country=lead.country,
+                country_code=lead.country_code,
+                gender=get_enum_value(lead.gender) if lead.gender else "unknown",
+                address=lead.address,
+                created_at=lead.created_at,
+                updated_at=lead.updated_at,
+                last_called_at=lead.last_called_at,
+                call_count=lead.call_count,
+                notes=lead.notes,
+                full_phone=lead.full_phone,
+                full_name=lead.full_name
+            ))
         
         return {
             "leads": leads_response,
@@ -508,22 +551,69 @@ async def create_campaign(campaign: CampaignCreate, current_user: User = Depends
     finally:
         session.close()
 
-@crm_router.get("/campaigns", response_model=List[CampaignResponse])
+@crm_router.get("/campaigns", response_model=Dict[str, Any])
 async def get_campaigns(status: Optional[str] = None, current_user: User = Depends(get_current_user)):
     """Get list of campaigns"""
     try:
         session = get_session()
         
-        # Filter by accessible campaigns
-        accessible_campaign_ids = get_accessible_campaign_ids(current_user, session)
-        query = session.query(Campaign).filter(Campaign.id.in_(accessible_campaign_ids))
+        # Build query with ownership filter - directly filter by owner_id instead of pre-fetching IDs
+        query = session.query(Campaign)
+        
+        if current_user.role == UserRole.SUPERADMIN:
+            # Superadmin can see all campaigns
+            pass  # No filter needed
+        elif current_user.role == UserRole.ADMIN:
+            # Admin can see their own campaigns and their agents' campaigns
+            from crm_database import UserManager
+            user_manager = UserManager(session)
+            agents = user_manager.get_agents_by_admin(current_user.id)
+            accessible_owner_ids = [current_user.id] + [agent.id for agent in agents]
+            query = query.filter(Campaign.owner_id.in_(accessible_owner_ids))
+        else:
+            # Agent can only see their own campaigns
+            query = query.filter(Campaign.owner_id == current_user.id)
         
         if status:
             query = query.filter(Campaign.status == CampaignStatus(status))
         
         campaigns = query.order_by(Campaign.created_at.desc()).all()
         
-        return [build_campaign_response(c, session) for c in campaigns]
+        # Batch-load all owners in ONE query to avoid N+1 problem
+        owner_ids = list(set(c.owner_id for c in campaigns if c.owner_id))
+        owners_by_id = {}
+        if owner_ids:
+            from crm_database_mongodb import MongoDB
+            db = MongoDB.get_db()
+            owners_docs = db.users.find({"id": {"$in": owner_ids}})
+            owners_by_id = {doc["id"]: doc.get("full_name", "Unknown") for doc in owners_docs}
+        
+        # Build responses with pre-loaded owner names
+        campaigns_response = []
+        for campaign in campaigns:
+            owner_name = owners_by_id.get(campaign.owner_id, "Unknown")
+            campaigns_response.append(CampaignResponse(
+                id=campaign.id,
+                owner_id=campaign.owner_id,
+                owner_name=owner_name,
+                name=campaign.name,
+                description=campaign.description,
+                status=get_enum_value(campaign.status),
+                bot_config=campaign.bot_config or {},
+                dialing_config=campaign.dialing_config or {},
+                schedule_config=campaign.schedule_config or {},
+                total_leads=campaign.total_leads,
+                leads_called=campaign.leads_called,
+                leads_answered=campaign.leads_answered,
+                leads_rejected=campaign.leads_rejected,
+                leads_failed=campaign.leads_failed,
+                created_at=campaign.created_at,
+                updated_at=campaign.updated_at,
+                started_at=campaign.started_at,
+                completed_at=campaign.completed_at
+            ))
+        
+        return {"campaigns": campaigns_response}
     except Exception as e:
         logger.error(f"Error getting campaigns: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -923,6 +1013,18 @@ async def get_call_sessions(
             query = query.filter(CallSession.status == CallStatus(status))
         
         sessions = query.order_by(CallSession.started_at.desc()).limit(limit).all()
+        
+        # Batch-load all leads in ONE query to avoid N+1 problem
+        lead_ids = [s.lead_id for s in sessions if s.lead_id]
+        if lead_ids:
+            from crm_database_mongodb import MongoDB
+            db = MongoDB.get_db()
+            leads_docs = db.leads.find({"id": {"$in": lead_ids}})
+            leads_by_id = {doc["id"]: Lead.from_dict(doc) for doc in leads_docs}
+            # Attach leads to sessions
+            for s in sessions:
+                if s.lead_id and s.lead_id in leads_by_id:
+                    s._lead = leads_by_id[s.lead_id]
         
         return [build_call_session_response(s) for s in sessions]
     except Exception as e:

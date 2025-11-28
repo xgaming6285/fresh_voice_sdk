@@ -73,7 +73,7 @@ function Campaigns() {
     setLoading(true);
     try {
       const response = await campaignAPI.getAll();
-      setCampaigns(response.data);
+      setCampaigns(response.data.campaigns || []);
     } catch (error) {
       console.error("Error loading campaigns:", error);
       showSnackbar("Error loading campaigns", "error");

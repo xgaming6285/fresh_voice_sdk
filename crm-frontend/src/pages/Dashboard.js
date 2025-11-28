@@ -81,7 +81,7 @@ function Dashboard() {
         ]);
 
       // Calculate stats
-      const campaigns = campaignsRes.data;
+      const campaigns = campaignsRes.data.campaigns || [];
       let sessions = sessionsRes.data;
 
       // Process sessions to extract duration from session_info if needed

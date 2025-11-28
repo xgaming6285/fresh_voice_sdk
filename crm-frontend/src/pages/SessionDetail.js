@@ -77,43 +77,53 @@ function SessionDetail() {
   const loadSessionData = useCallback(async () => {
     setLoading(true);
     try {
-      let sessionData = null;
+      // Load session from CRM database - this already includes transcripts, analysis, and audio_files
+      const crmResponse = await sessionAPI.getById(id);
+      const sessionData = crmResponse.data;
+      setSession(sessionData);
 
-      // Try to load from CRM database first
-      try {
-        const crmResponse = await sessionAPI.getById(id);
-        sessionData = crmResponse.data;
-        setSession(sessionData);
-      } catch (error) {
-        console.log("Session not in CRM database, checking recordings...");
-      }
-
-      // Load recording data - try exact ID match only
-      const recordingsResponse = await voiceAgentAPI.recordings();
-      const foundRecording = recordingsResponse.data.recordings.find(
-        (r) => r.session_id === id
-      );
-
-      if (foundRecording) {
-        setRecording(foundRecording);
+      // Use transcripts from session response if available
+      if (sessionData.transcripts && Object.keys(sessionData.transcripts).length > 0) {
+        setTranscripts(sessionData.transcripts);
       } else {
-        console.log("No recording found for this session");
+        // Fallback: try to load transcripts separately only if not in session
+        try {
+          const transcriptsResponse = await voiceAgentAPI.transcripts(id);
+          setTranscripts(transcriptsResponse.data.transcripts || {});
+        } catch (error) {
+          console.log("No transcripts available");
+        }
       }
 
-      // Load transcripts
-      try {
-        const transcriptsResponse = await voiceAgentAPI.transcripts(id);
-        setTranscripts(transcriptsResponse.data.transcripts || {});
-      } catch (error) {
-        console.log("No transcripts available");
+      // Use analysis (summary) from session response if available
+      if (sessionData.analysis) {
+        setSummary(sessionData.analysis);
+      } else {
+        // Fallback: try to load summary separately only if not in session
+        try {
+          const summaryResponse = await voiceAgentAPI.getSummary(id);
+          setSummary(summaryResponse.data.summary);
+        } catch (error) {
+          console.log("No summary available");
+        }
       }
 
-      // Load summary
-      try {
-        const summaryResponse = await voiceAgentAPI.getSummary(id);
-        setSummary(summaryResponse.data.summary);
-      } catch (error) {
-        console.log("No summary available");
+      // Use audio_files from session response if available
+      if (sessionData.audio_files) {
+        setRecording({ session_id: id, audio_files: sessionData.audio_files });
+      } else if (!sessionData.asterisk_linkedid) {
+        // Fallback: only load recordings list if no PBX recording and no audio_files in session
+        try {
+          const recordingsResponse = await voiceAgentAPI.recordings();
+          const foundRecording = recordingsResponse.data.recordings.find(
+            (r) => r.session_id === id
+          );
+          if (foundRecording) {
+            setRecording(foundRecording);
+          }
+        } catch (error) {
+          console.log("No recording found for this session");
+        }
       }
     } catch (error) {
       console.error("Error loading session data:", error);

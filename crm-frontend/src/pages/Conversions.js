@@ -9,7 +9,7 @@ import {
   Female as FemaleIcon,
   QuestionMark as QuestionMarkIcon,
 } from "@mui/icons-material";
-import { leadAPI, sessionAPI, voiceAgentAPI } from "../services/api";
+import { leadAPI, sessionAPI } from "../services/api";
 import { getRelativeTime, formatTime } from "../utils/dateUtils";
 
 function Conversions() {
@@ -25,9 +25,14 @@ function Conversions() {
   const loadInterestedLeads = async () => {
     setLoading(true);
     try {
-      // Get all leads first
-      const leadsResponse = await leadAPI.getAll({ per_page: 1000 });
+      // Load leads and sessions in parallel for better performance
+      const [leadsResponse, sessionsResponse] = await Promise.all([
+        leadAPI.getAll({ per_page: 1000 }),
+        sessionAPI.getAll({}),
+      ]);
+
       const allLeads = leadsResponse.data.leads;
+      const sessions = sessionsResponse.data;
 
       // Create a map of phone number to lead data for quick lookup
       const leadsMap = new Map();
@@ -37,50 +42,39 @@ function Conversions() {
         leadsMap.set(lead.phone, lead);
       });
 
-      // Get all sessions
-      const sessionsResponse = await sessionAPI.getAll({});
-      const sessions = sessionsResponse.data;
-
-      // For each session, get the summary to check if interested
+      // Use analysis field from session response directly (no extra API calls!)
       const interestedSessionsMap = new Map();
 
       for (const session of sessions) {
         if (!session.session_id) continue;
 
-        try {
-          const summaryResponse = await voiceAgentAPI.getSummary(
-            session.session_id
-          );
-          const summary = summaryResponse.data.summary;
+        // Use analysis from session response instead of fetching separately
+        const summary = session.analysis;
 
-          if (summary && summary.status === "interested") {
-            const phoneKey = session.called_number;
+        if (summary && summary.status === "interested") {
+          const phoneKey = session.called_number;
 
-            if (!interestedSessionsMap.has(phoneKey)) {
-              interestedSessionsMap.set(phoneKey, {
-                interested_count: 1,
-                last_interested_at: session.started_at,
-                session_id: session.session_id,
-                summary: summary,
-              });
-            } else {
-              // Increment interested count if same lead appears multiple times
-              const existing = interestedSessionsMap.get(phoneKey);
-              existing.interested_count += 1;
-              // Update to most recent interested session
-              if (
-                new Date(session.started_at) >
-                new Date(existing.last_interested_at)
-              ) {
-                existing.last_interested_at = session.started_at;
-                existing.session_id = session.session_id;
-                existing.summary = summary;
-              }
+          if (!interestedSessionsMap.has(phoneKey)) {
+            interestedSessionsMap.set(phoneKey, {
+              interested_count: 1,
+              last_interested_at: session.started_at,
+              session_id: session.session_id,
+              summary: summary,
+            });
+          } else {
+            // Increment interested count if same lead appears multiple times
+            const existing = interestedSessionsMap.get(phoneKey);
+            existing.interested_count += 1;
+            // Update to most recent interested session
+            if (
+              new Date(session.started_at) >
+              new Date(existing.last_interested_at)
+            ) {
+              existing.last_interested_at = session.started_at;
+              existing.session_id = session.session_id;
+              existing.summary = summary;
             }
           }
-        } catch (error) {
-          // Summary not available for this session
-          continue;
         }
       }
 
@@ -407,6 +401,32 @@ function Conversions() {
             },
             "& .MuiDataGrid-row": {
               transition: "all 0.2s ease",
+              animation: "fadeSlideIn 0.5s ease-out both",
+              "&:nth-of-type(1)": { animationDelay: "0.03s" },
+              "&:nth-of-type(2)": { animationDelay: "0.06s" },
+              "&:nth-of-type(3)": { animationDelay: "0.09s" },
+              "&:nth-of-type(4)": { animationDelay: "0.12s" },
+              "&:nth-of-type(5)": { animationDelay: "0.15s" },
+              "&:nth-of-type(6)": { animationDelay: "0.18s" },
+              "&:nth-of-type(7)": { animationDelay: "0.21s" },
+              "&:nth-of-type(8)": { animationDelay: "0.24s" },
+              "&:nth-of-type(9)": { animationDelay: "0.27s" },
+              "&:nth-of-type(10)": { animationDelay: "0.30s" },
+              "&:nth-of-type(11)": { animationDelay: "0.33s" },
+              "&:nth-of-type(12)": { animationDelay: "0.36s" },
+              "&:nth-of-type(13)": { animationDelay: "0.39s" },
+              "&:nth-of-type(14)": { animationDelay: "0.42s" },
+              "&:nth-of-type(15)": { animationDelay: "0.45s" },
+              "&:nth-of-type(16)": { animationDelay: "0.48s" },
+              "&:nth-of-type(17)": { animationDelay: "0.51s" },
+              "&:nth-of-type(18)": { animationDelay: "0.54s" },
+              "&:nth-of-type(19)": { animationDelay: "0.57s" },
+              "&:nth-of-type(20)": { animationDelay: "0.60s" },
+              "&:nth-of-type(21)": { animationDelay: "0.63s" },
+              "&:nth-of-type(22)": { animationDelay: "0.66s" },
+              "&:nth-of-type(23)": { animationDelay: "0.69s" },
+              "&:nth-of-type(24)": { animationDelay: "0.72s" },
+              "&:nth-of-type(25)": { animationDelay: "0.75s" },
               "&:nth-of-type(even)": {
                 backgroundColor: "rgba(239, 246, 237, 0.3)",
               },
@@ -417,6 +437,16 @@ function Conversions() {
                 "& .MuiDataGrid-cell": {
                   borderBottomColor: "transparent",
                 },
+              },
+            },
+            "@keyframes fadeSlideIn": {
+              "0%": {
+                opacity: 0,
+                transform: "translateY(-10px)",
+              },
+              "100%": {
+                opacity: 1,
+                transform: "translateY(0)",
               },
             },
             "& .MuiDataGrid-cell:focus": {

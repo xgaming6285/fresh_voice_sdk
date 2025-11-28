@@ -33,13 +33,13 @@ import {
 } from "@mui/icons-material";
 import { DateTimePicker } from "@mui/x-date-pickers/DateTimePicker";
 import { sessionAPI, voiceAgentAPI, campaignAPI } from "../services/api";
+// Note: voiceAgentAPI is still used for bulk operations (retranscribe, generateSummary)
 import { formatDateTime } from "../utils/dateUtils";
 
 function Sessions() {
   const navigate = useNavigate();
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [summaries, setSummaries] = useState({});
   const [selectedRows, setSelectedRows] = useState([]);
 
   // Filter states
@@ -93,8 +93,8 @@ function Sessions() {
         return session;
       });
 
-      // Load summaries for CRM sessions
-      await loadSummariesForSessions(sessionsData);
+      // Note: Summaries (analysis) are already included in the sessions response
+      // No need to make separate API calls for each session
 
       // Extract unique countries from sessions data (before filtering)
       const uniqueCountries = [
@@ -125,11 +125,11 @@ function Sessions() {
       );
     }
 
-    // Filter by interest status
+    // Filter by interest status (using analysis from session response)
     if (interestFilter) {
       filtered = filtered.filter((session) => {
-        const summary = summaries[session.session_id];
-        return summary && summary.status === interestFilter;
+        const analysis = session.analysis;
+        return analysis && analysis.status === interestFilter;
       });
     }
 
@@ -156,29 +156,6 @@ function Sessions() {
     } catch (error) {
       console.error("Error loading campaigns:", error);
     }
-  };
-
-  const loadSummariesForSessions = async (sessionsData) => {
-    const summariesData = {};
-
-    // Load summaries for each CRM session in parallel
-    await Promise.all(
-      sessionsData.map(async (session) => {
-        if (!session.session_id) return;
-        try {
-          const summaryResponse = await voiceAgentAPI.getSummary(
-            session.session_id
-          );
-          summariesData[session.session_id] = summaryResponse.data.summary;
-        } catch (error) {
-          // Summary not available for this session
-          summariesData[session.session_id] = null;
-        }
-      })
-    );
-
-    // Merge with existing summaries
-    setSummaries((prev) => ({ ...prev, ...summariesData }));
   };
 
   const handleBulkTranscript = async () => {
@@ -391,14 +368,14 @@ function Sessions() {
       flex: 0.9,
       minWidth: 120,
       renderCell: (params) => {
-        // Display summary interest status for CRM sessions
-        const summary = summaries[params.row.session_id];
-        if (!summary) return "-";
+        // Display analysis interest status from session response (no extra API call needed)
+        const analysis = params.row.analysis;
+        if (!analysis || !analysis.status) return "-";
         return (
           <Chip
-            label={summary.status.toUpperCase()}
+            label={analysis.status.toUpperCase()}
             size="small"
-            color={summary.status === "interested" ? "success" : "default"}
+            color={analysis.status === "interested" ? "success" : "default"}
           />
         );
       },
@@ -726,6 +703,32 @@ function Sessions() {
             },
             "& .MuiDataGrid-row": {
               transition: "all 0.2s ease",
+              animation: "fadeSlideIn 0.5s ease-out both",
+              "&:nth-of-type(1)": { animationDelay: "0.03s" },
+              "&:nth-of-type(2)": { animationDelay: "0.06s" },
+              "&:nth-of-type(3)": { animationDelay: "0.09s" },
+              "&:nth-of-type(4)": { animationDelay: "0.12s" },
+              "&:nth-of-type(5)": { animationDelay: "0.15s" },
+              "&:nth-of-type(6)": { animationDelay: "0.18s" },
+              "&:nth-of-type(7)": { animationDelay: "0.21s" },
+              "&:nth-of-type(8)": { animationDelay: "0.24s" },
+              "&:nth-of-type(9)": { animationDelay: "0.27s" },
+              "&:nth-of-type(10)": { animationDelay: "0.30s" },
+              "&:nth-of-type(11)": { animationDelay: "0.33s" },
+              "&:nth-of-type(12)": { animationDelay: "0.36s" },
+              "&:nth-of-type(13)": { animationDelay: "0.39s" },
+              "&:nth-of-type(14)": { animationDelay: "0.42s" },
+              "&:nth-of-type(15)": { animationDelay: "0.45s" },
+              "&:nth-of-type(16)": { animationDelay: "0.48s" },
+              "&:nth-of-type(17)": { animationDelay: "0.51s" },
+              "&:nth-of-type(18)": { animationDelay: "0.54s" },
+              "&:nth-of-type(19)": { animationDelay: "0.57s" },
+              "&:nth-of-type(20)": { animationDelay: "0.60s" },
+              "&:nth-of-type(21)": { animationDelay: "0.63s" },
+              "&:nth-of-type(22)": { animationDelay: "0.66s" },
+              "&:nth-of-type(23)": { animationDelay: "0.69s" },
+              "&:nth-of-type(24)": { animationDelay: "0.72s" },
+              "&:nth-of-type(25)": { animationDelay: "0.75s" },
               "&:nth-of-type(even)": {
                 backgroundColor: "rgba(248, 243, 239, 0.3)",
               },
@@ -735,6 +738,16 @@ function Sessions() {
                 boxShadow: "0 2px 8px rgba(200, 92, 60, 0.1)",
               },
               cursor: "pointer",
+            },
+            "@keyframes fadeSlideIn": {
+              "0%": {
+                opacity: 0,
+                transform: "translateY(-10px)",
+              },
+              "100%": {
+                opacity: 1,
+                transform: "translateY(0)",
+              },
             },
           }}
           slotProps={{
