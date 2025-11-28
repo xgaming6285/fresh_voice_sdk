@@ -293,9 +293,9 @@ class GoodbyeDetector:
                     logger.info(f"👋 User said goodbye - arming hangup timer ({self._grace_ms}ms grace period)")
                     self._arm(on_trigger)   # grace window
                 elif who == "agent":
+                    # Agent goodbye detected but NOT triggering hangup - only user can end the call
                     self.agent_said = True
-                    logger.info("👋 Agent said goodbye - triggering immediate hangup")
-                    self._arm(on_trigger, immediate=True)
+                    logger.info("👋 Agent said goodbye (logged only, not triggering hangup)")
         else:
             # Only cancel pending hangup if USER says something new (not agent continuing to speak)
             if self._timer and who == "user":
@@ -852,6 +852,8 @@ def create_voice_config(language_info: Dict[str, Any], custom_config: Dict[str, 
         objection_strategy = custom_config.get('objection_strategy', 'understanding')
         greeting_transcript = custom_config.get('greeting_transcript', '')  # ✅ Get greeting text
         voice_name = custom_config.get('voice_name', 'Puck')  # ✅ Get voice name from CRM
+        gemini_greeting = custom_config.get('gemini_greeting', False)  # ✅ Let Gemini speak the greeting
+        greeting_instruction = custom_config.get('greeting_instruction', '')  # ✅ Custom greeting text
     else:
         # Minimal defaults when no custom config is provided
         company_name = 'PropTechAI'
@@ -865,13 +867,22 @@ def create_voice_config(language_info: Dict[str, Any], custom_config: Dict[str, 
         objection_strategy = 'understanding'
         greeting_transcript = ''  # ✅ No greeting by default
         voice_name = 'Puck'  # ✅ Default voice
+        gemini_greeting = False  # ✅ Default: use file-based greeting
+        greeting_instruction = ''  # ✅ No custom greeting
     
     # Create system instruction in the detected language
     if lang_name == 'English':
         system_text = f"You are {caller_name} from {company_name}, a professional sales representative for {product_name}. "
         
-        # ✅ Add greeting context if available
-        if greeting_transcript:
+        # ✅ Handle greeting - either Gemini-initiated or pre-recorded
+        if gemini_greeting:
+            # Gemini starts the conversation with a greeting
+            if greeting_instruction:
+                system_text += f"CRITICAL: You MUST start the conversation IMMEDIATELY by speaking first. Say this greeting: \"{greeting_instruction}\". Do NOT wait for the caller to speak first. After you greet them, pause briefly and wait for their response. "
+            else:
+                system_text += f"CRITICAL: You MUST start the conversation IMMEDIATELY by speaking first. Introduce yourself briefly: say hello, your name ({caller_name}), and that you're calling from {company_name}. Do NOT wait for the caller to speak first. After your brief introduction, pause and wait for their response. "
+        elif greeting_transcript:
+            # Pre-recorded greeting was already played
             system_text += f"IMPORTANT: You have ALREADY played this greeting to the caller: \"{greeting_transcript}\". DO NOT repeat this greeting. DO NOT introduce yourself again. The caller has already heard your introduction. Wait for the caller to speak first, then respond naturally to what they say. "
         
         # Add objective-specific instructions
@@ -1011,8 +1022,15 @@ IMPORTANT:
     elif lang_name == 'Bulgarian':
         system_text = f"Вие сте {caller_name} от {company_name}, професионален търговски представител на {product_name}. "
         
-        # ✅ Add greeting context if available (in Bulgarian)
-        if greeting_transcript:
+        # ✅ Handle greeting - either Gemini-initiated or pre-recorded (in Bulgarian)
+        if gemini_greeting:
+            # Gemini starts the conversation with a greeting
+            if greeting_instruction:
+                system_text += f"КРИТИЧНО: ТРЯБВА да започнете разговора ВЕДНАГА, като говорите първи. Кажете това поздравление: \"{greeting_instruction}\". НЕ чакайте обаждащият се да говори пръв. След като го поздравите, направете кратка пауза и изчакайте отговора му. "
+            else:
+                system_text += f"КРИТИЧНО: ТРЯБВА да започнете разговора ВЕДНАГА, като говорите първи. Представете се кратко: поздравете, кажете името си ({caller_name}) и че се обаждате от {company_name}. НЕ чакайте обаждащият се да говори пръв. След краткото си представяне, направете пауза и изчакайте отговора му. "
+        elif greeting_transcript:
+            # Pre-recorded greeting was already played
             system_text += f"ВАЖНО: Вече сте изпратили това приветствие на обаждащия се: \"{greeting_transcript}\". НЕ повтаряйте това приветствие. НЕ се представяйте отново. Обаждащият се вече е чул вашето представяне. Изчакайте обаждащият се първо да говори, след това отговорете естествено на това, което казва. "
         
         # Add objective-specific instructions in Bulgarian
@@ -1126,8 +1144,15 @@ IMPORTANT:
         # For other languages, use English template but mention the language
         system_text = f"You are {caller_name} from {company_name}, a professional sales representative for {product_name}, speaking in {lang_name}. "
         
-        # ✅ Add greeting context if available
-        if greeting_transcript:
+        # ✅ Handle greeting - either Gemini-initiated or pre-recorded
+        if gemini_greeting:
+            # Gemini starts the conversation with a greeting
+            if greeting_instruction:
+                system_text += f"CRITICAL: You MUST start the conversation IMMEDIATELY by speaking first in {lang_name}. Say this greeting: \"{greeting_instruction}\". Do NOT wait for the caller to speak first. After you greet them, pause briefly and wait for their response. "
+            else:
+                system_text += f"CRITICAL: You MUST start the conversation IMMEDIATELY by speaking first in {lang_name}. Introduce yourself briefly: say hello, your name ({caller_name}), and that you're calling from {company_name}. Do NOT wait for the caller to speak first. After your brief introduction, pause and wait for their response. "
+        elif greeting_transcript:
+            # Pre-recorded greeting was already played
             system_text += f"IMPORTANT: You have ALREADY played this greeting to the caller: \"{greeting_transcript}\". DO NOT repeat this greeting. DO NOT introduce yourself again. The caller has already heard your introduction. Wait for the caller to speak first, then respond naturally to what they say. "
         
         # Add objective-specific instructions
@@ -1272,9 +1297,9 @@ IMPORTANT:
             automatic_activity_detection=types.AutomaticActivityDetection(
                 disabled=False,
                 start_of_speech_sensitivity="START_SENSITIVITY_HIGH",
-                end_of_speech_sensitivity="END_SENSITIVITY_HIGH",
-                prefix_padding_ms=20,
-                silence_duration_ms=100,
+                end_of_speech_sensitivity="END_SENSITIVITY_LOW",  # LOW = less aggressive, prevents premature turn cuts
+                prefix_padding_ms=100,  # INCREASED: More padding for telephone audio
+                silence_duration_ms=800,  # INCREASED: 800ms silence for turn detection (was 100ms causing freezes)
             )
         ),
         speech_config=types.SpeechConfig(
@@ -2493,6 +2518,10 @@ class RTPSession:
         self._last_speech_time = time.time()  # Last time speech was detected
         logger.info(f"📍 End-of-turn detection enabled: {self._silence_threshold_sec}s silence threshold")
         
+        # Call answered flag - set to True when SIP 200 OK is received
+        # Used to delay Gemini greeting until user actually picks up
+        self.call_answered = False
+        
         # Keep processing flag for backward compatibility with other parts of the code
         self.processing = self.output_processing
         
@@ -2649,6 +2678,37 @@ class RTPSession:
             # Give receiver time to start
             await asyncio.sleep(0.1)
             
+            # ✅ NUDGE MECHANISM: If gemini_greeting is enabled, send a nudge to make Gemini speak first
+            # BUT ONLY AFTER THE CALL IS ANSWERED (SIP 200 OK received)
+            custom_config = getattr(self.voice_session, 'custom_config', {}) or {}
+            if custom_config.get('gemini_greeting', False):
+                logger.info("🎙️ Gemini greeting enabled - waiting for call to be answered before sending nudge...")
+                
+                # Wait for call to be answered (max 60 seconds)
+                wait_start = time.time()
+                max_wait = 60.0  # Max time to wait for answer
+                while not self.call_answered and self.input_processing:
+                    await asyncio.sleep(0.1)  # Check every 100ms
+                    if time.time() - wait_start > max_wait:
+                        logger.warning("⚠️ Timeout waiting for call to be answered - not sending greeting nudge")
+                        break
+                
+                # Only send nudge if call was actually answered
+                if self.call_answered:
+                    logger.info("📞 Call answered! Sending nudge to start conversation...")
+                    try:
+                        # Send a brief text message and signal end_of_turn to trigger Gemini to speak
+                        # This tells Gemini "it's your turn, start talking"
+                        await self.voice_session.gemini_session.send(
+                            input="[START CONVERSATION]",
+                            end_of_turn=True  # Critical: signals Gemini to respond
+                        )
+                        logger.info("✅ Nudge sent - Gemini should start speaking now")
+                    except Exception as nudge_error:
+                        logger.warning(f"⚠️ Nudge failed, Gemini may not speak first: {nudge_error}")
+                else:
+                    logger.warning("⚠️ Call not answered - skipping greeting nudge")
+            
             # Main loop: process audio from queue and send to Gemini with minimal latency
             # CRITICAL FIX: Use non-blocking queue access to prevent event loop starvation
             audio_chunks_sent = 0
@@ -2710,11 +2770,29 @@ class RTPSession:
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
     
+    def _calculate_audio_energy(self, audio_data: bytes) -> float:
+        """Calculate RMS energy of audio data for voice activity detection"""
+        try:
+            # Convert bytes to int16 samples
+            import struct
+            num_samples = len(audio_data) // 2
+            if num_samples == 0:
+                return 0.0
+            samples = struct.unpack(f'{num_samples}h', audio_data[:num_samples * 2])
+            # Calculate RMS
+            sum_squares = sum(s * s for s in samples)
+            rms = (sum_squares / num_samples) ** 0.5
+            return rms
+        except Exception:
+            return 0.0
+    
     async def _send_audio_to_gemini(self, audio_chunk: bytes):
         """Send audio chunk to Gemini directly.
         
-        We rely on Gemini's server-side VAD (automatic_activity_detection) to handle
-        end-of-turn detection. We always send end_of_turn=False.
+        Uses hybrid approach:
+        - Server-side VAD (automatic_activity_detection) handles normal turn-taking
+        - Client-side silence detection sends end_of_turn=True after prolonged silence
+          to prevent the "freeze" issue where Gemini buffers audio without processing
         """
         try:
             if not self.voice_session or not self.voice_session.gemini_session:
@@ -2737,10 +2815,50 @@ class RTPSession:
             
             current_time = time.time()
             
+            # ============================================================
+            # SILENCE-BASED END-OF-TURN DETECTION
+            # Prevents Gemini from buffering audio without responding
+            # ============================================================
+            audio_energy = self._calculate_audio_energy(audio_chunk)
+            is_silence = audio_energy < self._speech_energy_threshold
+            
+            if is_silence:
+                # Track when silence started
+                if self._silence_start_time is None:
+                    self._silence_start_time = current_time
+                    
+                # Check if we should send end_of_turn signal
+                silence_duration = current_time - self._silence_start_time
+                
+                # Send end_of_turn after 1.2 seconds of silence (if not already sent)
+                if silence_duration >= self._silence_threshold_sec and not self._end_of_turn_sent:
+                    logger.info(f"🔇 Silence detected for {silence_duration:.1f}s - sending end_of_turn=True")
+                    self._end_of_turn_sent = True
+                    
+                    # Send a special signal to Gemini indicating user turn is complete
+                    try:
+                        await asyncio.wait_for(
+                            self.voice_session.gemini_session.send(
+                                input={"data": processed_audio, "mime_type": "audio/pcm;rate=24000"},
+                                end_of_turn=True  # Signal end of user turn
+                            ),
+                            timeout=2.0
+                        )
+                        logger.info("✅ End-of-turn signal sent to Gemini")
+                        return  # Audio already sent with end_of_turn
+                    except Exception as eot_err:
+                        logger.warning(f"⚠️ Failed to send end_of_turn: {eot_err}")
+            else:
+                # User is speaking - reset silence tracking
+                if self._silence_start_time is not None:
+                    self._silence_start_time = None
+                    self._end_of_turn_sent = False
+                    self._last_speech_time = current_time
+            
             # Send audio to Gemini with reduced 2-second timeout (fail fast)
             try:
                 send_start = time.time()
-                # Always send end_of_turn=False, letting server VAD decide
+                # Normal audio send - let server VAD handle it
                 await asyncio.wait_for(
                     self.voice_session.gemini_session.send(
                         input={"data": processed_audio, "mime_type": "audio/pcm;rate=24000"},
@@ -2987,8 +3105,18 @@ class RTPSession:
                         continue
                 
                 # After turn completes, prepare for next turn
-                if not turn_had_content:
+                if turn_had_content:
+                    logger.info(f"🔄 Turn complete (had content) - ready for next turn")
+                    # Reset silence tracking so we can detect next user silence
+                    self._silence_start_time = None
+                    self._end_of_turn_sent = False
+                else:
                     logger.debug("Empty turn received, continuing to listen")
+                
+                # Reset interrupted flag after turn completes to allow next response
+                if self.is_interrupted:
+                    logger.debug("🔄 Resetting interrupted flag after turn complete")
+                    self.is_interrupted = False
                 
                 # Small yield to prevent tight loop
                 await asyncio.sleep(0.001)
@@ -4212,7 +4340,7 @@ Content-Length: 0
                         active_sessions[session_id]["status"] = "active"
                         logger.info(f"🎯 Voice session {session_id} is now active and ready")
                     
-                    # Play greeting *after* Gemini is ready
+                    # Play greeting *after* Gemini is ready (unless gemini_greeting is enabled)
                     def play_greeting():
                         # Small delay to ensure audio pipeline is ready
                         time.sleep(0.5)
@@ -4220,6 +4348,12 @@ Content-Length: 0
                         # Check if call is still active
                         if session_id not in active_sessions:
                             logger.warning("⚠️ Call ended before greeting could be played")
+                            return
+                        
+                        # ✅ Skip file-based greeting if gemini_greeting is enabled
+                        custom_config = getattr(voice_session, 'custom_config', {}) or {}
+                        if custom_config.get('gemini_greeting', False):
+                            logger.info("🎙️ Gemini greeting enabled - skipping file-based greeting (Gemini will speak first)")
                             return
                         
                         logger.info("🎵 Playing greeting...")
@@ -5064,6 +5198,10 @@ Content-Length: {len(sdp_content)}
             if gemini_ready and voice_session and rtp_session:
                 logger.info("✅ Reusing Gemini connection initialized during ringing (FAST PATH)")
                 
+                # ✅ CRITICAL: Set call_answered flag to trigger Gemini greeting
+                rtp_session.call_answered = True
+                logger.info("📞 Call answered flag set - Gemini greeting will now be triggered")
+                
                 # Store SIP details in voice session for sending BYE later
                 voice_session.sip_handler = self
                 voice_session.from_tag = from_tag
@@ -5122,6 +5260,10 @@ Content-Length: {len(sdp_content)}
                 # For now, we'll use the Gate VoIP address as the RTP destination
                 remote_addr = (self.gate_ip, 5004)  # Default RTP port
                 rtp_session = self.rtp_server.create_session(session_id, remote_addr, voice_session, voice_session.call_recorder)
+                
+                # ✅ CRITICAL: Set call_answered flag (call is answered in slow path too)
+                rtp_session.call_answered = True
+                logger.info("📞 Call answered flag set (slow path) - Gemini greeting will be triggered when ready")
             
             # Store the active session
             active_sessions[session_id] = {
@@ -5220,6 +5362,11 @@ Content-Length: {len(sdp_content)}
 
                         # Play greeting now that call is fully established AND Gemini is ready
                         def play_outbound_greeting():
+                            # ✅ Skip file-based greeting if gemini_greeting is enabled
+                            if custom_config and custom_config.get('gemini_greeting', False):
+                                logger.info("🎙️ Gemini greeting enabled - skipping file-based greeting (Gemini will speak first)")
+                                return
+                            
                             # Check if we saw ringing state before 200 OK
                             was_ringing = active_sessions[session_id].get('was_ringing', False) if session_id in active_sessions else False
                             
@@ -6255,8 +6402,16 @@ async def make_outbound_call(call_request: dict, current_user: User = Depends(ch
             "main_benefits": call_config.get("main_benefits", ""),
             "special_offer": call_config.get("special_offer", ""),
             "objection_strategy": call_config.get("objection_strategy", "understanding"),
-            "voice_name": call_config.get("voice_name", "Puck")  # ✅ Pass voice from CRM to custom_config
+            "voice_name": call_config.get("voice_name", "Puck"),  # ✅ Pass voice from CRM to custom_config
+            "gemini_greeting": call_config.get("gemini_greeting", False),  # ✅ Let Gemini speak the greeting
+            "greeting_instruction": call_config.get("greeting_instruction", "")  # ✅ Custom greeting text for Gemini
         }
+        
+        # 🧪 TEMPORARY BYPASS FOR TESTING: Force gemini_greeting=True to test the feature
+        # Comment out this block after testing is complete
+        if True:  # Set to False to disable bypass
+            custom_config['gemini_greeting'] = True
+            logger.info("🧪 TEST MODE: gemini_greeting FORCED ON - Gemini will speak first!")
         
         logger.info(f"📞 Making outbound call to {phone_number} with custom config:")
         logger.info(f"   Company: {custom_config['company_name']}")
@@ -6269,13 +6424,15 @@ async def make_outbound_call(call_request: dict, current_user: User = Depends(ch
         logger.info(f"   Objection Strategy: {custom_config['objection_strategy']}")
         logger.info(f"   Voice: {custom_config['voice_name']}")  # ✅ Log selected voice
         
-        # Store greeting file in custom config if provided
-        if greeting_file:
+        # Store greeting file in custom config if provided (skip if gemini_greeting is enabled)
+        if greeting_file and not custom_config.get('gemini_greeting', False):
             custom_config['greeting_file'] = greeting_file
             logger.info(f"🎵 Using custom greeting: {greeting_file}")
+        elif custom_config.get('gemini_greeting', False):
+            logger.info(f"🎙️ Gemini greeting mode - ignoring pre-generated greeting file")
         
-        # ✅ Store greeting transcript for context (so Gemini knows what was already said)
-        if greeting_transcript:
+        # ✅ Store greeting transcript for context (skip if gemini_greeting - Gemini will create its own)
+        if greeting_transcript and not custom_config.get('gemini_greeting', False):
             custom_config['greeting_transcript'] = greeting_transcript
             logger.info(f"📝 Greeting transcript: {greeting_transcript[:100]}...")
         
