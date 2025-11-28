@@ -6039,18 +6039,34 @@ class WindowsVoiceSession:
         """
         Input: 16-bit mono PCM at 8000 Hz.
         Output: 16-bit mono PCM at 24000 Hz for the model.
-        OPTIMIZED: Uses linear repetition for lowest latency.
+        Uses high-quality polyphase resampling for better voice clarity.
         """
         try:
             import numpy as np
-            # FASTEST METHOD: Simple repetition (Nearest Neighbor)
-            # 8kHz -> 24kHz is exactly 3x. This is extremely fast (0ms latency cost).
-            in_array = np.frombuffer(audio_data, dtype=np.int16)
-            out_array = np.repeat(in_array, 3)
+            from scipy.signal import resample_poly
+            
+            # HIGH-QUALITY METHOD: Polyphase resampling with anti-aliasing
+            # 8kHz -> 24kHz is exactly 3x upsample (up=3, down=1)
+            # This uses a proper lowpass filter to avoid aliasing artifacts
+            # and produces cleaner audio for Gemini's speech recognition.
+            in_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
+            
+            # resample_poly with kaiser window provides excellent quality/speed balance
+            # window=('kaiser', 5.0) gives good stopband attenuation without excessive latency
+            out_array = resample_poly(in_array, 3, 1, window=('kaiser', 5.0))
+            
+            # Clip and convert back to int16
+            out_array = np.clip(out_array, -32768, 32767).astype(np.int16)
             return out_array.tobytes()
         except Exception as e:
-            logger.warning(f"Conversion failed: {e}")
-            return audio_data # Fallback
+            logger.warning(f"High-quality conversion failed, using fallback: {e}")
+            # Fallback to simple repetition if scipy fails
+            try:
+                in_array = np.frombuffer(audio_data, dtype=np.int16)
+                out_array = np.repeat(in_array, 3)
+                return out_array.tobytes()
+            except:
+                return audio_data
 
     def convert_gemini_to_telephony(self, model_pcm: bytes) -> bytes:
         """
