@@ -223,8 +223,7 @@ function Leads() {
     {
       field: "id",
       headerName: "ID",
-      flex: 0.4,
-      minWidth: 50,
+      flex: 0.3,
       renderCell: (params) => (
         <Box
           sx={{
@@ -240,11 +239,10 @@ function Leads() {
     {
       field: "owner_name",
       headerName: "Added By",
-      flex: 1,
-      minWidth: 110,
+      flex: 0.8,
       renderCell: (params) => (
         <Chip
-          icon={<PersonIcon sx={{ fontSize: 16 }} />}
+          icon={<PersonIcon sx={{ fontSize: 14 }} />}
           label={params.value || "Unknown"}
           size="small"
           sx={{
@@ -252,6 +250,7 @@ function Leads() {
             backdropFilter: "blur(10px)",
             border: "1px solid",
             borderColor: "primary.light",
+            fontSize: "0.7rem",
             "& .MuiChip-icon": {
               color: "primary.main",
             },
@@ -264,39 +263,49 @@ function Leads() {
     {
       field: "full_name",
       headerName: "Name",
-      flex: 1.3,
-      minWidth: 200,
+      flex: 1,
       renderCell: (params) => {
         const getGenderIcon = () => {
           const gender = params.row.gender;
           if (gender === "male")
-            return <MaleIcon sx={{ fontSize: 18, color: "#64B5F6" }} />;
+            return <MaleIcon sx={{ fontSize: 16, color: "#64B5F6" }} />;
           if (gender === "female")
-            return <FemaleIcon sx={{ fontSize: 18, color: "#F48FB1" }} />;
+            return <FemaleIcon sx={{ fontSize: 16, color: "#F48FB1" }} />;
           return (
-            <QuestionMarkIcon sx={{ fontSize: 18, color: "text.secondary" }} />
+            <QuestionMarkIcon sx={{ fontSize: 16, color: "text.secondary" }} />
           );
         };
 
         return (
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              gap: 0.5,
+              overflow: "hidden",
+            }}
+          >
             <Box
               sx={{
-                p: 0.75,
+                p: 0.5,
                 borderRadius: "50%",
                 background: "rgba(200, 92, 60, 0.08)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
+                flexShrink: 0,
               }}
             >
               {getGenderIcon()}
             </Box>
-            <Box>
-              <Typography variant="body2" fontWeight={600}>
-                {params.value || "—"}
-              </Typography>
-            </Box>
+            <Typography
+              variant="body2"
+              fontWeight={600}
+              noWrap
+              sx={{ fontSize: "0.8rem" }}
+            >
+              {params.value || "—"}
+            </Typography>
           </Box>
         );
       },
@@ -304,17 +313,26 @@ function Leads() {
     {
       field: "email",
       headerName: "Email",
-      flex: 1.5,
-      minWidth: 220,
+      flex: 1.2,
       renderCell: (params) => (
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          <EmailIcon sx={{ fontSize: 18, color: "text.secondary" }} />
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 0.5,
+            overflow: "hidden",
+          }}
+        >
+          <EmailIcon
+            sx={{ fontSize: 16, color: "text.secondary", flexShrink: 0 }}
+          />
           <Typography
             variant="body2"
+            noWrap
             sx={{
               color: params.value ? "text.primary" : "text.disabled",
               fontFamily: "monospace",
-              fontSize: "0.875rem",
+              fontSize: "0.75rem",
             }}
           >
             {params.value || "No email"}
@@ -325,27 +343,28 @@ function Leads() {
     {
       field: "full_phone",
       headerName: "Phone",
-      flex: 1.1,
-      minWidth: 160,
+      flex: 0.9,
       renderCell: (params) => (
         <Box
           sx={{
             display: "flex",
             alignItems: "center",
-            gap: 1,
-            px: 1.5,
-            py: 0.5,
+            gap: 0.5,
+            px: 1,
+            py: 0.25,
             borderRadius: 2,
             background: "rgba(92, 138, 166, 0.08)",
+            overflow: "hidden",
           }}
         >
-          <PhoneIcon sx={{ fontSize: 16, color: "info.main" }} />
+          <PhoneIcon sx={{ fontSize: 14, color: "info.main", flexShrink: 0 }} />
           <Typography
             variant="body2"
             fontWeight={500}
+            noWrap
             sx={{
               fontFamily: "monospace",
-              letterSpacing: "0.5px",
+              fontSize: "0.75rem",
             }}
           >
             {params.value}
@@ -356,12 +375,25 @@ function Leads() {
     {
       field: "country",
       headerName: "Country",
-      flex: 0.9,
-      minWidth: 120,
+      flex: 0.6,
       renderCell: (params) => (
-        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-          <LocationIcon sx={{ fontSize: 16, color: "text.secondary" }} />
-          <Typography variant="body2" fontWeight={500}>
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 0.5,
+            overflow: "hidden",
+          }}
+        >
+          <LocationIcon
+            sx={{ fontSize: 14, color: "text.secondary", flexShrink: 0 }}
+          />
+          <Typography
+            variant="body2"
+            fontWeight={500}
+            noWrap
+            sx={{ fontSize: "0.8rem" }}
+          >
             {params.value || "—"}
           </Typography>
         </Box>
@@ -370,8 +402,7 @@ function Leads() {
     {
       field: "call_count",
       headerName: "Calls",
-      flex: 0.6,
-      minWidth: 80,
+      flex: 0.4,
       align: "center",
       headerAlign: "center",
       renderCell: (params) => (
@@ -380,8 +411,8 @@ function Leads() {
             display: "inline-flex",
             alignItems: "center",
             justifyContent: "center",
-            px: 1.5,
-            py: 0.5,
+            px: 1,
+            py: 0.25,
             borderRadius: 10,
             background:
               params.value > 0
@@ -396,6 +427,7 @@ function Leads() {
             fontWeight={700}
             sx={{
               color: params.value > 0 ? "success.dark" : "text.secondary",
+              fontSize: "0.75rem",
             }}
           >
             {params.value}
@@ -406,15 +438,18 @@ function Leads() {
     {
       field: "last_called_at",
       headerName: "Last Called",
-      flex: 1.3,
-      minWidth: 180,
+      flex: 0.8,
       renderCell: (params) => {
         if (!params.value) {
           return (
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-              <AccessTimeIcon sx={{ fontSize: 16, color: "text.disabled" }} />
-              <Typography variant="body2" color="text.disabled">
-                Never called
+              <AccessTimeIcon sx={{ fontSize: 14, color: "text.disabled" }} />
+              <Typography
+                variant="body2"
+                color="text.disabled"
+                sx={{ fontSize: "0.75rem" }}
+              >
+                Never
               </Typography>
             </Box>
           );
@@ -423,16 +458,19 @@ function Leads() {
         const { timeAgo, color } = getRelativeTime(params.value);
 
         return (
-          <Box>
+          <Box sx={{ overflow: "hidden" }}>
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-              <AccessTimeIcon sx={{ fontSize: 16, color }} />
-              <Typography variant="body2" fontWeight={500} color={color}>
+              <AccessTimeIcon sx={{ fontSize: 14, color, flexShrink: 0 }} />
+              <Typography
+                variant="body2"
+                fontWeight={500}
+                color={color}
+                noWrap
+                sx={{ fontSize: "0.75rem" }}
+              >
                 {timeAgo}
               </Typography>
             </Box>
-            <Typography variant="caption" color="text.secondary">
-              {formatTime(params.value)}
-            </Typography>
           </Box>
         );
       },
@@ -440,16 +478,16 @@ function Leads() {
     {
       field: "actions",
       headerName: "Actions",
-      flex: 1,
-      minWidth: 150,
+      flex: 0.7,
       sortable: false,
       renderCell: (params) => (
-        <Box sx={{ display: "flex", gap: 0.5 }}>
+        <Box sx={{ display: "flex", gap: 0.25 }}>
           <IconButton
             size="small"
             onClick={() => handleCallLead(params.row)}
             color="primary"
             sx={{
+              padding: "4px",
               transition: "all 0.2s ease",
               "&:hover": {
                 transform: "scale(1.1)",
@@ -457,12 +495,13 @@ function Leads() {
               },
             }}
           >
-            <PhoneIcon fontSize="small" />
+            <PhoneIcon sx={{ fontSize: 18 }} />
           </IconButton>
           <IconButton
             size="small"
             onClick={() => handleEditLead(params.row)}
             sx={{
+              padding: "4px",
               transition: "all 0.2s ease",
               "&:hover": {
                 transform: "scale(1.1)",
@@ -470,13 +509,14 @@ function Leads() {
               },
             }}
           >
-            <EditIcon fontSize="small" />
+            <EditIcon sx={{ fontSize: 18 }} />
           </IconButton>
           <IconButton
             size="small"
             onClick={() => handleDeleteLead(params.row.id)}
             color="error"
             sx={{
+              padding: "4px",
               transition: "all 0.2s ease",
               "&:hover": {
                 transform: "scale(1.1)",
@@ -484,7 +524,7 @@ function Leads() {
               },
             }}
           >
-            <DeleteIcon fontSize="small" />
+            <DeleteIcon sx={{ fontSize: 18 }} />
           </IconButton>
         </Box>
       ),
@@ -514,6 +554,23 @@ Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
         flexDirection: "column",
       }}
     >
+      {/* Full-screen blur overlay when dialogs are open */}
+      {(openDialog || callDialog) && (
+        <Box
+          sx={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backdropFilter: "blur(4px)",
+            WebkitBackdropFilter: "blur(4px)",
+            backgroundColor: "rgba(0, 0, 0, 0.1)",
+            zIndex: 1200,
+            transition: "all 0.3s ease",
+          }}
+        />
+      )}
       <SubscriptionBanner />
       <Paper
         className="glass-effect ios-blur-container"
@@ -530,10 +587,23 @@ Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
             flex: 1,
           },
           "& .MuiDataGrid-main": {
-            overflow: "auto",
+            overflowX: "hidden",
+            overflowY: "auto",
           },
           "& .MuiDataGrid-virtualScroller": {
-            overflow: "auto !important",
+            overflowX: "hidden !important",
+            overflowY: "auto !important",
+            scrollbarWidth: "none",
+            msOverflowStyle: "none",
+            "&::-webkit-scrollbar": {
+              display: "none",
+            },
+          },
+          "& .MuiDataGrid-virtualScrollerContent": {
+            width: "100% !important",
+          },
+          "& .MuiDataGrid-virtualScrollerRenderZone": {
+            width: "100% !important",
           },
         }}
       >
@@ -618,32 +688,32 @@ Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
             },
             "& .MuiDataGrid-row": {
               transition: "all 0.2s ease",
-              animation: "fadeSlideIn 0.5s ease-out both",
-              "&:nth-of-type(1)": { animationDelay: "0.03s" },
-              "&:nth-of-type(2)": { animationDelay: "0.06s" },
-              "&:nth-of-type(3)": { animationDelay: "0.09s" },
-              "&:nth-of-type(4)": { animationDelay: "0.12s" },
-              "&:nth-of-type(5)": { animationDelay: "0.15s" },
-              "&:nth-of-type(6)": { animationDelay: "0.18s" },
-              "&:nth-of-type(7)": { animationDelay: "0.21s" },
-              "&:nth-of-type(8)": { animationDelay: "0.24s" },
-              "&:nth-of-type(9)": { animationDelay: "0.27s" },
-              "&:nth-of-type(10)": { animationDelay: "0.30s" },
-              "&:nth-of-type(11)": { animationDelay: "0.33s" },
-              "&:nth-of-type(12)": { animationDelay: "0.36s" },
-              "&:nth-of-type(13)": { animationDelay: "0.39s" },
-              "&:nth-of-type(14)": { animationDelay: "0.42s" },
-              "&:nth-of-type(15)": { animationDelay: "0.45s" },
-              "&:nth-of-type(16)": { animationDelay: "0.48s" },
-              "&:nth-of-type(17)": { animationDelay: "0.51s" },
-              "&:nth-of-type(18)": { animationDelay: "0.54s" },
-              "&:nth-of-type(19)": { animationDelay: "0.57s" },
-              "&:nth-of-type(20)": { animationDelay: "0.60s" },
-              "&:nth-of-type(21)": { animationDelay: "0.63s" },
-              "&:nth-of-type(22)": { animationDelay: "0.66s" },
-              "&:nth-of-type(23)": { animationDelay: "0.69s" },
-              "&:nth-of-type(24)": { animationDelay: "0.72s" },
-              "&:nth-of-type(25)": { animationDelay: "0.75s" },
+              animation: "fadeSlideIn 0.9s ease-out both",
+              "&:nth-of-type(1)": { animationDelay: "0.06s" },
+              "&:nth-of-type(2)": { animationDelay: "0.12s" },
+              "&:nth-of-type(3)": { animationDelay: "0.18s" },
+              "&:nth-of-type(4)": { animationDelay: "0.24s" },
+              "&:nth-of-type(5)": { animationDelay: "0.30s" },
+              "&:nth-of-type(6)": { animationDelay: "0.36s" },
+              "&:nth-of-type(7)": { animationDelay: "0.42s" },
+              "&:nth-of-type(8)": { animationDelay: "0.48s" },
+              "&:nth-of-type(9)": { animationDelay: "0.54s" },
+              "&:nth-of-type(10)": { animationDelay: "0.60s" },
+              "&:nth-of-type(11)": { animationDelay: "0.66s" },
+              "&:nth-of-type(12)": { animationDelay: "0.72s" },
+              "&:nth-of-type(13)": { animationDelay: "0.78s" },
+              "&:nth-of-type(14)": { animationDelay: "0.84s" },
+              "&:nth-of-type(15)": { animationDelay: "0.90s" },
+              "&:nth-of-type(16)": { animationDelay: "0.96s" },
+              "&:nth-of-type(17)": { animationDelay: "1.02s" },
+              "&:nth-of-type(18)": { animationDelay: "1.08s" },
+              "&:nth-of-type(19)": { animationDelay: "1.14s" },
+              "&:nth-of-type(20)": { animationDelay: "1.20s" },
+              "&:nth-of-type(21)": { animationDelay: "1.26s" },
+              "&:nth-of-type(22)": { animationDelay: "1.32s" },
+              "&:nth-of-type(23)": { animationDelay: "1.38s" },
+              "&:nth-of-type(24)": { animationDelay: "1.44s" },
+              "&:nth-of-type(25)": { animationDelay: "1.50s" },
               "&:nth-of-type(even)": {
                 backgroundColor: "rgba(248, 243, 239, 0.3)",
               },
@@ -667,10 +737,21 @@ Jane,Smith,jane.smith@example.com,555-5678,UK,+44,female,456 High St`;
               },
             },
             "& .MuiDataGrid-virtualScrollerContent": {
-              minWidth: "100% !important",
+              width: "100% !important",
+              minWidth: "unset !important",
             },
             "& .MuiDataGrid-columnHeadersInner": {
-              minWidth: "100% !important",
+              width: "100% !important",
+              minWidth: "unset !important",
+            },
+            "& .MuiDataGrid-virtualScrollerRenderZone": {
+              width: "100% !important",
+            },
+            "& .MuiDataGrid-scrollbar--horizontal": {
+              display: "none !important",
+            },
+            "& .MuiDataGrid-scrollbar--vertical": {
+              display: "none !important",
             },
             "& .MuiDataGrid-cell:focus": {
               outline: "none",
