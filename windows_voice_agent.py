@@ -50,6 +50,7 @@ logging.getLogger('google_genai.types').setLevel(logging.ERROR)
 import pyaudio
 import requests
 import numpy as np
+import webrtcvad  # High-performance VAD
 
 # Asterisk AMI Monitor for linkedid capture
 from asterisk_ami_monitor import start_ami_monitoring, get_current_linkedid, ami_monitor
@@ -128,77 +129,731 @@ else:
     logger.warning("💡 To enable transcription, install: pip install google-genai")
     logger.warning("💡 Or for local transcription: pip install faster-whisper")
 
-class VoiceActivityDetector:
-    """Robust Voice Activity Detector with adaptive thresholds to minimize false positives"""
+
+# =============================================================================
+# PROFESSIONAL COLD CALLING ENHANCEMENTS
+# =============================================================================
+
+from enum import Enum, auto
+
+class ConversationState(Enum):
+    """
+    Explicit conversation state machine for professional turn-taking.
     
-    def __init__(self, sample_rate: int = 8000, energy_threshold: float = 1500.0):
+    Professional cold calling systems track conversation state explicitly
+    to prevent issues like:
+    - Sending end-of-turn while AI is speaking
+    - Interrupting the greeting
+    - Missing user responses due to noise
+    """
+    INITIALIZING = auto()      # Session starting up
+    GREETING = auto()          # AI speaking first (greeting)
+    LISTENING = auto()         # Waiting for user response
+    USER_SPEAKING = auto()     # User is actively talking
+    PROCESSING = auto()        # Detecting end-of-turn, brief pause
+    AI_RESPONDING = auto()     # AI generating/speaking response
+    INTERRUPTED = auto()       # User interrupted AI
+    CALL_ENDING = auto()       # Goodbye detected, wrapping up
+    ENDED = auto()             # Call terminated
+
+
+class AnsweringMachineDetector:
+    """
+    Detects answering machines/voicemail within the first few seconds.
+    
+    Professional cold calling systems detect voicemail to:
+    1. Avoid wasting agent time on voicemail
+    2. Leave appropriate voicemail messages
+    3. Schedule callback for live calls
+    
+    Detection indicators:
+    - Long continuous speech (>5s without pause) - voicemail greeting
+    - Specific phrases: "leave a message", "beep", "not available"
+    - Monotone energy pattern (recorded vs live)
+    - No interruption response (live humans respond to pauses)
+    """
+    
+    # Phrases indicating answering machine (multi-language)
+    AMD_PHRASES = re.compile(r"""
+        (
+            # English
+            leave\s+(a\s+)?message|
+            after\s+the\s+(beep|tone)|
+            not\s+available|
+            voicemail|
+            mailbox|
+            record\s+your\s+message|
+            press\s+\d+\s+to|
+            
+            # Bulgarian
+            оставете\s+съобщение|
+            след\s+сигнала|
+            гласова\s+поща|
+            не\s+е\s+на\s+разположение|
+            натиснете|
+            
+            # Spanish  
+            deje\s+su\s+mensaje|
+            después\s+del\s+tono|
+            buzón\s+de\s+voz|
+            
+            # German
+            hinterlassen\s+sie|
+            nach\s+dem\s+signalton|
+            mailbox|
+            
+            # French
+            laissez\s+un\s+message|
+            après\s+le\s+bip|
+            messagerie
+        )
+    """, re.I | re.VERBOSE)
+    
+    def __init__(self, detection_window_sec: float = 5.0):
+        """
+        Args:
+            detection_window_sec: Time window for AMD detection (default 5s)
+        """
+        self.detection_window_sec = detection_window_sec
+        self.call_start_time = None
+        self.continuous_speech_start = None
+        self.speech_segments = []  # List of (start, end) tuples
+        self.detected_result = None  # None = undetermined, True = AMD, False = Human
+        self.transcript_buffer = ""
+        self.energy_samples = []  # For monotone detection
+        self.last_pause_time = None
+        self.pause_count = 0
+        
+        # Thresholds
+        self.continuous_speech_threshold = 4.5  # Seconds of continuous speech = AMD
+        self.min_pauses_for_human = 2  # Humans typically pause at least twice in 5s
+        self.energy_variance_threshold = 500  # Low variance = recorded voice
+        
+        logger.info(f"📞 AMD initialized (window={detection_window_sec}s, continuous_threshold={self.continuous_speech_threshold}s)")
+    
+    def start_detection(self):
+        """Call when call is answered to start AMD detection window"""
+        self.call_start_time = time.time()
+        self.continuous_speech_start = None
+        self.speech_segments = []
+        self.detected_result = None
+        self.transcript_buffer = ""
+        self.energy_samples = []
+        self.last_pause_time = time.time()
+        self.pause_count = 0
+        logger.info("📞 AMD detection started")
+    
+    def feed_audio(self, is_speech: bool, energy: float) -> Optional[bool]:
+        """
+        Feed audio analysis results to AMD detector.
+        
+        Args:
+            is_speech: Whether current frame contains speech
+            energy: RMS energy of current frame
+            
+        Returns:
+            None if still detecting, True if AMD detected, False if human detected
+        """
+        if self.call_start_time is None:
+            return None
+            
+        if self.detected_result is not None:
+            return self.detected_result
+            
+        current_time = time.time()
+        elapsed = current_time - self.call_start_time
+        
+        # Past detection window - default to human
+        if elapsed > self.detection_window_sec:
+            if self.detected_result is None:
+                self.detected_result = False
+                logger.info(f"📞 AMD: Detection window ended - assuming HUMAN (no clear AMD indicators)")
+            return self.detected_result
+        
+        # Track energy for variance analysis
+        self.energy_samples.append(energy)
+        
+        if is_speech:
+            if self.continuous_speech_start is None:
+                self.continuous_speech_start = current_time
+            
+            # Check for continuous speech (AMD indicator)
+            speech_duration = current_time - self.continuous_speech_start
+            if speech_duration >= self.continuous_speech_threshold:
+                self.detected_result = True
+                logger.info(f"📞 AMD DETECTED: Continuous speech for {speech_duration:.1f}s (threshold: {self.continuous_speech_threshold}s)")
+                return True
+        else:
+            # Silence/pause detected
+            if self.continuous_speech_start is not None:
+                # End of speech segment
+                segment_duration = current_time - self.continuous_speech_start
+                if segment_duration > 0.3:  # Only count significant speech segments
+                    self.speech_segments.append((self.continuous_speech_start, current_time))
+                self.continuous_speech_start = None
+                
+                # Count pause
+                if current_time - self.last_pause_time > 0.5:  # Significant pause
+                    self.pause_count += 1
+                    self.last_pause_time = current_time
+                    
+                    # Multiple pauses suggest human (conversational pattern)
+                    if self.pause_count >= self.min_pauses_for_human and elapsed > 2.0:
+                        self.detected_result = False
+                        logger.info(f"📞 AMD: HUMAN detected (conversational pauses: {self.pause_count})")
+                        return False
+        
+        return None
+    
+    def feed_transcript(self, text: str) -> Optional[bool]:
+        """
+        Feed transcript text for phrase-based AMD detection.
+        
+        Args:
+            text: Transcribed text from the call
+            
+        Returns:
+            True if AMD phrases detected, None otherwise
+        """
+        if self.detected_result is not None:
+            return self.detected_result
+            
+        self.transcript_buffer += " " + text.lower()
+        
+        # Check for AMD phrases
+        if self.AMD_PHRASES.search(self.transcript_buffer):
+            self.detected_result = True
+            logger.info(f"📞 AMD DETECTED: Voicemail phrase detected in transcript")
+            return True
+            
+        return None
+    
+    def get_result(self) -> Optional[bool]:
+        """Get current detection result"""
+        return self.detected_result
+    
+    def is_detecting(self) -> bool:
+        """Check if still in detection window"""
+        if self.call_start_time is None:
+            return False
+        return (time.time() - self.call_start_time) < self.detection_window_sec and self.detected_result is None
+
+
+class AdaptiveSilenceDetector:
+    """
+    Professional silence detection with adaptive thresholds.
+    
+    Instead of fixed thresholds, this adapts to:
+    - Ambient noise level of the call
+    - GSM/telephony line quality
+    - Speaking patterns of the current caller
+    """
+    
+    def __init__(self, 
+                 initial_threshold: float = 5000.0,
+                 min_threshold: float = 2000.0,
+                 max_threshold: float = 12000.0,
+                 adaptation_rate: float = 0.05):
+        """
+        Args:
+            initial_threshold: Starting energy threshold
+            min_threshold: Minimum allowed threshold
+            max_threshold: Maximum allowed threshold
+            adaptation_rate: How fast to adapt (0.01-0.1)
+        """
+        self.threshold = initial_threshold
+        self.min_threshold = min_threshold
+        self.max_threshold = max_threshold
+        self.adaptation_rate = adaptation_rate
+        
+        # Running statistics
+        self.noise_floor = initial_threshold * 0.3  # Estimated background noise
+        self.speech_level = initial_threshold * 2.0  # Estimated speech level
+        self.energy_history = []
+        self.max_history = 100  # Keep last 100 samples
+        
+        # Calibration state
+        self.calibrated = False
+        self.calibration_samples = 0
+        self.calibration_target = 50  # Samples needed for initial calibration
+        
+        logger.info(f"📊 Adaptive silence detector initialized (threshold={initial_threshold})")
+    
+    def update(self, energy: float, is_speech: bool) -> float:
+        """
+        Update adaptive threshold based on observed energy.
+        
+        Args:
+            energy: RMS energy of current frame
+            is_speech: Whether WebRTC VAD detected speech
+            
+        Returns:
+            Current adaptive threshold
+        """
+        # Add to history
+        self.energy_history.append((energy, is_speech))
+        if len(self.energy_history) > self.max_history:
+            self.energy_history.pop(0)
+        
+        # Calibration phase - gather statistics
+        if not self.calibrated:
+            self.calibration_samples += 1
+            if self.calibration_samples >= self.calibration_target:
+                self._calibrate()
+            return self.threshold
+        
+        # Adaptive update
+        if is_speech:
+            # Update speech level estimate (slow adaptation)
+            self.speech_level = (1 - self.adaptation_rate * 0.5) * self.speech_level + \
+                               (self.adaptation_rate * 0.5) * energy
+        else:
+            # Update noise floor estimate (faster adaptation for noise)
+            self.noise_floor = (1 - self.adaptation_rate) * self.noise_floor + \
+                              self.adaptation_rate * energy
+        
+        # Set threshold between noise floor and speech level
+        # Threshold = noise_floor + 40% of (speech_level - noise_floor)
+        new_threshold = self.noise_floor + 0.4 * (self.speech_level - self.noise_floor)
+        
+        # Clamp to bounds
+        self.threshold = max(self.min_threshold, min(self.max_threshold, new_threshold))
+        
+        return self.threshold
+    
+    def _calibrate(self):
+        """Perform initial calibration based on collected samples"""
+        if not self.energy_history:
+            self.calibrated = True
+            return
+            
+        speech_energies = [e for e, is_speech in self.energy_history if is_speech]
+        noise_energies = [e for e, is_speech in self.energy_history if not is_speech]
+        
+        if speech_energies:
+            self.speech_level = np.mean(speech_energies)
+        if noise_energies:
+            self.noise_floor = np.mean(noise_energies)
+        
+        # Set initial threshold
+        self.threshold = self.noise_floor + 0.4 * (self.speech_level - self.noise_floor)
+        self.threshold = max(self.min_threshold, min(self.max_threshold, self.threshold))
+        
+        self.calibrated = True
+        logger.info(f"📊 Adaptive threshold calibrated: noise={self.noise_floor:.0f}, speech={self.speech_level:.0f}, threshold={self.threshold:.0f}")
+    
+    def get_threshold(self) -> float:
+        """Get current adaptive threshold"""
+        return self.threshold
+    
+    def is_silence(self, energy: float) -> bool:
+        """Check if energy level indicates silence"""
+        return energy < self.threshold
+
+
+class DebouncedEndOfTurnDetector:
+    """
+    Professional end-of-turn detection with debouncing.
+    
+    Instead of triggering on first silence, requires:
+    1. Minimum silence duration (400ms default)
+    2. Multiple confirmation frames
+    3. State-aware triggering (don't trigger while AI speaking)
+    """
+    
+    def __init__(self,
+                 silence_threshold_sec: float = 0.40,  # 400ms - professional standard
+                 confirmation_frames: int = 3,         # Require 3 consecutive silence frames
+                 cooldown_sec: float = 0.5):           # Cooldown after triggering
+        """
+        Args:
+            silence_threshold_sec: Required silence duration to trigger end-of-turn
+            confirmation_frames: Number of consecutive silence frames required
+            cooldown_sec: Minimum time between end-of-turn triggers
+        """
+        self.silence_threshold_sec = silence_threshold_sec
+        self.confirmation_frames = confirmation_frames
+        self.cooldown_sec = cooldown_sec
+        
+        # State tracking
+        self.silence_start_time = None
+        self.consecutive_silence_frames = 0
+        self.last_trigger_time = 0
+        self.triggered = False
+        self.speech_detected_since_trigger = False
+        
+        logger.info(f"⏱️ Debounced EOT detector: silence={silence_threshold_sec}s, confirm={confirmation_frames} frames, cooldown={cooldown_sec}s")
+    
+    def update(self, is_speech: bool, conversation_state: ConversationState) -> bool:
+        """
+        Update detector with new audio frame analysis.
+        
+        Args:
+            is_speech: Whether current frame contains speech
+            conversation_state: Current conversation state
+            
+        Returns:
+            True if end-of-turn should be triggered
+        """
+        current_time = time.time()
+        
+        # Don't detect end-of-turn in these states
+        if conversation_state in (ConversationState.GREETING, 
+                                   ConversationState.AI_RESPONDING,
+                                   ConversationState.INITIALIZING,
+                                   ConversationState.CALL_ENDING,
+                                   ConversationState.ENDED):
+            self._reset()
+            return False
+        
+        # Check cooldown
+        if current_time - self.last_trigger_time < self.cooldown_sec:
+            return False
+        
+        if is_speech:
+            # Speech detected - reset silence tracking
+            self.silence_start_time = None
+            self.consecutive_silence_frames = 0
+            self.triggered = False
+            self.speech_detected_since_trigger = True
+            return False
+        
+        # Silence detected
+        if self.silence_start_time is None:
+            self.silence_start_time = current_time
+            self.consecutive_silence_frames = 1
+        else:
+            self.consecutive_silence_frames += 1
+        
+        # Check if we should trigger
+        silence_duration = current_time - self.silence_start_time
+        
+        if (silence_duration >= self.silence_threshold_sec and 
+            self.consecutive_silence_frames >= self.confirmation_frames and
+            self.speech_detected_since_trigger and
+            not self.triggered):
+            
+            self.triggered = True
+            self.last_trigger_time = current_time
+            self.speech_detected_since_trigger = False
+            
+            logger.debug(f"⏱️ EOT triggered: silence={silence_duration:.2f}s, frames={self.consecutive_silence_frames}")
+            return True
+        
+        return False
+    
+    def _reset(self):
+        """Reset detector state"""
+        self.silence_start_time = None
+        self.consecutive_silence_frames = 0
+        self.triggered = False
+    
+    def reset_for_new_turn(self):
+        """Reset for a new conversation turn"""
+        self._reset()
+        self.speech_detected_since_trigger = False
+
+
+class CallQualityTracker:
+    """
+    Professional call quality and metrics tracking.
+    
+    Tracks key performance indicators for cold calling optimization:
+    - Response latency (time from user stop speaking to AI response)
+    - Turn-taking efficiency (interruptions, overlap)
+    - Conversation flow (back-and-forth ratio)
+    - Call outcomes for analytics
+    """
+    
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.call_start_time = time.time()
+        
+        # Latency tracking
+        self.response_latencies = []  # Time from user EOT to AI first audio
+        self.user_eot_time = None
+        
+        # Turn-taking metrics
+        self.user_turns = 0
+        self.ai_turns = 0
+        self.interruptions_by_user = 0
+        self.interruptions_by_ai = 0
+        self.overlapping_speech_events = 0
+        
+        # Speech metrics
+        self.total_user_speech_time = 0.0
+        self.total_ai_speech_time = 0.0
+        self.longest_user_utterance = 0.0
+        self.longest_ai_utterance = 0.0
+        
+        # Outcome tracking
+        self.amd_result = None  # True=AMD, False=Human, None=Unknown
+        self.call_outcome = None  # "completed", "voicemail", "no_answer", "hung_up", etc.
+        self.goodbye_detected = False
+        
+        logger.info(f"📊 Call quality tracker initialized for {session_id}")
+    
+    def on_user_end_of_turn(self):
+        """Called when user stops speaking"""
+        self.user_eot_time = time.time()
+        self.user_turns += 1
+    
+    def on_ai_start_response(self):
+        """Called when AI starts responding"""
+        if self.user_eot_time:
+            latency = time.time() - self.user_eot_time
+            self.response_latencies.append(latency)
+            self.user_eot_time = None
+            
+            # Log exceptional latencies
+            if latency > 2.0:
+                logger.warning(f"📊 High response latency: {latency:.2f}s")
+        
+        self.ai_turns += 1
+    
+    def on_user_interrupt(self):
+        """Called when user interrupts AI"""
+        self.interruptions_by_user += 1
+    
+    def on_speech_overlap(self):
+        """Called when user and AI are both speaking"""
+        self.overlapping_speech_events += 1
+    
+    def set_amd_result(self, is_amd: bool):
+        """Set answering machine detection result"""
+        self.amd_result = is_amd
+    
+    def set_call_outcome(self, outcome: str):
+        """Set final call outcome"""
+        self.call_outcome = outcome
+    
+    def get_metrics(self) -> dict:
+        """Get all call quality metrics"""
+        call_duration = time.time() - self.call_start_time
+        avg_latency = sum(self.response_latencies) / len(self.response_latencies) if self.response_latencies else 0
+        max_latency = max(self.response_latencies) if self.response_latencies else 0
+        
+        return {
+            "session_id": self.session_id,
+            "call_duration_sec": round(call_duration, 2),
+            "avg_response_latency_sec": round(avg_latency, 3),
+            "max_response_latency_sec": round(max_latency, 3),
+            "user_turns": self.user_turns,
+            "ai_turns": self.ai_turns,
+            "turn_ratio": round(self.user_turns / max(1, self.ai_turns), 2),
+            "interruptions_by_user": self.interruptions_by_user,
+            "overlap_events": self.overlapping_speech_events,
+            "amd_result": "AMD" if self.amd_result else ("Human" if self.amd_result is False else "Unknown"),
+            "call_outcome": self.call_outcome or "in_progress"
+        }
+    
+    def log_summary(self):
+        """Log a summary of call quality metrics"""
+        metrics = self.get_metrics()
+        logger.info(f"📊 CALL QUALITY SUMMARY for {self.session_id}:")
+        logger.info(f"   Duration: {metrics['call_duration_sec']}s | Turns: User={metrics['user_turns']}, AI={metrics['ai_turns']}")
+        logger.info(f"   Latency: Avg={metrics['avg_response_latency_sec']}s, Max={metrics['max_response_latency_sec']}s")
+        logger.info(f"   Interrupts: {metrics['interruptions_by_user']} | AMD: {metrics['amd_result']} | Outcome: {metrics['call_outcome']}")
+
+
+class VoiceActivityDetector:
+    """
+    Enhanced Client-Side VAD using WebRTC VAD with energy tracking.
+    
+    Professional cold calling improvements:
+    1. Filter out background noise/static so Gemini doesn't get interrupted falsely.
+    2. Only send actual human speech to Gemini.
+    3. Track energy levels for adaptive threshold systems.
+    4. Provide detailed speech metrics for AMD and turn-taking.
+    5. Ring buffer for smoother hysteresis and better noise rejection.
+    """
+    
+    def __init__(self, sample_rate: int = 8000, aggressiveness: int = 3):
+        """
+        aggressiveness: 0 (Least aggressive) to 3 (Most aggressive). 
+        3 is best for telephony to filter out static/breathing.
+        """
         self.sample_rate = sample_rate
-        self.energy_threshold = energy_threshold
-        self.speech_frame_count = 0
-        self.silence_frame_count = 0
-        self.min_speech_frames = 5  # Require 5 consecutive frames (~100ms) to trigger
-        self.min_silence_frames = 3  # Require 3 silence frames to reset
+        self.vad = webrtcvad.Vad(aggressiveness)
         
-        # Adaptive background noise estimation
-        self.background_energy = 300.0
-        self.noise_alpha = 0.98  # Slow adaptation for background estimation
+        # Frame buffer for smoothing
+        self.frame_duration_ms = 20  # WebRTC VAD supports 10, 20, or 30ms
+        self.frame_size = int(sample_rate * (self.frame_duration_ms / 1000.0) * 2)  # bytes (16-bit)
+        self.buffer = b""
         
-        logger.info(f"🎤 VoiceActivityDetector initialized (sample_rate={sample_rate}, threshold={energy_threshold}, adaptive=enabled)")
+        # Hysteresis state
+        self.triggered = False
+        self.speech_frames = 0
+        self.silence_frames = 0
+        
+        # ENHANCED: Tuning parameters (professional cold calling optimized)
+        self.min_speech_frames = 3   # 60ms of speech to start sending (prevents clicks)
+        self.min_silence_frames = 15  # 300ms of silence to stop sending (smoother, prevents choppy words)
+        
+        # ENHANCED: Ring buffer for smoother decisions (professional feature)
+        self.ring_buffer_size = 10  # Track last 10 frames (200ms)
+        self.ring_buffer = []  # Stores (is_speech, energy) tuples
+        
+        # ENHANCED: Energy tracking for adaptive systems
+        self.last_frame_energy = 0.0
+        self.speech_energy_sum = 0.0
+        self.speech_energy_count = 0
+        self.silence_energy_sum = 0.0
+        self.silence_energy_count = 0
+        self.current_speech_start = None
+        self.current_speech_duration = 0.0
+        
+        # ENHANCED: Statistics for debugging and AMD
+        self.total_speech_time = 0.0
+        self.total_silence_time = 0.0
+        self.speech_segments_count = 0
+        self.last_speech_end_time = None
+        
+        logger.info(f"🎤 WebRTC VAD initialized (Rate={sample_rate}, Mode={aggressiveness}, SilenceFrames={self.min_silence_frames})")
+    
+    def _calculate_energy(self, frame: bytes) -> float:
+        """Calculate RMS energy of audio frame"""
+        try:
+            num_samples = len(frame) // 2
+            if num_samples == 0:
+                return 0.0
+            samples = struct.unpack(f'{num_samples}h', frame[:num_samples * 2])
+            sum_squares = sum(s * s for s in samples)
+            return (sum_squares / num_samples) ** 0.5
+        except:
+            return 0.0
+    
+    def process(self, audio_data: bytes) -> tuple:
+        """
+        Process audio chunk. Returns (is_speech, valid_audio_chunk).
+        Accumulates bytes until a valid 20ms frame is ready.
+        
+        ENHANCED: Also tracks energy and provides metrics for adaptive systems.
+        """
+        self.buffer += audio_data
+        
+        # Process only full frames
+        output_audio = b""
+        has_speech = False
+        
+        while len(self.buffer) >= self.frame_size:
+            frame = self.buffer[:self.frame_size]
+            self.buffer = self.buffer[self.frame_size:]
+            
+            # ENHANCED: Calculate frame energy for adaptive systems
+            frame_energy = self._calculate_energy(frame)
+            self.last_frame_energy = frame_energy
+            
+            try:
+                is_speech = self.vad.is_speech(frame, self.sample_rate)
+            except:
+                is_speech = True  # Fail open on error
+            
+            # ENHANCED: Update ring buffer for smoother decisions
+            self.ring_buffer.append((is_speech, frame_energy))
+            if len(self.ring_buffer) > self.ring_buffer_size:
+                self.ring_buffer.pop(0)
+            
+            # ENHANCED: Track energy statistics
+            if is_speech:
+                self.speech_energy_sum += frame_energy
+                self.speech_energy_count += 1
+            else:
+                self.silence_energy_sum += frame_energy
+                self.silence_energy_count += 1
+            
+            if is_speech:
+                self.speech_frames += 1
+                self.silence_frames = 0
+                if self.speech_frames >= self.min_speech_frames:
+                    if not self.triggered:
+                        # Speech just started
+                        self.current_speech_start = time.time()
+                        self.speech_segments_count += 1
+                    self.triggered = True
+            else:
+                self.silence_frames += 1
+                self.speech_frames = 0
+                if self.silence_frames >= self.min_silence_frames:
+                    if self.triggered:
+                        # Speech just ended
+                        if self.current_speech_start:
+                            speech_duration = time.time() - self.current_speech_start
+                            self.total_speech_time += speech_duration
+                            self.current_speech_duration = speech_duration
+                            self.last_speech_end_time = time.time()
+                        self.current_speech_start = None
+                    self.triggered = False
+            
+            # Logic: If triggered, we pass the audio.
+            if self.triggered:
+                output_audio += frame
+                has_speech = True
+                
+        return self.triggered, output_audio
+    
+    def process_with_metrics(self, audio_data: bytes) -> dict:
+        """
+        Enhanced process that returns detailed metrics for AMD and turn-taking.
+        
+        Returns:
+            dict with keys: is_speech, audio, energy, speech_duration, 
+                           avg_speech_energy, avg_silence_energy
+        """
+        is_speech, audio = self.process(audio_data)
+        
+        return {
+            'is_speech': is_speech,
+            'audio': audio,
+            'energy': self.last_frame_energy,
+            'speech_duration': self.current_speech_duration if not self.triggered else 
+                              (time.time() - self.current_speech_start if self.current_speech_start else 0),
+            'avg_speech_energy': self.speech_energy_sum / max(1, self.speech_energy_count),
+            'avg_silence_energy': self.silence_energy_sum / max(1, self.silence_energy_count),
+            'total_speech_time': self.total_speech_time,
+            'speech_segments': self.speech_segments_count,
+            'time_since_speech': time.time() - self.last_speech_end_time if self.last_speech_end_time else 0
+        }
+    
+    def get_ring_buffer_speech_ratio(self) -> float:
+        """Get ratio of speech frames in ring buffer (for smoothed decisions)"""
+        if not self.ring_buffer:
+            return 0.0
+        speech_count = sum(1 for is_speech, _ in self.ring_buffer if is_speech)
+        return speech_count / len(self.ring_buffer)
     
     def is_speech(self, audio_data: bytes) -> bool:
         """
-        Detect if audio contains speech (not just background noise/music)
-        Uses robust energy + ZCR detection with hysteresis to prevent false positives
+        Legacy API compatibility: Simple speech detection without buffering.
+        Returns True if speech is detected in this audio chunk.
         """
         try:
-            # Convert bytes to numpy array for analysis
-            audio_array = np.frombuffer(audio_data, dtype=np.int16)
-            
-            if len(audio_array) < 16:  # Too short to analyze
+            # For compatibility with old code that just needs a boolean check
+            if len(audio_data) < self.frame_size:
                 return False
             
-            # Calculate RMS energy
-            rms = np.sqrt(np.mean(audio_array.astype(np.float32) ** 2))
-            
-            # Calculate zero crossing rate (speech has moderate ZCR)
-            zero_crossings = np.sum(np.abs(np.diff(np.sign(audio_array)))) / 2
-            zcr = zero_crossings / len(audio_array)
-            
-            # Update background noise estimate (only when no speech detected)
-            if self.speech_frame_count == 0:
-                self.background_energy = self.noise_alpha * self.background_energy + (1 - self.noise_alpha) * rms
-            
-            # Adaptive threshold: at least 4x background noise
-            adaptive_threshold = max(self.energy_threshold, self.background_energy * 4.0)
-            
-            # Speech characteristics:
-            # - Energy significantly above background
-            # - Moderate zero crossing rate (0.02 - 0.12 for speech at 8kHz)
-            # - Music typically has either very low or very high ZCR
-            
-            is_energetic = rms > adaptive_threshold
-            is_speech_like_zcr = 0.025 < zcr < 0.12  # Narrower range to reject music
-            
-            # Check if current frame has speech characteristics
-            if is_energetic and is_speech_like_zcr:
-                self.speech_frame_count += 1
-                self.silence_frame_count = 0
-            else:
-                # Decay speech counter gradually
-                if self.speech_frame_count > 0:
-                    self.speech_frame_count -= 1
-                self.silence_frame_count += 1
-                
-                # Reset completely after sustained silence
-                if self.silence_frame_count >= self.min_silence_frames:
-                    self.speech_frame_count = 0
-            
-            # Require sustained speech to trigger (prevents single noise spikes)
-            return self.speech_frame_count >= self.min_speech_frames
-            
-        except Exception as e:
-            logger.warning(f"⚠️ VAD error: {e}")
-            return False  # Assume no speech on error
+            # Check only the first complete frame
+            frame = audio_data[:self.frame_size]
+            return self.vad.is_speech(frame, self.sample_rate)
+        except:
+            return False
+    
+    def get_energy(self) -> float:
+        """Get last frame's energy level"""
+        return self.last_frame_energy
+    
+    def reset_statistics(self):
+        """Reset statistics for new call"""
+        self.total_speech_time = 0.0
+        self.total_silence_time = 0.0
+        self.speech_segments_count = 0
+        self.speech_energy_sum = 0.0
+        self.speech_energy_count = 0
+        self.silence_energy_sum = 0.0
+        self.silence_energy_count = 0
+        self.ring_buffer.clear()
+        self.last_speech_end_time = None
+        self.current_speech_start = None
 
 
 class GoodbyeDetector:
@@ -2400,7 +3055,16 @@ class RTPServer:
             self.socket.close()
 
 class RTPSession:
-    """Individual RTP session for a call"""
+    """
+    Individual RTP session for a call.
+    
+    PROFESSIONAL COLD CALLING ENHANCEMENTS:
+    - Explicit conversation state machine
+    - Answering Machine Detection (AMD)
+    - Adaptive silence detection
+    - Debounced end-of-turn detection
+    - Better turn-taking with state awareness
+    """
     
     def __init__(self, session_id: str, remote_addr, rtp_socket, voice_session, call_recorder=None):
         self.session_id = session_id
@@ -2411,6 +3075,45 @@ class RTPSession:
         self.sequence_number = 0
         self.timestamp = 0
         self.ssrc = hash(session_id) & 0xFFFFFFFF
+        
+        # =================================================================
+        # PROFESSIONAL COLD CALLING: Conversation State Machine
+        # =================================================================
+        self.conversation_state = ConversationState.INITIALIZING
+        self._state_change_time = time.time()
+        self._state_history = []  # Track state changes for debugging
+        logger.info(f"🎯 Conversation state machine initialized: {self.conversation_state.name}")
+        
+        # =================================================================
+        # PROFESSIONAL COLD CALLING: Answering Machine Detection
+        # =================================================================
+        self.amd = AnsweringMachineDetector(detection_window_sec=5.0)
+        self.amd_result = None  # None=detecting, True=AMD, False=Human
+        self._amd_action_taken = False  # Track if we acted on AMD result
+        
+        # =================================================================
+        # PROFESSIONAL COLD CALLING: Call Quality Tracking
+        # =================================================================
+        self.quality_tracker = CallQualityTracker(session_id)
+        
+        # =================================================================
+        # PROFESSIONAL COLD CALLING: Adaptive Silence Detection
+        # =================================================================
+        self.adaptive_silence = AdaptiveSilenceDetector(
+            initial_threshold=5500.0,  # Increased for GSM noise rejection
+            min_threshold=2500.0,
+            max_threshold=12000.0,
+            adaptation_rate=0.03  # Slower adaptation for stability
+        )
+        
+        # =================================================================
+        # PROFESSIONAL COLD CALLING: Debounced End-of-Turn Detection
+        # =================================================================
+        self.eot_detector = DebouncedEndOfTurnDetector(
+            silence_threshold_sec=0.40,  # 400ms - professional standard
+            confirmation_frames=3,        # Require 3 consecutive silence frames
+            cooldown_sec=0.5              # 500ms cooldown between triggers
+        )
         
         # Audio processing - use queue for thread-safe asyncio communication
         self.input_processing = False  # For incoming audio processing
@@ -2449,8 +3152,8 @@ class RTPSession:
         self.audio_preprocessor = AudioPreprocessor(sample_rate=8000)
         logger.info(f"🎵 Audio preprocessor initialized for session {session_id} - Bandpass+Compression enabled")
         
-        # Voice Activity Detection for timeout monitoring and barge-in
-        self.vad = VoiceActivityDetector(sample_rate=8000)
+        # Voice Activity Detection (Client-Side WebRTC VAD) - ENHANCED
+        self.vad = VoiceActivityDetector(sample_rate=8000, aggressiveness=3)
         self.last_voice_activity_time = time.time()
         # CHANGE: Set to 1 hour (effectively disabled) to prevent local VAD from killing the call
         # The local VAD was too aggressive and would think the user was silent even when speaking
@@ -2499,42 +3202,152 @@ class RTPSession:
         # voice activity detection and interruption handling.
         self.vad_thread_running = False
         self.vad_thread = None
-        # self.vad_thread = threading.Thread(target=self._vad_barge_in_thread, daemon=True)
-        # self.vad_thread.start()
         logger.info(f"🎤 Local VAD barge-in DISABLED - relying on Gemini server-side interruption detection")
         
         # End-of-turn detection state - signals Gemini when user stops speaking
-        self._silence_start_time = None  # When silence started
+        # NOTE: Now using DebouncedEndOfTurnDetector for professional turn-taking
+        self._silence_start_time = None  # When silence started (legacy, kept for compatibility)
         self._end_of_turn_sent = False  # Whether we've sent end_of_turn for current silence period
         
-        # --- LATENCY FIX: Aggressive VAD thresholds for minimum response delay ---
-        # Reduced silence threshold for much snappier responses (was 0.25)
-        self._silence_threshold_sec = 0.15  # LATENCY FIX: 150ms silence triggers instant response
+        # --- PROFESSIONAL COLD CALLING: Improved thresholds ---
+        # Increased silence threshold for better turn-taking (400ms is industry standard)
+        self._silence_threshold_sec = 0.40  # PROFESSIONAL: 400ms silence (was 150ms - too aggressive)
         
-        # Slightly higher threshold to avoid background noise keeping the turn open
-        # 3500 was too low for GSM lines (detected static as "Amin"). 4200 filters the hiss.
-        self._speech_energy_threshold = 4200  # LATENCY FIX: Increased from 3500 to 4200 for GSM noise rejection
-        # --- END LATENCY FIX ---
+        # Higher threshold for GSM noise rejection (adaptive system will tune this)
+        self._speech_energy_threshold = 5500  # PROFESSIONAL: Increased from 4200 for better noise rejection
+        # --- END PROFESSIONAL FIX ---
         
         self._last_speech_time = time.time()  # Last time speech was detected
-        logger.info(f"📍 ULTRA LOW LATENCY: End-of-turn detection with {self._silence_threshold_sec}s silence, energy threshold: {self._speech_energy_threshold}")
+        logger.info(f"📍 PROFESSIONAL COLD CALLING: End-of-turn with {self._silence_threshold_sec}s silence, adaptive energy threshold starting at {self._speech_energy_threshold}")
         
         # Call answered flag - set to True when SIP 200 OK is received
         # Used to delay Gemini greeting until user actually picks up
         self.call_answered = False
         
-        # --- FIX 2a: Greeting Protection Flag ---
+        # --- GREETING PROTECTION ---
         # When True, blocks user audio from being sent to Gemini
         # This prevents the user's "Hello?" from interrupting the AI greeting
         self.greeting_protection_active = False
-        # --- END FIX 2a ---
         
         # Keep processing flag for backward compatibility with other parts of the code
         self.processing = self.output_processing
+    
+    # =================================================================
+    # PROFESSIONAL COLD CALLING: State Machine Methods
+    # =================================================================
+    
+    def set_conversation_state(self, new_state: ConversationState, reason: str = ""):
+        """
+        Transition to a new conversation state with logging.
+        
+        Args:
+            new_state: The new ConversationState to transition to
+            reason: Optional reason for the state change
+        """
+        old_state = self.conversation_state
+        if old_state == new_state:
+            return  # No change
+        
+        self.conversation_state = new_state
+        self._state_change_time = time.time()
+        self._state_history.append((time.time(), old_state, new_state, reason))
+        
+        # Keep history manageable
+        if len(self._state_history) > 50:
+            self._state_history.pop(0)
+        
+        logger.info(f"🔄 State: {old_state.name} → {new_state.name}" + (f" ({reason})" if reason else ""))
+        
+        # Reset EOT detector on state change
+        if new_state in (ConversationState.LISTENING, ConversationState.USER_SPEAKING):
+            self.eot_detector.reset_for_new_turn()
+    
+    def get_state_duration(self) -> float:
+        """Get how long we've been in the current state (seconds)"""
+        return time.time() - self._state_change_time
+    
+    def is_ai_turn(self) -> bool:
+        """Check if it's currently the AI's turn to speak"""
+        return self.conversation_state in (
+            ConversationState.GREETING,
+            ConversationState.AI_RESPONDING
+        )
+    
+    def is_user_turn(self) -> bool:
+        """Check if it's currently the user's turn to speak"""
+        return self.conversation_state in (
+            ConversationState.LISTENING,
+            ConversationState.USER_SPEAKING
+        )
+    
+    def on_ai_start_speaking(self):
+        """Called when AI starts generating/speaking a response"""
+        if self.conversation_state == ConversationState.GREETING:
+            pass  # Stay in greeting state
+        else:
+            self.set_conversation_state(ConversationState.AI_RESPONDING, "AI started speaking")
+        self.assistant_speaking = True
+        self.audio_output_active = True
+        # PROFESSIONAL: Track response latency
+        self.quality_tracker.on_ai_start_response()
+    
+    def on_ai_stop_speaking(self):
+        """Called when AI finishes speaking"""
+        self.assistant_speaking = False
+        self.assistant_stop_time = time.time()
+        self.audio_output_active = False
+        
+        # Transition to listening for user response
+        if self.conversation_state not in (ConversationState.CALL_ENDING, ConversationState.ENDED):
+            self.set_conversation_state(ConversationState.LISTENING, "AI finished speaking")
+            self.eot_detector.reset_for_new_turn()
+    
+    def on_user_start_speaking(self):
+        """Called when user starts speaking"""
+        if self.conversation_state == ConversationState.LISTENING:
+            self.set_conversation_state(ConversationState.USER_SPEAKING, "User started speaking")
+        elif self.is_ai_turn():
+            # User interrupted AI
+            self.set_conversation_state(ConversationState.INTERRUPTED, "User interrupted AI")
+    
+    def on_user_stop_speaking(self):
+        """Called when user stops speaking (end of turn detected)"""
+        if self.conversation_state == ConversationState.USER_SPEAKING:
+            self.set_conversation_state(ConversationState.PROCESSING, "User stopped speaking")
+            # PROFESSIONAL: Track for latency measurement
+            self.quality_tracker.on_user_end_of_turn()
+    
+    def on_call_answered(self):
+        """Called when the call is answered (SIP 200 OK received)"""
+        self.call_answered = True
+        self.set_conversation_state(ConversationState.GREETING, "Call answered")
+        # Start AMD detection
+        self.amd.start_detection()
+        # Reset VAD statistics for new call
+        self.vad.reset_statistics()
+    
+    def on_call_ended(self, outcome: str = "completed"):
+        """Called when the call ends"""
+        self.set_conversation_state(ConversationState.ENDED, f"Call ended: {outcome}")
+        
+        # PROFESSIONAL: Update quality tracker and log summary
+        if self.amd_result is not None:
+            self.quality_tracker.set_amd_result(self.amd_result)
+        self.quality_tracker.set_call_outcome(outcome)
+        self.quality_tracker.log_summary()
         
     def process_incoming_audio(self, audio_data: bytes, payload_type: int, timestamp: int):
-        """Process incoming RTP audio packet in full-duplex mode - always sent to Gemini"""
+        """
+        Process incoming RTP audio packet in full-duplex mode.
+        
+        PROFESSIONAL COLD CALLING ENHANCEMENTS:
+        - AMD detection in first 5 seconds
+        - State-aware processing
+        - Adaptive silence detection
+        - Better turn-taking through state machine
+        """
         try:
+            # --- 1. DECODE AUDIO ---
             # Increment packet counter for RTP activity tracking
             self.packets_received += 1
             
@@ -2543,7 +3356,7 @@ class RTPSession:
                 pcm_data = self.ulaw_to_pcm(audio_data)
             elif payload_type == 8:  # PCMA/A-law  
                 pcm_data = self.alaw_to_pcm(audio_data)
-            elif payload_type == 13: # CN (Comfort Noise)
+            elif payload_type == 13:  # CN (Comfort Noise)
                 # Generate silence for CN packets to keep stream alive
                 # Standard frame is 20ms (160 samples at 8kHz)
                 pcm_data = b'\x00' * 320 
@@ -2555,32 +3368,70 @@ class RTPSession:
             if len(pcm_data) < 10:
                 return
             
-            # Record the ORIGINAL audio (before preprocessing) for authentic recordings
+            # Record the ORIGINAL audio (before VAD filtering) for authentic recordings
             if self.call_recorder:
                 self.call_recorder.record_incoming_audio(pcm_data)
             
-            # Queue audio for VAD barge-in thread (non-blocking)
-            # This allows VAD to run in separate thread for instant interruption detection
-            try:
-                if self.vad_thread_running and not self.vad_queue.full():
-                    self.vad_queue.put_nowait(pcm_data)
-            except:
-                pass  # Non-critical - skip if queue is full
+            # --- 2. ENHANCED VAD WITH METRICS ---
+            # Use process_with_metrics for professional cold calling features
+            vad_result = self.vad.process_with_metrics(pcm_data)
+            is_speech_active = vad_result['is_speech']
+            filtered_audio = vad_result['audio']
+            frame_energy = vad_result['energy']
             
-            # Check for voice activity (update last activity time if speech detected)
-            if self.vad.is_speech(pcm_data):
-                self.last_voice_activity_time = time.time()
-                if not hasattr(self, '_last_voice_log_time') or (time.time() - self._last_voice_log_time) > 5.0:
-                    self._last_voice_log_time = time.time()
-                    logger.debug(f"🗣️ Voice activity detected in session {self.session_id}")
-
-                # REMOVED CLIENT-SIDE INTERRUPTION - Relying on Gemini's server-side VAD (like JS client)
-                # This avoids false positives from local VAD canceling the bot response prematurely.
+            # --- 3. PROFESSIONAL: AMD Detection (first 5 seconds) ---
+            if self.amd.is_detecting():
+                amd_result = self.amd.feed_audio(is_speech_active, frame_energy)
+                if amd_result is not None and not self._amd_action_taken:
+                    self._amd_action_taken = True
+                    self.amd_result = amd_result
+                    if amd_result:
+                        logger.warning(f"📞 AMD: ANSWERING MACHINE DETECTED - consider leaving voicemail or hanging up")
+                        # Optional: You could trigger voicemail mode or hangup here
+                        # self._trigger_voicemail_mode() or self._trigger_hangup()
+                    else:
+                        logger.info(f"📞 AMD: HUMAN DETECTED - continuing with live conversation")
             
-            # ⚡ FULL-DUPLEX MODE: Always send user audio to Gemini for instant interruption detection
-            # Gemini Live API has built-in server-side interruption detection and echo handling
-            # We NEVER block user audio from being sent - this enables natural conversation flow
-            # where users can interrupt the model at any time (even mid-word like "but...")
+            # --- 4. PROFESSIONAL: Adaptive Silence Threshold ---
+            adaptive_threshold = self.adaptive_silence.update(frame_energy, is_speech_active)
+            # Update the legacy threshold for compatibility
+            self._speech_energy_threshold = adaptive_threshold
+            
+            # --- 5. PROFESSIONAL: State Machine Updates ---
+            if is_speech_active and len(filtered_audio) > 0:
+                # User is speaking
+                if self.conversation_state == ConversationState.LISTENING:
+                    self.on_user_start_speaking()
+                elif self.is_ai_turn():
+                    # User interrupted AI - handled by Gemini server-side
+                    pass
+            
+            # --- 6. ORIGINAL LOGIC: Filter silence ---
+            if not is_speech_active and len(filtered_audio) == 0:
+                # Silence or background noise - feed to EOT detector but don't send to Gemini
+                self.eot_detector.update(False, self.conversation_state)
+                return
+            
+            # User is speaking - update voice activity time
+            self.last_voice_activity_time = time.time()
+            
+            # Use the filtered audio (frames aligned to 20ms) instead of raw packet
+            processed_pcm = filtered_audio
+            
+            # --- 7. PROFESSIONAL: Debounced EOT Detection ---
+            # Update EOT detector (won't trigger during AI speaking due to state awareness)
+            eot_triggered = self.eot_detector.update(is_speech_active, self.conversation_state)
+            if eot_triggered:
+                self.on_user_stop_speaking()
+            
+            # Log voice activity periodically (for debugging)
+            if not hasattr(self, '_last_voice_log_time') or (time.time() - self._last_voice_log_time) > 5.0:
+                self._last_voice_log_time = time.time()
+                logger.debug(f"🗣️ Voice activity in {self.session_id} | State: {self.conversation_state.name} | Energy: {frame_energy:.0f} | Threshold: {adaptive_threshold:.0f}")
+            
+            # ⚡ FULL-DUPLEX MODE: Send filtered user audio to Gemini for processing
+            # Gemini Live API has built-in server-side interruption detection
+            # WebRTC VAD ensures only real speech reaches Gemini (not background noise)
             
             # Track output state for logging only (not for blocking input)
             current_time = time.time()
@@ -2596,24 +3447,10 @@ class RTPSession:
                 if hasattr(self, '_duplex_mode_logged'):
                     delattr(self, '_duplex_mode_logged')
             
-            # Process audio normally
-            try:
-                # --- GATE DISABLED: PURE STREAM ---
-                # Sending raw PCM data directly to Gemini. 
-                # No bandpass filter, no noise gate, no compression.
-                # The AudioPreprocessor was causing "blank moments" where user audio 
-                # was gated to silence, preventing responses and interruptions.
-                # processed_pcm = self.audio_preprocessor.process_audio(pcm_data) 
-                processed_pcm = pcm_data  # <--- BYPASS ENABLED: Send raw audio
-
-                # Log once to show audio is flowing (keep existing logic)
-                if not hasattr(self, '_audio_packet_count'):
-                    self._audio_packet_count = 0
-                    logger.info(f"🎤 Full-duplex streaming active - Processed audio sent to Gemini")
-                    
-            except Exception as preprocess_error:
-                logger.warning(f"⚠️ Audio preprocessing failed, using original: {preprocess_error}")
-                processed_pcm = pcm_data
+            # Log once to show audio is flowing
+            if not hasattr(self, '_audio_packet_count'):
+                self._audio_packet_count = 0
+                logger.info(f"🎤 Full-duplex streaming active - WebRTC VAD filtered audio sent to Gemini")
             
             # Start asyncio thread if not already running
             if not self.input_processing and not self.asyncio_thread_started:
@@ -2810,27 +3647,25 @@ class RTPSession:
             return 0.0
     
     async def _send_audio_to_gemini(self, audio_chunk: bytes):
-        """Send audio chunk to Gemini directly with Greeting Guard and Max Turn limits.
+        """
+        Send audio chunk to Gemini with professional cold calling turn-taking.
         
-        Uses hybrid approach:
-        - Server-side VAD (automatic_activity_detection) handles normal turn-taking
-        - Client-side silence detection sends end_of_turn=True after prolonged silence
-          to prevent the "freeze" issue where Gemini buffers audio without processing
-        - Greeting Guard: Blocks user audio during initial greeting to prevent interruption
-        - Max Turn Duration: Forces end_of_turn if user/noise transmits for too long (5s)
+        PROFESSIONAL ENHANCEMENTS:
+        - State-aware end-of-turn detection (doesn't trigger during AI speaking)
+        - Adaptive silence threshold (adjusts to call noise level)
+        - Debounced triggering (requires confirmation frames)
+        - Greeting protection (blocks user audio during initial greeting)
+        - Max turn duration safety net (prevents buffer freeze)
         """
         try:
             if not self.voice_session or not self.voice_session.gemini_session:
                 return
             
-            # --- FIX 2b: GREETING PROTECTION ---
-            # If we are protecting the greeting, DO NOT send user audio to Gemini.
-            # This prevents the user's "Hello?" from triggering an interruption event
-            # that kills the greeting generation.
+            # --- GREETING PROTECTION ---
+            # Block user audio during initial greeting to prevent interruption
             if getattr(self, 'greeting_protection_active', False):
                 return
-            # --------------------------------
-                
+            
             # Convert telephony audio to Gemini format
             processed_audio = self.voice_session.convert_telephony_to_gemini(audio_chunk)
             
@@ -2841,7 +3676,7 @@ class RTPSession:
                 self._last_send_log_time = time.time()
                 self._send_latency_samples = []
                 self._slow_send_count = 0
-                self._turn_start_time = time.time()  # Track turn duration
+                self._turn_start_time = time.time()
             
             self._audio_send_count += 1
             self._audio_send_bytes += len(processed_audio)
@@ -2849,54 +3684,82 @@ class RTPSession:
             current_time = time.time()
             
             # ============================================================
-            # SILENCE-BASED & MAX DURATION END-OF-TURN DETECTION
-            # Prevents Gemini from buffering audio without responding
+            # PROFESSIONAL COLD CALLING: STATE-AWARE END-OF-TURN DETECTION
+            # Uses adaptive thresholds and debouncing for reliable turn-taking
             # ============================================================
+            
             audio_energy = self._calculate_audio_energy(audio_chunk)
             
-            # Check for silence vs speech
-            is_silence = audio_energy < self._speech_energy_threshold
+            # Use adaptive threshold from the AdaptiveSilenceDetector
+            is_silence = self.adaptive_silence.is_silence(audio_energy)
             
-            # Determine if we should force end of turn
-            should_end_turn = False
+            # PROFESSIONAL: Only detect end-of-turn when appropriate
+            # Don't send end_of_turn signals when:
+            # 1. AI is speaking (GREETING, AI_RESPONDING)
+            # 2. Call is ending
+            # 3. We haven't detected speech since last end-of-turn
+            should_send_eot = False
             
-            if is_silence:
-                # Track when silence started
-                if self._silence_start_time is None:
-                    self._silence_start_time = current_time
-                    
-                # Check silence duration
-                silence_duration = current_time - self._silence_start_time
-                if silence_duration >= self._silence_threshold_sec and not self._end_of_turn_sent:
-                    should_end_turn = True
-                    logger.debug(f"🔇 Silence detected ({silence_duration:.2f}s) - ending turn")
-            else:
-                # User is speaking - reset silence tracking
-                if self._silence_start_time is not None:
-                    self._silence_start_time = None
-                    self._end_of_turn_sent = False
-                    self._last_speech_time = current_time
+            # Check if we're in a state where EOT detection makes sense
+            if self.conversation_state in (ConversationState.USER_SPEAKING, 
+                                           ConversationState.LISTENING,
+                                           ConversationState.PROCESSING):
                 
-                # Update turn start time if we were previously silent or just starting
-                if not hasattr(self, '_is_speaking_turn') or not self._is_speaking_turn:
-                    self._is_speaking_turn = True
-                    self._turn_start_time = current_time
+                if is_silence:
+                    # Track when silence started
+                    if self._silence_start_time is None:
+                        self._silence_start_time = current_time
+                        
+                    # PROFESSIONAL: Use longer threshold (400ms) and require confirmation
+                    silence_duration = current_time - self._silence_start_time
+                    
+                    # Only send EOT if:
+                    # 1. Silence duration exceeds threshold (400ms)
+                    # 2. We haven't already sent EOT
+                    # 3. We've detected speech since the last EOT (prevent spamming)
+                    if (silence_duration >= self._silence_threshold_sec and 
+                        not self._end_of_turn_sent and
+                        getattr(self, '_speech_detected_this_turn', False)):
+                        should_send_eot = True
+                        logger.debug(f"🔇 Silence detected ({silence_duration:.2f}s) - state: {self.conversation_state.name}")
+                else:
+                    # User is speaking - reset silence tracking
+                    if self._silence_start_time is not None:
+                        self._silence_start_time = None
+                        self._end_of_turn_sent = False
+                        self._last_speech_time = current_time
+                    
+                    # Mark that we've detected speech this turn
+                    self._speech_detected_this_turn = True
+                    
+                    # Update turn start time if we were previously silent
+                    if not hasattr(self, '_is_speaking_turn') or not self._is_speaking_turn:
+                        self._is_speaking_turn = True
+                        self._turn_start_time = current_time
+                
+                # --- MAX TURN DURATION (Safety Net) ---
+                # If speech continues for > 8 seconds without a break, force a flush
+                # Increased from 5s to 8s for more natural long utterances
+                if hasattr(self, '_is_speaking_turn') and self._is_speaking_turn:
+                    turn_duration = current_time - self._turn_start_time
+                    if turn_duration > 8.0:  # 8 seconds max (increased from 5s)
+                        logger.warning(f"⚠️ Max turn duration reached (8s) - forcing end_of_turn")
+                        should_send_eot = True
+                        self._turn_start_time = current_time
+            else:
+                # AI is speaking or call is ending - reset EOT state
+                self._silence_start_time = None
+                self._end_of_turn_sent = False
+                self._speech_detected_this_turn = False
             
-            # --- FIX 2b: MAX TURN DURATION (Safety Net) ---
-            # If "speech" (or loud noise) continues for > 5 seconds without a break, 
-            # force a flush. This prevents the 10s freeze if static > threshold.
-            if hasattr(self, '_is_speaking_turn') and self._is_speaking_turn:
-                turn_duration = current_time - self._turn_start_time
-                if turn_duration > 5.0:  # 5 seconds max phrase length before checking
-                    logger.warning(f"⚠️ Max turn duration reached (5s) - forcing end_of_turn to prevent buffer freeze")
-                    should_end_turn = True
-                    # Reset turn timer so we don't spam
-                    self._turn_start_time = current_time
-            # -------------------------------------------
-            
-            if should_end_turn and not self._end_of_turn_sent:
+            # Send end-of-turn signal if triggered
+            if should_send_eot and not self._end_of_turn_sent:
                 self._end_of_turn_sent = True
-                self._is_speaking_turn = False  # Reset speaking state
+                self._is_speaking_turn = False
+                self._speech_detected_this_turn = False
+                
+                # Update conversation state
+                self.on_user_stop_speaking()
                 
                 # Send with end_of_turn=True
                 try:
@@ -2907,7 +3770,7 @@ class RTPSession:
                         ),
                         timeout=1.0
                     )
-                    logger.info("✅ End-of-turn signal sent to Gemini")
+                    logger.info(f"✅ End-of-turn sent (state: {self.conversation_state.name})")
                     return
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to send end_of_turn: {e}")
@@ -3005,7 +3868,14 @@ class RTPSession:
             self.jitter_buffer = b""
             
     async def _continuous_receive_responses(self):
-        """Continuously receive responses from Gemini in a separate task"""
+        """
+        Continuously receive responses from Gemini in a separate task.
+        
+        PROFESSIONAL COLD CALLING ENHANCEMENTS:
+        - State machine integration (on_ai_start_speaking, on_ai_stop_speaking)
+        - AMD detection via transcripts
+        - Better turn completion handling
+        """
         logger.info("🎧 Starting continuous response receiver")
         
         while self.input_processing and self.voice_session.gemini_session:
@@ -3018,6 +3888,8 @@ class RTPSession:
                 turn = self.voice_session.gemini_session.receive()
                 
                 turn_had_content = False
+                turn_had_audio = False  # Track if we received audio this turn
+                
                 # Debug flag to log response attributes once
                 if not hasattr(self, '_response_attrs_logged'):
                     self._response_attrs_logged = False
@@ -3055,6 +3927,11 @@ class RTPSession:
                             turn_had_content = True
                             audio_bytes = response.data
                             if isinstance(audio_bytes, bytes):
+                                # PROFESSIONAL: Update state machine on first audio
+                                if not turn_had_audio:
+                                    turn_had_audio = True
+                                    self.on_ai_start_speaking()
+                                
                                 # Log audio reception for debugging
                                 if not hasattr(self, '_audio_recv_count'):
                                     self._audio_recv_count = 0
@@ -3071,6 +3948,7 @@ class RTPSession:
                                 if hasattr(self, '_end_of_turn_sent') and self._end_of_turn_sent:
                                     self._end_of_turn_sent = False
                                     self._silence_start_time = None
+                                    self._speech_detected_this_turn = False
                                     logger.debug("🔄 End-of-turn reset - Gemini is responding")
                                 
                                 # Log every 10 audio chunks received
@@ -3101,8 +3979,7 @@ class RTPSession:
                                 )
                                 logger.info(f"AI Response: {text}")
                         
-                        # Feed transcripts to goodbye detector
-                        # Transcripts are in server_content.input_transcription and server_content.output_transcription
+                        # Feed transcripts to goodbye detector AND AMD detector
                         try:
                             # Check if we have server_content with transcriptions
                             if hasattr(response, "server_content") and response.server_content:
@@ -3115,6 +3992,10 @@ class RTPSession:
                                         if user_txt and user_txt != '.':  # Filter out noise/silence markers
                                             logger.info(f"🎤 User transcript: {user_txt}")
                                             self.goodbye.feed(user_txt, "user", self._trigger_hangup, self._cancel_hangup)
+                                            
+                                            # PROFESSIONAL: Feed to AMD detector
+                                            if self.amd.is_detecting():
+                                                self.amd.feed_transcript(user_txt)
                                 
                                 # 2) Agent (output) transcript
                                 if hasattr(sc, "output_transcription") and sc.output_transcription:
@@ -3130,6 +4011,10 @@ class RTPSession:
                                 # 3) ⚡ INSTANT INTERRUPTION HANDLING - stop model speech immediately
                                 if hasattr(sc, "interrupted") and sc.interrupted:
                                     logger.info(f"🔄 User interrupted model in session {self.session_id} - stopping speech immediately!")
+                                    
+                                    # PROFESSIONAL: Update state machine and track quality
+                                    self.set_conversation_state(ConversationState.INTERRUPTED, "User interrupted")
+                                    self.quality_tracker.on_user_interrupt()
                                     
                                     # ACTIVATE KILL SWITCH
                                     self.is_interrupted = True
@@ -3160,10 +4045,19 @@ class RTPSession:
                 
                 # After turn completes, prepare for next turn
                 if turn_had_content:
-                    logger.info(f"🔄 Turn complete (had content) - ready for next turn")
+                    logger.info(f"🔄 Turn complete (had content) - state: {self.conversation_state.name}")
+                    
+                    # PROFESSIONAL: Update state machine - AI finished speaking
+                    if turn_had_audio:
+                        self.on_ai_stop_speaking()
+                    
                     # Reset silence tracking so we can detect next user silence
                     self._silence_start_time = None
                     self._end_of_turn_sent = False
+                    self._speech_detected_this_turn = False
+                    
+                    # Reset EOT detector for new turn
+                    self.eot_detector.reset_for_new_turn()
                 else:
                     logger.debug("Empty turn received, continuing to listen")
                 
@@ -3171,6 +4065,9 @@ class RTPSession:
                 if self.is_interrupted:
                     logger.debug("🔄 Resetting interrupted flag after turn complete")
                     self.is_interrupted = False
+                    # PROFESSIONAL: Transition from INTERRUPTED to LISTENING
+                    if self.conversation_state == ConversationState.INTERRUPTED:
+                        self.set_conversation_state(ConversationState.LISTENING, "Interruption handled")
                 
                 # Small yield to prevent tight loop
                 await asyncio.sleep(0.001)
@@ -5252,9 +6149,9 @@ Content-Length: {len(sdp_content)}
             if gemini_ready and voice_session and rtp_session:
                 logger.info("✅ Reusing Gemini connection initialized during ringing (FAST PATH)")
                 
-                # ✅ CRITICAL: Set call_answered flag to trigger Gemini greeting
-                rtp_session.call_answered = True
-                logger.info("📞 Call answered flag set - Gemini greeting will now be triggered")
+                # ✅ PROFESSIONAL: Use state machine method to handle call answered
+                rtp_session.on_call_answered()
+                logger.info("📞 Call answered - state machine updated, AMD detection started")
                 
                 # Store SIP details in voice session for sending BYE later
                 voice_session.sip_handler = self
@@ -5315,9 +6212,9 @@ Content-Length: {len(sdp_content)}
                 remote_addr = (self.gate_ip, 5004)  # Default RTP port
                 rtp_session = self.rtp_server.create_session(session_id, remote_addr, voice_session, voice_session.call_recorder)
                 
-                # ✅ CRITICAL: Set call_answered flag (call is answered in slow path too)
-                rtp_session.call_answered = True
-                logger.info("📞 Call answered flag set (slow path) - Gemini greeting will be triggered when ready")
+                # ✅ PROFESSIONAL: Use state machine method to handle call answered
+                rtp_session.on_call_answered()
+                logger.info("📞 Call answered (slow path) - state machine updated, AMD detection started")
             
             # Store the active session
             active_sessions[session_id] = {
