@@ -1292,7 +1292,7 @@ IMPORTANT:
                 start_of_speech_sensitivity="START_SENSITIVITY_HIGH",
                 end_of_speech_sensitivity="END_SENSITIVITY_HIGH",  # HIGH = aggressive end detection for lowest latency
                 prefix_padding_ms=0,  # LATENCY FIX: No padding for minimum latency
-                silence_duration_ms=200,  # LATENCY FIX: Reduced from 800ms to 200ms for faster turn detection
+                silence_duration_ms=150,  # LATENCY FIX: Reduced from 200ms to 150ms for snappy "Yes/No" responses
             )
         ),
         speech_config=types.SpeechConfig(
@@ -2508,12 +2508,12 @@ class RTPSession:
         self._end_of_turn_sent = False  # Whether we've sent end_of_turn for current silence period
         
         # --- LATENCY FIX: Aggressive VAD thresholds for minimum response delay ---
-        # Reduced silence threshold for much snappier responses (was 0.6, originally 1.2)
-        self._silence_threshold_sec = 0.25  # LATENCY FIX: 250ms silence to end turn (was 600ms)
+        # Reduced silence threshold for much snappier responses (was 0.25)
+        self._silence_threshold_sec = 0.15  # LATENCY FIX: 150ms silence triggers instant response
         
         # Slightly higher threshold to avoid background noise keeping the turn open
-        # 3500 is safe for 16-bit PCM (max is 32767) to distinguish voice from line noise
-        self._speech_energy_threshold = 3500  # LATENCY FIX: Increased from 3000 to filter static better
+        # 3500 was too low for GSM lines (detected static as "Amin"). 4200 filters the hiss.
+        self._speech_energy_threshold = 4200  # LATENCY FIX: Increased from 3500 to 4200 for GSM noise rejection
         # --- END LATENCY FIX ---
         
         self._last_speech_time = time.time()  # Last time speech was detected
