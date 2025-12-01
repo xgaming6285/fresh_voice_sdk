@@ -1297,9 +1297,9 @@ IMPORTANT:
             automatic_activity_detection=types.AutomaticActivityDetection(
                 disabled=False,
                 start_of_speech_sensitivity="START_SENSITIVITY_HIGH",
-                end_of_speech_sensitivity="END_SENSITIVITY_LOW",  # LOW = less aggressive, prevents premature turn cuts
-                prefix_padding_ms=100,  # INCREASED: More padding for telephone audio
-                silence_duration_ms=800,  # INCREASED: 800ms silence for turn detection (was 100ms causing freezes)
+                end_of_speech_sensitivity="END_SENSITIVITY_HIGH",  # HIGH = aggressive end detection for lowest latency
+                prefix_padding_ms=0,  # LATENCY FIX: No padding for minimum latency
+                silence_duration_ms=200,  # LATENCY FIX: Reduced from 800ms to 200ms for faster turn detection
             )
         ),
         speech_config=types.SpeechConfig(
@@ -2443,13 +2443,13 @@ class RTPSession:
         # Crossfade buffer for smooth transitions
         self.last_audio_tail = b""  # Last 10ms of previous chunk
         
-        # Jitter buffer for smooth playback - tuned for low latency while handling gaps
-        # REDUCED from previous values to minimize perceived latency
+        # Jitter buffer for smooth playback - ULTRA LOW LATENCY configuration
+        # Start playing almost immediately upon receiving the first packet
         self.jitter_buffer = b""
         self.playback_started = False
-        self.jitter_buffer_threshold = 1600  # 100ms at 8kHz 16-bit (0.1 * 8000 * 2) - start faster
-        self.jitter_buffer_min = 800   # 50ms minimum chunk size for smooth playback
-        self.jitter_buffer_max = 4800  # 300ms maximum buffer to prevent delay buildup
+        self.jitter_buffer_threshold = 320   # LATENCY FIX: 20ms at 8kHz 16-bit (reduced from 1600/100ms)
+        self.jitter_buffer_min = 160         # LATENCY FIX: 10ms minimum (reduced from 800/50ms)
+        self.jitter_buffer_max = 3200        # LATENCY FIX: 200ms max buffer (reduced from 4800/300ms)
 
         # Initialize new audio preprocessor
         # We no longer rely on the old simple AGC/Gate logic
@@ -2514,17 +2514,17 @@ class RTPSession:
         self._silence_start_time = None  # When silence started
         self._end_of_turn_sent = False  # Whether we've sent end_of_turn for current silence period
         
-        # --- FIX 1: Adjusted VAD thresholds to ignore GSM/VoIP static ---
-        # Decrease silence threshold for snappier responses (was 1.2)
-        self._silence_threshold_sec = 0.6
+        # --- LATENCY FIX: Aggressive VAD thresholds for minimum response delay ---
+        # Reduced silence threshold for much snappier responses (was 0.6, originally 1.2)
+        self._silence_threshold_sec = 0.25  # LATENCY FIX: 250ms silence to end turn (was 600ms)
         
-        # INCREASE threshold to ignore GSM/VoIP static (was 500)
-        # 3000 is a safe number for 16-bit PCM (max is 32767) to distinguish voice from line noise
-        self._speech_energy_threshold = 3000
-        # --- END FIX 1 ---
+        # Slightly higher threshold to avoid background noise keeping the turn open
+        # 3500 is safe for 16-bit PCM (max is 32767) to distinguish voice from line noise
+        self._speech_energy_threshold = 3500  # LATENCY FIX: Increased from 3000 to filter static better
+        # --- END LATENCY FIX ---
         
         self._last_speech_time = time.time()  # Last time speech was detected
-        logger.info(f"📍 End-of-turn detection enabled: {self._silence_threshold_sec}s silence threshold, energy threshold: {self._speech_energy_threshold}")
+        logger.info(f"📍 ULTRA LOW LATENCY: End-of-turn detection with {self._silence_threshold_sec}s silence, energy threshold: {self._speech_energy_threshold}")
         
         # Call answered flag - set to True when SIP 200 OK is received
         # Used to delay Gemini greeting until user actually picks up
@@ -2780,7 +2780,7 @@ class RTPSession:
                     
                     # CRITICAL: Yield control to allow receiver task to run
                     # This prevents audio send from monopolizing the event loop
-                    await asyncio.sleep(0.005)  # 5ms yield - balance between latency and throughput
+                    await asyncio.sleep(0.001)  # LATENCY FIX: 1ms yield (was 5ms) - faster queue drain
                         
                 except Exception as e:
                     logger.error(f"Error in main audio loop: {e}")
@@ -2990,26 +2990,24 @@ class RTPSession:
 
     def buffer_and_play(self, pcm_data: bytes):
         """
-        Streamlined Jitter Buffer - low latency with overflow protection.
+        Ultra Low Latency Jitter Buffer - starts playback immediately.
         
-        Gemini 24kHz -> Resampled 8kHz -> Jitter Buffer -> Playback Queue
+        Gemini 24kHz -> Resampled 8kHz -> Minimal Buffer -> Playback Queue
         """
-        # If already playing, send immediately with minimal buffering
+        # If already playing, send immediately - no additional buffering
         if self.playback_started:
-            # Just send directly - the output queue handles pacing
             self._send_audio_immediate(pcm_data)
             return
 
-        # Initial buffering phase - wait for minimum threshold before starting
+        # Initial buffering phase - collect minimal audio before starting
         self.jitter_buffer += pcm_data
         
-        # Start playback once we have enough initial buffer (100ms)
+        # LATENCY FIX: Start playback immediately if we have ANY meaningful audio (>20ms)
+        # or if the received chunk was large (Gemini burst)
         if len(self.jitter_buffer) >= self.jitter_buffer_threshold:
-            buffer_time_ms = (len(self.jitter_buffer) / 16000) * 1000
-            logger.info(f"🌊 Jitter buffer ready ({len(self.jitter_buffer)} bytes / {buffer_time_ms:.0f}ms) - Starting playback")
             self.playback_started = True
             
-            # Send all buffered audio
+            # Send all buffered audio immediately - no logging to save I/O time
             self._send_audio_immediate(self.jitter_buffer)
             self.jitter_buffer = b""
             
