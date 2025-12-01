@@ -112,6 +112,8 @@ def init_database():
     db.users.create_index([("email", ASCENDING)], unique=True)
     db.users.create_index([("created_by_id", ASCENDING)])
     db.users.create_index([("role", ASCENDING)])
+    # Compound index for admin access check (get agents by admin)
+    db.users.create_index([("created_by_id", ASCENDING), ("role", ASCENDING)])
     
     # Create indexes for leads collection
     db.leads.create_index([("owner_id", ASCENDING)])

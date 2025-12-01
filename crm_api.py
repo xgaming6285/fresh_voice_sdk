@@ -1035,46 +1035,58 @@ async def get_call_sessions(
 
 @crm_router.get("/sessions/{session_id}", response_model=CallSessionResponse)
 async def get_call_session(session_id: str, current_user: User = Depends(get_current_user)):
-    """Get a specific call session by voice agent session ID"""
+    """Get a specific call session by voice agent session ID - OPTIMIZED"""
     try:
-        session = get_session()
-        call_session = session.query(CallSession).options(joinedload(CallSession.lead)).filter(
-            CallSession.session_id == session_id
-        ).first()
+        from crm_database_mongodb import MongoDB
+        db = MongoDB.get_db()
         
-        if not call_session:
+        # Direct MongoDB query with projection for faster loading
+        call_session_doc = db.call_sessions.find_one({"session_id": session_id})
+        
+        if not call_session_doc:
             # Check if recording exists on disk but not in database (orphaned recording)
-            import os
-            from pathlib import Path
             recording_dir = Path("sessions") / session_id
             if recording_dir.exists():
                 logger.warning(f"Found orphaned recording for {session_id}, creating database entry")
                 # Create database entry for orphaned recording
                 call_session = CallSession(
                     session_id=session_id,
-                    owner_id=current_user.id,  # Assign to current user
+                    owner_id=current_user.id,
                     status=CallStatus.COMPLETED,
                     started_at=datetime.utcnow(),
                     ended_at=datetime.utcnow()
                 )
-                call_session.save()  # MongoDB requires explicit save
+                call_session.save()
+                call_session_doc = db.call_sessions.find_one({"session_id": session_id})
             else:
                 raise HTTPException(status_code=404, detail="Call session not found")
         
-        # Check access rights
+        call_session = CallSession.from_dict(call_session_doc)
+        
+        # Optimized access check - check owner first before querying agents
         if current_user.role == UserRole.AGENT:
-            # Agent can only see their own sessions
             if call_session.owner_id != current_user.id:
                 raise HTTPException(status_code=403, detail="Access denied")
         elif current_user.role == UserRole.ADMIN:
-            # Admin can see their own sessions + their agents' sessions
-            from crm_database import UserManager
-            user_manager = UserManager(session)
-            agents = user_manager.get_agents_by_admin(current_user.id)
-            accessible_user_ids = [current_user.id] + [agent.id for agent in agents]
-            if call_session.owner_id not in accessible_user_ids:
-                raise HTTPException(status_code=403, detail="Access denied")
+            # Quick check: if owner is the admin themselves, skip agent query
+            if call_session.owner_id != current_user.id:
+                # Only query agents if needed (owner is not the admin)
+                agent_ids = [doc['id'] for doc in db.users.find(
+                    {"created_by_id": current_user.id, "role": "agent"},
+                    {"id": 1}  # Project only id field for faster query
+                )]
+                if call_session.owner_id not in agent_ids:
+                    raise HTTPException(status_code=403, detail="Access denied")
         # Superadmin can see all sessions
+        
+        # Eagerly load lead data in a single query if lead_id exists
+        if call_session.lead_id:
+            lead_doc = db.leads.find_one(
+                {"id": call_session.lead_id},
+                {"country": 1, "id": 1}  # Project only needed fields
+            )
+            if lead_doc:
+                call_session._lead = Lead.from_dict(lead_doc)
         
         return build_call_session_response(call_session)
     except HTTPException:
@@ -1082,8 +1094,6 @@ async def get_call_session(session_id: str, current_user: User = Depends(get_cur
     except Exception as e:
         logger.error(f"Error getting call session: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        session.close()
 
 # Campaign execution function
 async def execute_campaign(campaign_id: int):

@@ -82,48 +82,71 @@ function SessionDetail() {
       const sessionData = crmResponse.data;
       setSession(sessionData);
 
-      // Use transcripts from session response if available
-      if (sessionData.transcripts && Object.keys(sessionData.transcripts).length > 0) {
+      // Check what data is already available in session response
+      const hasTranscripts = sessionData.transcripts && Object.keys(sessionData.transcripts).length > 0;
+      const hasAnalysis = !!sessionData.analysis;
+      const hasAudioFiles = !!sessionData.audio_files;
+      const hasPBXRecording = !!sessionData.asterisk_linkedid;
+
+      // Set data that's already available immediately
+      if (hasTranscripts) {
         setTranscripts(sessionData.transcripts);
-      } else {
-        // Fallback: try to load transcripts separately only if not in session
-        try {
-          const transcriptsResponse = await voiceAgentAPI.transcripts(id);
-          setTranscripts(transcriptsResponse.data.transcripts || {});
-        } catch (error) {
-          console.log("No transcripts available");
-        }
       }
-
-      // Use analysis (summary) from session response if available
-      if (sessionData.analysis) {
+      if (hasAnalysis) {
         setSummary(sessionData.analysis);
-      } else {
-        // Fallback: try to load summary separately only if not in session
-        try {
-          const summaryResponse = await voiceAgentAPI.getSummary(id);
-          setSummary(summaryResponse.data.summary);
-        } catch (error) {
-          console.log("No summary available");
-        }
+      }
+      if (hasAudioFiles) {
+        setRecording({ session_id: id, audio_files: sessionData.audio_files });
       }
 
-      // Use audio_files from session response if available
-      if (sessionData.audio_files) {
-        setRecording({ session_id: id, audio_files: sessionData.audio_files });
-      } else if (!sessionData.asterisk_linkedid) {
-        // Fallback: only load recordings list if no PBX recording and no audio_files in session
-        try {
-          const recordingsResponse = await voiceAgentAPI.recordings();
-          const foundRecording = recordingsResponse.data.recordings.find(
-            (r) => r.session_id === id
-          );
-          if (foundRecording) {
-            setRecording(foundRecording);
+      // Build array of fallback promises for missing data (parallel execution)
+      const fallbackPromises = [];
+
+      if (!hasTranscripts) {
+        fallbackPromises.push(
+          voiceAgentAPI.transcripts(id)
+            .then(res => ({ type: 'transcripts', data: res.data.transcripts || {} }))
+            .catch(() => ({ type: 'transcripts', data: {} }))
+        );
+      }
+
+      if (!hasAnalysis) {
+        fallbackPromises.push(
+          voiceAgentAPI.getSummary(id)
+            .then(res => ({ type: 'summary', data: res.data.summary }))
+            .catch(() => ({ type: 'summary', data: null }))
+        );
+      }
+
+      if (!hasAudioFiles && !hasPBXRecording) {
+        fallbackPromises.push(
+          voiceAgentAPI.recordings()
+            .then(res => {
+              const foundRecording = res.data.recordings.find(r => r.session_id === id);
+              return { type: 'recording', data: foundRecording || null };
+            })
+            .catch(() => ({ type: 'recording', data: null }))
+        );
+      }
+
+      // Execute all fallback requests in parallel
+      if (fallbackPromises.length > 0) {
+        const results = await Promise.all(fallbackPromises);
+        results.forEach(result => {
+          switch (result.type) {
+            case 'transcripts':
+              if (Object.keys(result.data).length > 0) setTranscripts(result.data);
+              break;
+            case 'summary':
+              if (result.data) setSummary(result.data);
+              break;
+            case 'recording':
+              if (result.data) setRecording(result.data);
+              break;
+            default:
+              break;
           }
-        } catch (error) {
-          console.log("No recording found for this session");
-        }
+        });
       }
     } catch (error) {
       console.error("Error loading session data:", error);
