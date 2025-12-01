@@ -2705,13 +2705,13 @@ class RTPSession:
                     logger.info("📞 Call answered! Sending nudge to start conversation...")
                     try:
                         # --- FIX 3: Enable greeting protection ---
-                        # This blinds the bot to user audio (Hello?) for 2.5 seconds while it starts speaking
+                        # This blinds the bot to user audio (Hello?) for 4 seconds while it starts speaking
                         self.greeting_protection_active = True
-                        logger.info("🛡️ Greeting protection ENABLED - blocking user audio for 2.5s")
+                        logger.info("🛡️ Greeting protection ENABLED - blocking user audio for 4s")
                         
-                        # Background task to disable protection after 2.5 seconds
+                        # Background task to disable protection after 4 seconds
                         def disable_protection():
-                            time.sleep(2.5)  # Wait for greeting to likely start playing
+                            time.sleep(4)  # Wait for greeting to likely start playing
                             self.greeting_protection_active = False
                             logger.info("🛡️ Greeting protection DISABLED - listening to user now")
                         
