@@ -2513,14 +2513,28 @@ class RTPSession:
         # End-of-turn detection state - signals Gemini when user stops speaking
         self._silence_start_time = None  # When silence started
         self._end_of_turn_sent = False  # Whether we've sent end_of_turn for current silence period
-        self._silence_threshold_sec = 1.2  # 1.2 seconds of silence triggers end-of-turn
-        self._speech_energy_threshold = 500  # RMS threshold for detecting speech
+        
+        # --- FIX 1: Adjusted VAD thresholds to ignore GSM/VoIP static ---
+        # Decrease silence threshold for snappier responses (was 1.2)
+        self._silence_threshold_sec = 0.6
+        
+        # INCREASE threshold to ignore GSM/VoIP static (was 500)
+        # 3000 is a safe number for 16-bit PCM (max is 32767) to distinguish voice from line noise
+        self._speech_energy_threshold = 3000
+        # --- END FIX 1 ---
+        
         self._last_speech_time = time.time()  # Last time speech was detected
-        logger.info(f"📍 End-of-turn detection enabled: {self._silence_threshold_sec}s silence threshold")
+        logger.info(f"📍 End-of-turn detection enabled: {self._silence_threshold_sec}s silence threshold, energy threshold: {self._speech_energy_threshold}")
         
         # Call answered flag - set to True when SIP 200 OK is received
         # Used to delay Gemini greeting until user actually picks up
         self.call_answered = False
+        
+        # --- FIX 2a: Greeting Protection Flag ---
+        # When True, blocks user audio from being sent to Gemini
+        # This prevents the user's "Hello?" from interrupting the AI greeting
+        self.greeting_protection_active = False
+        # --- END FIX 2a ---
         
         # Keep processing flag for backward compatibility with other parts of the code
         self.processing = self.output_processing
@@ -2697,6 +2711,20 @@ class RTPSession:
                 if self.call_answered:
                     logger.info("📞 Call answered! Sending nudge to start conversation...")
                     try:
+                        # --- FIX 3: Enable greeting protection ---
+                        # This blinds the bot to user audio (Hello?) for 2.5 seconds while it starts speaking
+                        self.greeting_protection_active = True
+                        logger.info("🛡️ Greeting protection ENABLED - blocking user audio for 2.5s")
+                        
+                        # Background task to disable protection after 2.5 seconds
+                        def disable_protection():
+                            time.sleep(2.5)  # Wait for greeting to likely start playing
+                            self.greeting_protection_active = False
+                            logger.info("🛡️ Greeting protection DISABLED - listening to user now")
+                        
+                        threading.Thread(target=disable_protection, daemon=True).start()
+                        # --- END FIX 3 ---
+                        
                         # Send a brief text message and signal end_of_turn to trigger Gemini to speak
                         # This tells Gemini "it's your turn, start talking"
                         await self.voice_session.gemini_session.send(
@@ -2706,6 +2734,8 @@ class RTPSession:
                         logger.info("✅ Nudge sent - Gemini should start speaking now")
                     except Exception as nudge_error:
                         logger.warning(f"⚠️ Nudge failed, Gemini may not speak first: {nudge_error}")
+                        # Make sure to disable protection if nudge fails
+                        self.greeting_protection_active = False
                 else:
                     logger.warning("⚠️ Call not answered - skipping greeting nudge")
             
@@ -2787,28 +2817,38 @@ class RTPSession:
             return 0.0
     
     async def _send_audio_to_gemini(self, audio_chunk: bytes):
-        """Send audio chunk to Gemini directly.
+        """Send audio chunk to Gemini directly with Greeting Guard and Max Turn limits.
         
         Uses hybrid approach:
         - Server-side VAD (automatic_activity_detection) handles normal turn-taking
         - Client-side silence detection sends end_of_turn=True after prolonged silence
           to prevent the "freeze" issue where Gemini buffers audio without processing
+        - Greeting Guard: Blocks user audio during initial greeting to prevent interruption
+        - Max Turn Duration: Forces end_of_turn if user/noise transmits for too long (5s)
         """
         try:
             if not self.voice_session or not self.voice_session.gemini_session:
-                logger.warning("No Gemini session available")
                 return
+            
+            # --- FIX 2b: GREETING PROTECTION ---
+            # If we are protecting the greeting, DO NOT send user audio to Gemini.
+            # This prevents the user's "Hello?" from triggering an interruption event
+            # that kills the greeting generation.
+            if getattr(self, 'greeting_protection_active', False):
+                return
+            # --------------------------------
                 
             # Convert telephony audio to Gemini format
             processed_audio = self.voice_session.convert_telephony_to_gemini(audio_chunk)
             
-            # Initialize latency tracking
+            # Initialize latency tracking if needed
             if not hasattr(self, '_audio_send_count'):
                 self._audio_send_count = 0
                 self._audio_send_bytes = 0
                 self._last_send_log_time = time.time()
                 self._send_latency_samples = []
                 self._slow_send_count = 0
+                self._turn_start_time = time.time()  # Track turn duration
             
             self._audio_send_count += 1
             self._audio_send_bytes += len(processed_audio)
@@ -2816,85 +2856,108 @@ class RTPSession:
             current_time = time.time()
             
             # ============================================================
-            # SILENCE-BASED END-OF-TURN DETECTION
+            # SILENCE-BASED & MAX DURATION END-OF-TURN DETECTION
             # Prevents Gemini from buffering audio without responding
             # ============================================================
             audio_energy = self._calculate_audio_energy(audio_chunk)
+            
+            # Check for silence vs speech
             is_silence = audio_energy < self._speech_energy_threshold
+            
+            # Determine if we should force end of turn
+            should_end_turn = False
             
             if is_silence:
                 # Track when silence started
                 if self._silence_start_time is None:
                     self._silence_start_time = current_time
                     
-                # Check if we should send end_of_turn signal
+                # Check silence duration
                 silence_duration = current_time - self._silence_start_time
-                
-                # Send end_of_turn after 1.2 seconds of silence (if not already sent)
                 if silence_duration >= self._silence_threshold_sec and not self._end_of_turn_sent:
-                    logger.info(f"🔇 Silence detected for {silence_duration:.1f}s - sending end_of_turn=True")
-                    self._end_of_turn_sent = True
-                    
-                    # Send a special signal to Gemini indicating user turn is complete
-                    try:
-                        await asyncio.wait_for(
-                            self.voice_session.gemini_session.send(
-                                input={"data": processed_audio, "mime_type": "audio/pcm;rate=24000"},
-                                end_of_turn=True  # Signal end of user turn
-                            ),
-                            timeout=2.0
-                        )
-                        logger.info("✅ End-of-turn signal sent to Gemini")
-                        return  # Audio already sent with end_of_turn
-                    except Exception as eot_err:
-                        logger.warning(f"⚠️ Failed to send end_of_turn: {eot_err}")
+                    should_end_turn = True
+                    logger.debug(f"🔇 Silence detected ({silence_duration:.2f}s) - ending turn")
             else:
                 # User is speaking - reset silence tracking
                 if self._silence_start_time is not None:
                     self._silence_start_time = None
                     self._end_of_turn_sent = False
                     self._last_speech_time = current_time
+                
+                # Update turn start time if we were previously silent or just starting
+                if not hasattr(self, '_is_speaking_turn') or not self._is_speaking_turn:
+                    self._is_speaking_turn = True
+                    self._turn_start_time = current_time
             
-            # Send audio to Gemini with reduced 2-second timeout (fail fast)
+            # --- FIX 2b: MAX TURN DURATION (Safety Net) ---
+            # If "speech" (or loud noise) continues for > 5 seconds without a break, 
+            # force a flush. This prevents the 10s freeze if static > threshold.
+            if hasattr(self, '_is_speaking_turn') and self._is_speaking_turn:
+                turn_duration = current_time - self._turn_start_time
+                if turn_duration > 5.0:  # 5 seconds max phrase length before checking
+                    logger.warning(f"⚠️ Max turn duration reached (5s) - forcing end_of_turn to prevent buffer freeze")
+                    should_end_turn = True
+                    # Reset turn timer so we don't spam
+                    self._turn_start_time = current_time
+            # -------------------------------------------
+            
+            if should_end_turn and not self._end_of_turn_sent:
+                self._end_of_turn_sent = True
+                self._is_speaking_turn = False  # Reset speaking state
+                
+                # Send with end_of_turn=True
+                try:
+                    await asyncio.wait_for(
+                        self.voice_session.gemini_session.send(
+                            input={"data": processed_audio, "mime_type": "audio/pcm;rate=24000"},
+                            end_of_turn=True
+                        ),
+                        timeout=1.0
+                    )
+                    logger.info("✅ End-of-turn signal sent to Gemini")
+                    return
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to send end_of_turn: {e}")
+            
+            # Send normal audio
             try:
                 send_start = time.time()
-                # Normal audio send - let server VAD handle it
                 await asyncio.wait_for(
                     self.voice_session.gemini_session.send(
                         input={"data": processed_audio, "mime_type": "audio/pcm;rate=24000"},
                         end_of_turn=False
                     ),
-                    timeout=2.0  # Reduced to 2s - fail fast on slow connections
+                    timeout=1.0  # Reduced timeout to 1s for faster failure
                 )
                 send_duration = time.time() - send_start
                 
                 # Track latency samples (keep last 100)
+                if not hasattr(self, '_send_latency_samples'):
+                    self._send_latency_samples = []
                 self._send_latency_samples.append(send_duration)
                 if len(self._send_latency_samples) > 100:
                     self._send_latency_samples.pop(0)
                 
-                # Log if send took longer than expected (potential latency indicator)
-                if send_duration > 0.05:  # 50ms threshold for warning
+                # Log if send took longer than expected
+                if send_duration > 0.05:  # 50ms threshold
                     self._slow_send_count += 1
                     if self._slow_send_count <= 5 or self._slow_send_count % 20 == 0:
                         logger.warning(f"⏱️ Slow Gemini send #{self._slow_send_count}: {send_duration*1000:.0f}ms")
             
             except asyncio.TimeoutError:
-                logger.error(f"❌ TIMEOUT: Gemini send took >2s - dropping audio chunk")
+                # Fail silently on timeouts to keep stream moving
                 if not hasattr(self, '_send_timeout_count'):
                     self._send_timeout_count = 0
                 self._send_timeout_count += 1
-                if self._send_timeout_count % 5 == 1:
-                    logger.error(f"⚠️ Total send timeouts: {self._send_timeout_count}")
-                return  # Exit early on timeout
+                if self._send_timeout_count % 10 == 1:
+                    logger.warning(f"⚠️ Gemini send timeout (count: {self._send_timeout_count})")
+                return
             except Exception as send_err:
                 error_str = str(send_err)
                 if "no close frame" in error_str.lower():
                     if not hasattr(self, '_connection_closed_logged'):
                         logger.warning("⚠️ Gemini WebSocket connection closed unexpectedly")
                         self._connection_closed_logged = True
-                else:
-                    logger.error(f"Error sending audio to Gemini: {send_err}")
                 return
             
             # Log every 50 packets with latency stats
