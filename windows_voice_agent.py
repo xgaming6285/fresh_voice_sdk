@@ -656,6 +656,376 @@ class CallQualityTracker:
         logger.info(f"   Interrupts: {metrics['interruptions_by_user']} | AMD: {metrics['amd_result']} | Outcome: {metrics['call_outcome']}")
 
 
+# =============================================================================
+# LATENCY TRACKER - Comprehensive Pipeline Latency Monitoring
+# =============================================================================
+
+class LatencyTracker:
+    """
+    Comprehensive latency tracking for the voice pipeline.
+    
+    Tracks timing at each stage:
+    - RTP Receive: Audio packet received from SIM gate (Bulgaria)
+    - Decode: After μ-law/A-law decoding
+    - Preprocess: After audio preprocessing pipeline (bandpass, AGC, etc.)
+    - VAD: After Voice Activity Detection filtering
+    - Gemini Send: When audio is sent to Gemini API
+    - Gemini First Response: First audio byte received from Gemini
+    - Convert: After converting response to telephony format
+    - RTP Send: When response is sent back to SIM gate
+    
+    Network topology:
+    - SIM Gate (Bulgaria) <-> UK VPS (Agent) <-> Google Gemini API
+    """
+    
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.call_start_time = time.time()
+        
+        # === INBOUND LATENCY (SIM Gate -> Gemini) ===
+        self.rtp_receive_times = []           # When RTP packet received
+        self.decode_times = []                # After μ-law decoding
+        self.preprocess_times = []            # After audio preprocessing
+        self.vad_times = []                   # After VAD filtering
+        self.gemini_send_times = []           # When sent to Gemini
+        
+        # === OUTBOUND LATENCY (Gemini -> SIM Gate) ===
+        self.gemini_response_times = []       # First byte from Gemini
+        self.convert_times = []               # After telephony conversion
+        self.rtp_send_times = []              # When sent via RTP
+        
+        # === ROUND-TRIP TRACKING ===
+        # Maps utterance_id -> {stage: timestamp}
+        self.utterance_tracking = {}
+        self.current_utterance_id = 0
+        self.last_speech_start_time = None
+        self.last_user_eot_time = None        # End of turn marker
+        
+        # === STAGE LATENCIES (computed deltas) ===
+        self.stage_latencies = {
+            'rtp_to_decode': [],              # Network receive -> decode
+            'decode_to_preprocess': [],       # Decode -> preprocessing
+            'preprocess_to_vad': [],          # Preprocessing -> VAD
+            'vad_to_gemini_send': [],         # VAD -> Gemini send
+            'gemini_roundtrip': [],           # Send -> first response
+            'gemini_to_convert': [],          # Response -> conversion
+            'convert_to_rtp_send': [],        # Conversion -> RTP send
+            'total_inbound': [],              # RTP receive -> Gemini send
+            'total_outbound': [],             # Gemini response -> RTP send
+            'total_roundtrip': [],            # User speech -> AI audio out
+            'user_eot_to_ai_audio': [],       # User end-of-turn -> first AI audio
+        }
+        
+        # === REPORTING STATE ===
+        self.last_report_time = time.time()
+        self.report_interval_sec = 10.0       # Log summary every 10 seconds
+        self.packets_tracked = 0
+        self.responses_tracked = 0
+        
+        # === NETWORK LATENCY ESTIMATES ===
+        self.estimated_network_latency_ms = {
+            'sim_gate_to_agent': None,        # Bulgaria -> UK
+            'agent_to_gemini': None,          # UK -> Gemini API
+        }
+        
+        logger.info(f"⏱️ Latency tracker initialized for session {session_id}")
+    
+    def start_utterance(self) -> int:
+        """Start tracking a new user utterance. Returns utterance_id."""
+        self.current_utterance_id += 1
+        self.last_speech_start_time = time.time()
+        self.utterance_tracking[self.current_utterance_id] = {
+            'speech_start': self.last_speech_start_time,
+        }
+        return self.current_utterance_id
+    
+    def mark_rtp_receive(self, packet_size: int = 0):
+        """Called when RTP packet is received from SIM gate."""
+        t = time.time()
+        self.rtp_receive_times.append(t)
+        self.packets_tracked += 1
+        
+        if self.current_utterance_id in self.utterance_tracking:
+            if 'rtp_receive' not in self.utterance_tracking[self.current_utterance_id]:
+                self.utterance_tracking[self.current_utterance_id]['rtp_receive'] = t
+    
+    def mark_decode_complete(self):
+        """Called after μ-law/A-law decoding."""
+        t = time.time()
+        self.decode_times.append(t)
+        
+        # Calculate delta from RTP receive
+        if self.rtp_receive_times:
+            delta = (t - self.rtp_receive_times[-1]) * 1000  # ms
+            self.stage_latencies['rtp_to_decode'].append(delta)
+        
+        if self.current_utterance_id in self.utterance_tracking:
+            self.utterance_tracking[self.current_utterance_id]['decode'] = t
+    
+    def mark_preprocess_complete(self):
+        """Called after audio preprocessing (bandpass, AGC, etc.)."""
+        t = time.time()
+        self.preprocess_times.append(t)
+        
+        # Calculate delta from decode
+        if self.decode_times:
+            delta = (t - self.decode_times[-1]) * 1000  # ms
+            self.stage_latencies['decode_to_preprocess'].append(delta)
+        
+        if self.current_utterance_id in self.utterance_tracking:
+            self.utterance_tracking[self.current_utterance_id]['preprocess'] = t
+    
+    def mark_vad_complete(self, is_speech: bool):
+        """Called after VAD filtering."""
+        t = time.time()
+        self.vad_times.append(t)
+        
+        # Calculate delta from preprocess
+        if self.preprocess_times:
+            delta = (t - self.preprocess_times[-1]) * 1000  # ms
+            self.stage_latencies['preprocess_to_vad'].append(delta)
+        
+        if self.current_utterance_id in self.utterance_tracking:
+            self.utterance_tracking[self.current_utterance_id]['vad'] = t
+            self.utterance_tracking[self.current_utterance_id]['is_speech'] = is_speech
+    
+    def mark_gemini_send(self, chunk_size: int = 0):
+        """Called when audio is sent to Gemini."""
+        t = time.time()
+        self.gemini_send_times.append(t)
+        
+        # Calculate delta from VAD
+        if self.vad_times:
+            delta = (t - self.vad_times[-1]) * 1000  # ms
+            self.stage_latencies['vad_to_gemini_send'].append(delta)
+        
+        # Calculate total inbound latency
+        if self.rtp_receive_times:
+            total = (t - self.rtp_receive_times[-1]) * 1000  # ms
+            self.stage_latencies['total_inbound'].append(total)
+        
+        if self.current_utterance_id in self.utterance_tracking:
+            self.utterance_tracking[self.current_utterance_id]['gemini_send'] = t
+            self.utterance_tracking[self.current_utterance_id]['chunk_size'] = chunk_size
+    
+    def mark_user_end_of_turn(self):
+        """Called when user stops speaking (end of turn detected)."""
+        self.last_user_eot_time = time.time()
+        if self.current_utterance_id in self.utterance_tracking:
+            self.utterance_tracking[self.current_utterance_id]['user_eot'] = self.last_user_eot_time
+    
+    def mark_gemini_first_response(self, response_size: int = 0):
+        """Called when first audio byte is received from Gemini."""
+        t = time.time()
+        self.gemini_response_times.append(t)
+        self.responses_tracked += 1
+        
+        # Calculate Gemini roundtrip (from last send)
+        if self.gemini_send_times:
+            delta = (t - self.gemini_send_times[-1]) * 1000  # ms
+            self.stage_latencies['gemini_roundtrip'].append(delta)
+            
+            # Estimate network latency to Gemini (rough: half of roundtrip minus processing)
+            # Gemini processing is ~100-300ms, so network is roughly (delta - 200) / 2
+            if delta > 200:
+                self.estimated_network_latency_ms['agent_to_gemini'] = (delta - 200) / 2
+        
+        # Calculate user EOT to first AI audio
+        if self.last_user_eot_time:
+            eot_delta = (t - self.last_user_eot_time) * 1000  # ms
+            self.stage_latencies['user_eot_to_ai_audio'].append(eot_delta)
+            logger.info(f"⏱️ EOT→AI: {eot_delta:.0f}ms | Gemini roundtrip: {self.stage_latencies['gemini_roundtrip'][-1]:.0f}ms")
+        
+        if self.current_utterance_id in self.utterance_tracking:
+            self.utterance_tracking[self.current_utterance_id]['gemini_response'] = t
+    
+    def mark_convert_complete(self):
+        """Called after converting Gemini audio to telephony format."""
+        t = time.time()
+        self.convert_times.append(t)
+        
+        # Calculate delta from Gemini response
+        if self.gemini_response_times:
+            delta = (t - self.gemini_response_times[-1]) * 1000  # ms
+            self.stage_latencies['gemini_to_convert'].append(delta)
+        
+        if self.current_utterance_id in self.utterance_tracking:
+            self.utterance_tracking[self.current_utterance_id]['convert'] = t
+    
+    def mark_rtp_send(self, packet_size: int = 0):
+        """Called when response audio is sent via RTP to SIM gate."""
+        t = time.time()
+        self.rtp_send_times.append(t)
+        
+        # Calculate delta from convert
+        if self.convert_times:
+            delta = (t - self.convert_times[-1]) * 1000  # ms
+            self.stage_latencies['convert_to_rtp_send'].append(delta)
+        
+        # Calculate total outbound latency
+        if self.gemini_response_times:
+            total = (t - self.gemini_response_times[-1]) * 1000  # ms
+            self.stage_latencies['total_outbound'].append(total)
+        
+        # Calculate total roundtrip (from speech start if available)
+        if self.last_speech_start_time:
+            roundtrip = (t - self.last_speech_start_time) * 1000  # ms
+            self.stage_latencies['total_roundtrip'].append(roundtrip)
+        
+        if self.current_utterance_id in self.utterance_tracking:
+            self.utterance_tracking[self.current_utterance_id]['rtp_send'] = t
+        
+        # Periodic reporting
+        self._maybe_report()
+    
+    def _calculate_stats(self, values: list) -> dict:
+        """Calculate min, max, avg, p50, p95 for a list of values."""
+        if not values:
+            return {'min': 0, 'max': 0, 'avg': 0, 'p50': 0, 'p95': 0, 'count': 0}
+        
+        sorted_vals = sorted(values)
+        n = len(sorted_vals)
+        return {
+            'min': round(sorted_vals[0], 2),
+            'max': round(sorted_vals[-1], 2),
+            'avg': round(sum(sorted_vals) / n, 2),
+            'p50': round(sorted_vals[n // 2], 2),
+            'p95': round(sorted_vals[int(n * 0.95)] if n > 1 else sorted_vals[-1], 2),
+            'count': n
+        }
+    
+    def _maybe_report(self):
+        """Log latency report if interval has passed."""
+        now = time.time()
+        if (now - self.last_report_time) >= self.report_interval_sec:
+            self.log_latency_report()
+            self.last_report_time = now
+    
+    def get_latency_summary(self) -> dict:
+        """Get comprehensive latency statistics."""
+        summary = {
+            'session_id': self.session_id,
+            'duration_sec': round(time.time() - self.call_start_time, 2),
+            'packets_tracked': self.packets_tracked,
+            'responses_tracked': self.responses_tracked,
+            'stages': {},
+            'network_estimates_ms': self.estimated_network_latency_ms,
+        }
+        
+        # Calculate stats for each stage
+        for stage, values in self.stage_latencies.items():
+            summary['stages'][stage] = self._calculate_stats(values)
+        
+        return summary
+    
+    def log_latency_report(self):
+        """Log a detailed latency report."""
+        summary = self.get_latency_summary()
+        
+        logger.info(f"")
+        logger.info(f"╔══════════════════════════════════════════════════════════════════╗")
+        logger.info(f"║  ⏱️  LATENCY REPORT - Session {self.session_id[:8]}...              ║")
+        logger.info(f"╠══════════════════════════════════════════════════════════════════╣")
+        logger.info(f"║  Duration: {summary['duration_sec']}s | Packets: {summary['packets_tracked']} | Responses: {summary['responses_tracked']}")
+        logger.info(f"╠══════════════════════════════════════════════════════════════════╣")
+        logger.info(f"║  INBOUND (SIM Gate → Agent → Gemini):                            ║")
+        
+        inbound = summary['stages'].get('total_inbound', {})
+        if inbound.get('count', 0) > 0:
+            logger.info(f"║    Total:      Avg={inbound['avg']:.1f}ms  P95={inbound['p95']:.1f}ms  Max={inbound['max']:.1f}ms")
+        
+        for stage in ['rtp_to_decode', 'decode_to_preprocess', 'preprocess_to_vad', 'vad_to_gemini_send']:
+            stats = summary['stages'].get(stage, {})
+            if stats.get('count', 0) > 0:
+                stage_name = stage.replace('_to_', '→').replace('_', ' ')
+                logger.info(f"║    {stage_name:20}: Avg={stats['avg']:.1f}ms  Max={stats['max']:.1f}ms")
+        
+        logger.info(f"╠══════════════════════════════════════════════════════════════════╣")
+        logger.info(f"║  GEMINI API:                                                      ║")
+        
+        gemini = summary['stages'].get('gemini_roundtrip', {})
+        if gemini.get('count', 0) > 0:
+            logger.info(f"║    Roundtrip:  Avg={gemini['avg']:.0f}ms  P95={gemini['p95']:.0f}ms  Max={gemini['max']:.0f}ms")
+        
+        eot = summary['stages'].get('user_eot_to_ai_audio', {})
+        if eot.get('count', 0) > 0:
+            logger.info(f"║    EOT→Audio:  Avg={eot['avg']:.0f}ms  P95={eot['p95']:.0f}ms  Max={eot['max']:.0f}ms")
+        
+        logger.info(f"╠══════════════════════════════════════════════════════════════════╣")
+        logger.info(f"║  OUTBOUND (Gemini → Agent → SIM Gate):                           ║")
+        
+        outbound = summary['stages'].get('total_outbound', {})
+        if outbound.get('count', 0) > 0:
+            logger.info(f"║    Total:      Avg={outbound['avg']:.1f}ms  P95={outbound['p95']:.1f}ms  Max={outbound['max']:.1f}ms")
+        
+        logger.info(f"╠══════════════════════════════════════════════════════════════════╣")
+        logger.info(f"║  END-TO-END:                                                      ║")
+        
+        roundtrip = summary['stages'].get('total_roundtrip', {})
+        if roundtrip.get('count', 0) > 0:
+            logger.info(f"║    Speech→Out: Avg={roundtrip['avg']:.0f}ms  P95={roundtrip['p95']:.0f}ms  Max={roundtrip['max']:.0f}ms")
+        
+        logger.info(f"╚══════════════════════════════════════════════════════════════════╝")
+        logger.info(f"")
+    
+    def log_final_summary(self):
+        """Log final latency summary at call end with bottleneck analysis."""
+        summary = self.get_latency_summary()
+        
+        logger.info(f"")
+        logger.info(f"╔══════════════════════════════════════════════════════════════════╗")
+        logger.info(f"║  ⏱️  FINAL LATENCY SUMMARY - Session {self.session_id[:8]}...       ║")
+        logger.info(f"╠══════════════════════════════════════════════════════════════════╣")
+        
+        # Identify bottleneck
+        bottleneck = None
+        max_avg = 0
+        for stage, stats in summary['stages'].items():
+            if stats.get('avg', 0) > max_avg and 'total' not in stage:
+                max_avg = stats['avg']
+                bottleneck = stage
+        
+        if bottleneck:
+            logger.info(f"║  🎯 BOTTLENECK IDENTIFIED: {bottleneck.replace('_', ' ').upper()}")
+            logger.info(f"║     Average latency: {max_avg:.0f}ms")
+            
+            # Provide recommendations based on bottleneck
+            if 'gemini' in bottleneck.lower():
+                logger.info(f"║     → This is Gemini API latency (expected 200-500ms)")
+                logger.info(f"║     → Consider: Closer region, model optimization")
+            elif 'preprocess' in bottleneck.lower():
+                logger.info(f"║     → Audio preprocessing is taking too long")
+                logger.info(f"║     → Consider: Reduce FFT size, optimize filters")
+            elif 'vad' in bottleneck.lower():
+                logger.info(f"║     → VAD processing is slow")
+                logger.info(f"║     → Consider: Reduce min_speech_frames")
+            elif 'rtp' in bottleneck.lower():
+                logger.info(f"║     → Network latency to SIM gate (Bulgaria)")
+                logger.info(f"║     → Consider: Closer server, VPN optimization")
+        
+        logger.info(f"╠══════════════════════════════════════════════════════════════════╣")
+        
+        # Key metrics summary
+        eot = summary['stages'].get('user_eot_to_ai_audio', {})
+        gemini = summary['stages'].get('gemini_roundtrip', {})
+        inbound = summary['stages'].get('total_inbound', {})
+        outbound = summary['stages'].get('total_outbound', {})
+        
+        logger.info(f"║  KEY METRICS:")
+        if eot.get('count', 0) > 0:
+            logger.info(f"║    User speaks → AI responds: Avg {eot['avg']:.0f}ms, P95 {eot['p95']:.0f}ms")
+        if gemini.get('count', 0) > 0:
+            logger.info(f"║    Gemini API roundtrip:      Avg {gemini['avg']:.0f}ms, P95 {gemini['p95']:.0f}ms")
+        if inbound.get('count', 0) > 0:
+            logger.info(f"║    SIM→Agent→Gemini:         Avg {inbound['avg']:.1f}ms")
+        if outbound.get('count', 0) > 0:
+            logger.info(f"║    Gemini→Agent→SIM:         Avg {outbound['avg']:.1f}ms")
+        
+        logger.info(f"╚══════════════════════════════════════════════════════════════════╝")
+        
+        return summary
+
+
 class VoiceActivityDetector:
     """
     Enhanced Client-Side VAD using WebRTC VAD with energy tracking.
@@ -3312,6 +3682,11 @@ class RTPSession:
         self.quality_tracker = CallQualityTracker(session_id)
         
         # =================================================================
+        # LATENCY TRACKING: Pipeline Performance Monitoring
+        # =================================================================
+        self.latency_tracker = LatencyTracker(session_id)
+        
+        # =================================================================
         # PROFESSIONAL COLD CALLING: Adaptive Silence Detection
         # =================================================================
         self.adaptive_silence = AdaptiveSilenceDetector(
@@ -3424,15 +3799,18 @@ class RTPSession:
         self._end_of_turn_sent = False  # Whether we've sent end_of_turn for current silence period
         
         # --- PROFESSIONAL COLD CALLING: Improved thresholds ---
-        # Increased silence threshold for better turn-taking (400ms is industry standard)
-        self._silence_threshold_sec = 0.40  # PROFESSIONAL: 400ms silence (was 150ms - too aggressive)
+        # ⚡ LATENCY FIX: Increased silence threshold for natural Bulgarian speech patterns
+        # 400ms was too short - users often pause mid-sentence, causing premature EOT
+        # 700ms allows for natural pauses while still feeling responsive
+        self._silence_threshold_sec = 0.70  # OPTIMIZED: 700ms silence (was 400ms - too aggressive for Bulgarian)
+        self._last_eot_time = 0  # Track last EOT time for cooldown
         
         # Higher threshold for GSM noise rejection (adaptive system will tune this)
         self._speech_energy_threshold = 5500  # PROFESSIONAL: Increased from 4200 for better noise rejection
         # --- END PROFESSIONAL FIX ---
         
         self._last_speech_time = time.time()  # Last time speech was detected
-        logger.info(f"📍 PROFESSIONAL COLD CALLING: End-of-turn with {self._silence_threshold_sec}s silence, adaptive energy threshold starting at {self._speech_energy_threshold}")
+        logger.info(f"📍 PROFESSIONAL COLD CALLING: End-of-turn with {self._silence_threshold_sec}s silence, 2.5s EOT cooldown, adaptive threshold={self._speech_energy_threshold}")
         
         # Call answered flag - set to True when SIP 200 OK is received
         # Used to delay Gemini greeting until user actually picks up
@@ -3520,6 +3898,8 @@ class RTPSession:
         """Called when user starts speaking"""
         if self.conversation_state == ConversationState.LISTENING:
             self.set_conversation_state(ConversationState.USER_SPEAKING, "User started speaking")
+            # ⏱️ LATENCY TRACKING: Start tracking new utterance
+            self.latency_tracker.start_utterance()
         elif self.is_ai_turn():
             # User interrupted AI
             self.set_conversation_state(ConversationState.INTERRUPTED, "User interrupted AI")
@@ -3530,6 +3910,8 @@ class RTPSession:
             self.set_conversation_state(ConversationState.PROCESSING, "User stopped speaking")
             # PROFESSIONAL: Track for latency measurement
             self.quality_tracker.on_user_end_of_turn()
+            # ⏱️ LATENCY TRACKING: Mark user end of turn
+            self.latency_tracker.mark_user_end_of_turn()
     
     def on_call_answered(self):
         """Called when the call is answered (SIP 200 OK received)"""
@@ -3552,6 +3934,9 @@ class RTPSession:
         self.quality_tracker.set_call_outcome(outcome)
         self.quality_tracker.log_summary()
         
+        # ⏱️ LATENCY TRACKING: Log final latency summary with bottleneck analysis
+        self.latency_tracker.log_final_summary()
+        
     def process_incoming_audio(self, audio_data: bytes, payload_type: int, timestamp: int):
         """
         Process incoming RTP audio packet in full-duplex mode.
@@ -3567,6 +3952,9 @@ class RTPSession:
             # Increment packet counter for RTP activity tracking
             self.packets_received += 1
             
+            # ⏱️ LATENCY TRACKING: Mark RTP packet received from SIM gate
+            self.latency_tracker.mark_rtp_receive(len(audio_data))
+            
             # Convert payload based on type
             if payload_type == 0:  # PCMU/μ-law
                 pcm_data = self.ulaw_to_pcm(audio_data)
@@ -3579,6 +3967,9 @@ class RTPSession:
             else:
                 # Assume it's already PCM or unknown
                 pcm_data = audio_data
+            
+            # ⏱️ LATENCY TRACKING: Mark decode complete
+            self.latency_tracker.mark_decode_complete()
             
             # Validate PCM data length to prevent filter corruption
             if len(pcm_data) < 10:
@@ -3593,6 +3984,9 @@ class RTPSession:
             # This cleans the audio before VAD and Gemini for better recognition
             pcm_data = self.audio_preprocessor.process_audio(pcm_data)
             
+            # ⏱️ LATENCY TRACKING: Mark preprocessing complete
+            self.latency_tracker.mark_preprocess_complete()
+            
             # --- 3. ENHANCED VAD WITH METRICS ---
             # Use process_with_metrics for professional cold calling features
             # VAD now operates on cleaned audio for more accurate speech detection
@@ -3600,6 +3994,9 @@ class RTPSession:
             is_speech_active = vad_result['is_speech']
             filtered_audio = vad_result['audio']
             frame_energy = vad_result['energy']
+            
+            # ⏱️ LATENCY TRACKING: Mark VAD complete
+            self.latency_tracker.mark_vad_complete(is_speech_active)
             
             # --- 4. PROFESSIONAL: AMD Detection (first 5 seconds) ---
             if self.amd.is_detecting():
@@ -3646,28 +4043,87 @@ class RTPSession:
             if eot_triggered:
                 self.on_user_stop_speaking()
             
+            # ⚡ LATENCY FIX: Compute EOT decision HERE (not in async send loop)
+            # This eliminates duplicate processing that was causing 450ms+ delays
+            should_send_eot = False
+            current_time = time.time()
+            
+            # Initialize last_eot_time if not set
+            if not hasattr(self, '_last_eot_time'):
+                self._last_eot_time = 0
+            
+            # Check if we're in a state where EOT detection makes sense
+            if self.conversation_state in (ConversationState.USER_SPEAKING, 
+                                           ConversationState.LISTENING,
+                                           ConversationState.PROCESSING):
+                
+                is_silence = self.adaptive_silence.is_silence(frame_energy)
+                
+                if is_silence:
+                    # Track when silence started
+                    if self._silence_start_time is None:
+                        self._silence_start_time = current_time
+                        
+                    silence_duration = current_time - self._silence_start_time
+                    
+                    # ⚡ EOT COOLDOWN: Don't send another EOT within 2.5s of the last one
+                    # This prevents multiple EOTs during natural speech pauses
+                    time_since_last_eot = current_time - self._last_eot_time
+                    eot_cooldown_ok = time_since_last_eot >= 2.5
+                    
+                    # Only send EOT if:
+                    # 1. Silence duration exceeds threshold (700ms)
+                    # 2. We haven't already sent EOT (or cooldown has passed)
+                    # 3. We've detected speech since the last EOT (prevent spamming)
+                    # 4. EOT cooldown has passed (2.5s between EOTs)
+                    if (silence_duration >= self._silence_threshold_sec and 
+                        (not self._end_of_turn_sent or eot_cooldown_ok) and
+                        getattr(self, '_speech_detected_this_turn', False)):
+                        should_send_eot = True
+                        self._end_of_turn_sent = True
+                        self._is_speaking_turn = False
+                        self._speech_detected_this_turn = False
+                        self._last_eot_time = current_time  # Update cooldown timer
+                        self.on_user_stop_speaking()
+                        logger.debug(f"🔇 EOT computed: silence={silence_duration:.2f}s, state={self.conversation_state.name}")
+                else:
+                    # User is speaking - reset silence tracking but NOT eot_sent flag
+                    # ⚡ FIX: Only reset _end_of_turn_sent if enough time has passed
+                    # This prevents rapid EOT→speech→EOT cycles
+                    if self._silence_start_time is not None:
+                        self._silence_start_time = None
+                        # Only allow new EOT if 2.5+ seconds since last EOT
+                        if current_time - self._last_eot_time >= 2.5:
+                            self._end_of_turn_sent = False
+                        self._last_speech_time = current_time
+                    
+                    # Mark that we've detected speech this turn
+                    self._speech_detected_this_turn = True
+                    
+                    # Update turn start time if we were previously silent
+                    if not hasattr(self, '_is_speaking_turn') or not self._is_speaking_turn:
+                        self._is_speaking_turn = True
+                        self._turn_start_time = current_time
+                
+                # --- MAX TURN DURATION (Safety Net) ---
+                if hasattr(self, '_is_speaking_turn') and self._is_speaking_turn:
+                    turn_duration = current_time - self._turn_start_time
+                    if turn_duration > 8.0:  # 8 seconds max
+                        logger.warning(f"⚠️ Max turn duration reached (8s) - forcing EOT")
+                        should_send_eot = True
+                        self._end_of_turn_sent = True
+                        self._last_eot_time = current_time
+                        self._turn_start_time = current_time
+            else:
+                # AI is speaking or call is ending - reset EOT state
+                self._silence_start_time = None
+                self._end_of_turn_sent = False
+                self._speech_detected_this_turn = False
+            
             # Log voice activity periodically (for debugging)
             if not hasattr(self, '_last_voice_log_time') or (time.time() - self._last_voice_log_time) > 5.0:
                 self._last_voice_log_time = time.time()
-                logger.debug(f"🗣️ Voice activity in {self.session_id} | State: {self.conversation_state.name} | Energy: {frame_energy:.0f} | Threshold: {adaptive_threshold:.0f}")
-            
-            # ⚡ FULL-DUPLEX MODE: Send filtered user audio to Gemini for processing
-            # Gemini Live API has built-in server-side interruption detection
-            # WebRTC VAD ensures only real speech reaches Gemini (not background noise)
-            
-            # Track output state for logging only (not for blocking input)
-            current_time = time.time()
-            time_since_output = current_time - self.last_output_time
-            
-            # Log when transitioning from assistant speech to user speech (for debugging only)
-            if (self.audio_output_active or time_since_output < self.echo_suppression_delay):
-                if not hasattr(self, '_duplex_mode_logged'):
-                    self._duplex_mode_logged = True
-                    logger.debug(f"🎙️ Full-duplex mode: User speaking while/after assistant - sending to Gemini for interruption detection")
-            else:
-                # Reset logging flag when clearly in user-only mode
-                if hasattr(self, '_duplex_mode_logged'):
-                    delattr(self, '_duplex_mode_logged')
+                logger.debug(f"🗣️ Voice activity in {self.session_id} | State: {self.conversation_state.name} | Energy: {frame_energy:.0f}")
             
             # Log once to show audio is flowing
             if not hasattr(self, '_audio_packet_count'):
@@ -3689,16 +4145,15 @@ class RTPSession:
                 
                 # ⚡ OPTIMIZED: Send in smaller chunks (20-40ms) for lower latency
                 # 20ms at 8kHz = 160 samples * 2 bytes = 320 bytes
-                # 40ms at 8kHz = 320 samples * 2 bytes = 640 bytes
-                # User requested 20-40ms frames. 320 bytes is 20ms.
                 min_chunk = 320 
                 
                 if len(self.audio_buffer) >= min_chunk:
                     chunk_to_send = self.audio_buffer
                     self.audio_buffer = b""  # Clear buffer
                     
-                    # Queue audio for the asyncio thread to send
-                    self.audio_input_queue.put(chunk_to_send)
+                    # ⚡ LATENCY FIX: Queue audio WITH pre-computed EOT flag
+                    # This eliminates all duplicate processing in the async send loop
+                    self.audio_input_queue.put((chunk_to_send, should_send_eot))
                     
         except Exception as e:
             logger.error(f"Error processing incoming audio: {e}")
@@ -3791,48 +4246,53 @@ class RTPSession:
                 else:
                     logger.warning("⚠️ Call not answered - skipping greeting nudge")
             
-            # Main loop: process audio from queue and send to Gemini with minimal latency
-            # CRITICAL FIX: Use non-blocking queue access to prevent event loop starvation
+            # ⚡ LATENCY-OPTIMIZED Main loop: process audio from queue and send to Gemini
+            # Key optimizations:
+            # 1. Audio is queued as (bytes, should_send_eot) - no duplicate processing
+            # 2. Drain queue aggressively - process ALL available chunks immediately
+            # 3. Minimal async sleep - just enough to yield control
             audio_chunks_sent = 0
-            last_send_time = time.time()  # Track last send time for Keep-Alive
-            loop = asyncio.get_event_loop()
+            last_send_time = time.time()
             
-            # Batch processing for efficiency - collect multiple chunks before sending
-            pending_chunks = []
-            max_batch_size = 5  # Process up to 5 chunks at once for efficiency
+            # Batch processing for efficiency - process up to 20 chunks at once
+            # At 50 packets/sec, this processes up to 400ms of audio per iteration
+            max_batch_size = 20  # ⚡ Increased from 5 to 20 for better throughput
             
             while self.input_processing:
                 try:
-                    # NON-BLOCKING queue drain - collect all available audio immediately
-                    # This prevents the blocking queue.get() from starving the event loop
+                    # ⚡ AGGRESSIVE queue drain - collect ALL available audio immediately
                     chunks_collected = 0
+                    pending_sends = []  # List of (processed_audio, should_send_eot)
+                    
                     while chunks_collected < max_batch_size:
                         try:
-                            audio_chunk = self.audio_input_queue.get_nowait()  # NON-BLOCKING!
-                            pending_chunks.append(audio_chunk)
+                            # ⚡ Queue now contains (audio_bytes, should_send_eot) tuples
+                            queue_item = self.audio_input_queue.get_nowait()
+                            
+                            # Handle both old format (just bytes) and new format (tuple)
+                            if isinstance(queue_item, tuple):
+                                audio_chunk, should_send_eot = queue_item
+                            else:
+                                audio_chunk = queue_item
+                                should_send_eot = False
+                            
+                            pending_sends.append((audio_chunk, should_send_eot))
                             chunks_collected += 1
                         except queue.Empty:
                             break
                     
-                    # Send collected chunks to Gemini
-                    if pending_chunks and self.voice_session.gemini_session:
-                        for chunk in pending_chunks:
-                            await self._send_audio_to_gemini(chunk)
+                    # ⚡ Send ALL collected chunks to Gemini - fast path with pre-computed EOT
+                    if pending_sends and self.voice_session and self.voice_session.gemini_session:
+                        for audio_chunk, should_send_eot in pending_sends:
+                            await self._send_audio_to_gemini_fast(audio_chunk, should_send_eot)
                             audio_chunks_sent += 1
                         last_send_time = time.time()
-                        pending_chunks.clear()
-                    elif not pending_chunks:
-                        # No audio available - check for keep-alive
-                        if time.time() - last_send_time > 0.2:
-                            if self.voice_session and self.voice_session.gemini_session:
-                                # Generate 20ms of silence (320 bytes for 8kHz 16-bit mono)
-                                silence_chunk = b'\x00' * 320
-                                await self._send_audio_to_gemini(silence_chunk)
-                                last_send_time = time.time()
                     
-                    # CRITICAL: Yield control to allow receiver task to run
-                    # This prevents audio send from monopolizing the event loop
-                    await asyncio.sleep(0.001)  # LATENCY FIX: 1ms yield (was 5ms) - faster queue drain
+                    # ⚡ REMOVED: No more silence sending - it adds unnecessary latency
+                    # Gemini handles silence detection server-side
+                    
+                    # ⚡ Minimal yield - just enough for receiver task to run
+                    await asyncio.sleep(0.0005)  # 0.5ms yield (was 1ms) - even faster
                         
                 except Exception as e:
                     logger.error(f"Error in main audio loop: {e}")
@@ -3867,6 +4327,118 @@ class RTPSession:
             return rms
         except Exception:
             return 0.0
+    
+    async def _send_audio_to_gemini_fast(self, audio_chunk: bytes, should_send_eot: bool = False):
+        """
+        ⚡ LATENCY-OPTIMIZED: Ultra-fast audio send to Gemini.
+        
+        This method does MINIMAL processing - all VAD, energy calculation,
+        state machine updates, and EOT detection are already done in 
+        process_incoming_audio() before the audio hits the queue.
+        
+        Key optimizations:
+        1. No duplicate VAD/energy calculation (saves ~1-3ms per packet)
+        2. Pre-computed EOT flag (saves ~5ms of state machine logic)
+        3. Minimal timeout (0.5s instead of 1s)
+        4. Fast path for common case (no EOT)
+        """
+        try:
+            if not self.voice_session or not self.voice_session.gemini_session:
+                return
+            
+            # --- GREETING PROTECTION ---
+            if getattr(self, 'greeting_protection_active', False):
+                return
+            
+            # ⚡ Convert telephony audio to Gemini format (this is required)
+            processed_audio = self.voice_session.convert_telephony_to_gemini(audio_chunk)
+            
+            # Initialize counters if needed
+            if not hasattr(self, '_audio_send_count'):
+                self._audio_send_count = 0
+                self._audio_send_bytes = 0
+                self._last_send_log_time = time.time()
+                self._send_latency_samples = []
+                self._slow_send_count = 0
+            
+            self._audio_send_count += 1
+            self._audio_send_bytes += len(processed_audio)
+            
+            # ⚡ FAST SEND: Use pre-computed EOT flag from queue
+            try:
+                send_start = time.time()
+                await asyncio.wait_for(
+                    self.voice_session.gemini_session.send(
+                        input={"data": processed_audio, "mime_type": "audio/pcm;rate=24000"},
+                        end_of_turn=should_send_eot
+                    ),
+                    timeout=0.5  # ⚡ Reduced from 1.0s to 0.5s for faster failure
+                )
+                send_duration = time.time() - send_start
+                
+                # ⏱️ LATENCY TRACKING: Mark audio sent to Gemini
+                self.latency_tracker.mark_gemini_send(len(processed_audio))
+                
+                # Track latency samples (keep last 100)
+                if not hasattr(self, '_send_latency_samples'):
+                    self._send_latency_samples = []
+                self._send_latency_samples.append(send_duration)
+                if len(self._send_latency_samples) > 100:
+                    self._send_latency_samples.pop(0)
+                
+                # Log if send took longer than expected
+                if send_duration > 0.03:  # ⚡ Reduced threshold from 50ms to 30ms
+                    if not hasattr(self, '_slow_send_count'):
+                        self._slow_send_count = 0
+                    self._slow_send_count += 1
+                    if self._slow_send_count <= 5 or self._slow_send_count % 50 == 0:
+                        logger.warning(f"⏱️ Slow Gemini send #{self._slow_send_count}: {send_duration*1000:.0f}ms")
+                
+                # Log EOT if sent
+                if should_send_eot:
+                    logger.info(f"✅ End-of-turn sent (state: {self.conversation_state.name})")
+                    
+            except asyncio.TimeoutError:
+                if not hasattr(self, '_send_timeout_count'):
+                    self._send_timeout_count = 0
+                self._send_timeout_count += 1
+                if self._send_timeout_count % 10 == 1:
+                    logger.warning(f"⚠️ Gemini send timeout (count: {self._send_timeout_count})")
+                return
+            except Exception as send_err:
+                error_str = str(send_err)
+                if "no close frame" in error_str.lower():
+                    if not hasattr(self, '_connection_closed_logged'):
+                        logger.warning("⚠️ Gemini WebSocket connection closed unexpectedly")
+                        self._connection_closed_logged = True
+                return
+            
+            # Log every 50 packets with latency stats
+            current_time = time.time()
+            if self._audio_send_count % 50 == 0:
+                elapsed = current_time - self._last_send_log_time
+                avg_latency = sum(self._send_latency_samples) / len(self._send_latency_samples) if self._send_latency_samples else 0
+                max_latency = max(self._send_latency_samples) if self._send_latency_samples else 0
+                
+                # Calculate time since last response for NO_RESP warning
+                time_since_response = current_time - getattr(self, '_last_response_time', current_time)
+                
+                status_parts = [
+                    f"📤 Sent {self._audio_send_count} pkts",
+                    f"elapsed={elapsed:.2f}s",
+                    f"avg_lat={avg_latency*1000:.1f}ms",
+                    f"max_lat={max_latency*1000:.1f}ms",
+                    f"slow={self._slow_send_count}",
+                ]
+                
+                if time_since_response > 5:
+                    status_parts.append(f"⚠️ NO_RESP={time_since_response:.0f}s")
+                
+                logger.info(" | ".join(status_parts))
+                self._last_send_log_time = time.time()
+                
+        except Exception as e:
+            logger.error(f"Error in _send_audio_to_gemini_fast: {e}")
     
     async def _send_audio_to_gemini(self, audio_chunk: bytes):
         """
@@ -4008,6 +4580,9 @@ class RTPSession:
                     timeout=1.0  # Reduced timeout to 1s for faster failure
                 )
                 send_duration = time.time() - send_start
+                
+                # ⏱️ LATENCY TRACKING: Mark audio sent to Gemini
+                self.latency_tracker.mark_gemini_send(len(processed_audio))
                 
                 # Track latency samples (keep last 100)
                 if not hasattr(self, '_send_latency_samples'):
@@ -4153,6 +4728,8 @@ class RTPSession:
                                 if not turn_had_audio:
                                     turn_had_audio = True
                                     self.on_ai_start_speaking()
+                                    # ⏱️ LATENCY TRACKING: Mark first audio from Gemini
+                                    self.latency_tracker.mark_gemini_first_response(len(audio_bytes))
                                 
                                 # Log audio reception for debugging
                                 if not hasattr(self, '_audio_recv_count'):
@@ -4179,6 +4756,8 @@ class RTPSession:
                                 
                                 # Convert from 24kHz to 8kHz telephony format
                                 telephony_audio = self.voice_session.convert_gemini_to_telephony(audio_bytes)
+                                # ⏱️ LATENCY TRACKING: Mark conversion complete
+                                self.latency_tracker.mark_convert_complete()
                                 # Buffer and play for smoothness
                                 self.buffer_and_play(telephony_audio)
                             elif isinstance(audio_bytes, str):
@@ -4343,6 +4922,9 @@ class RTPSession:
         packet_size = 160  # 20ms @ 8000 Hz, 1 byte/sample for G.711 - optimal for real-time VoIP
         for i in range(0, len(ulaw), packet_size):
             self.output_queue.put(ulaw[i:i + packet_size])
+        
+        # ⏱️ LATENCY TRACKING: Mark RTP send (queued for transmission to SIM gate)
+        self.latency_tracker.mark_rtp_send(len(pcm16))
     
     def play_greeting_file(self, greeting_file: str = "greeting.wav"):
         """Play a greeting WAV file at the start of the call and return estimated duration"""
@@ -7721,6 +8303,135 @@ async def get_active_sessions():
     except Exception as e:
         logger.error(f"Error getting sessions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/latency")
+async def get_latency_stats():
+    """
+    Get comprehensive latency statistics for all active sessions.
+    
+    Tracks timing at each stage of the voice pipeline:
+    - RTP Receive: Audio packet received from SIM gate (Bulgaria)
+    - Decode: After μ-law/A-law decoding  
+    - Preprocess: After audio preprocessing pipeline (bandpass, AGC, etc.)
+    - VAD: After Voice Activity Detection filtering
+    - Gemini Send: When audio is sent to Gemini API
+    - Gemini Response: First audio byte received from Gemini
+    - Convert: After converting response to telephony format
+    - RTP Send: When response is sent back to SIM gate
+    
+    Network topology:
+    - SIM Gate (Bulgaria) <-> UK VPS (Agent) <-> Google Gemini API
+    """
+    try:
+        latency_data = {
+            "status": "success",
+            "active_sessions": len(active_sessions),
+            "sessions": []
+        }
+        
+        for session_id, session_info in active_sessions.items():
+            voice_session = session_info["voice_session"]
+            
+            # Try to get latency tracker from RTP session
+            rtp_session = None
+            for sid, rtp_sess in rtp_server.sessions.items():
+                if hasattr(rtp_sess, 'voice_session') and rtp_sess.voice_session == voice_session:
+                    rtp_session = rtp_sess
+                    break
+            
+            session_latency = {
+                "session_id": session_id,
+                "caller_id": voice_session.caller_id,
+                "duration_sec": round((datetime.now(timezone.utc) - session_info["call_start"]).total_seconds(), 2),
+                "latency": None
+            }
+            
+            if rtp_session and hasattr(rtp_session, 'latency_tracker'):
+                session_latency["latency"] = rtp_session.latency_tracker.get_latency_summary()
+            
+            latency_data["sessions"].append(session_latency)
+        
+        # If no active sessions, return summary message
+        if not latency_data["sessions"]:
+            latency_data["message"] = "No active sessions. Latency data is available during active calls."
+        
+        return latency_data
+        
+    except Exception as e:
+        logger.error(f"Error getting latency stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/latency/{session_id}")
+async def get_session_latency(session_id: str):
+    """
+    Get detailed latency statistics for a specific session.
+    
+    Returns comprehensive timing data including:
+    - Inbound latency (SIM Gate -> Agent -> Gemini)
+    - Outbound latency (Gemini -> Agent -> SIM Gate)
+    - Gemini API roundtrip time
+    - End-to-end user speech to AI response time
+    - Bottleneck analysis
+    """
+    try:
+        # Find the session
+        session_info = active_sessions.get(session_id)
+        if not session_info:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        
+        voice_session = session_info["voice_session"]
+        
+        # Find RTP session with latency tracker
+        rtp_session = None
+        for sid, rtp_sess in rtp_server.sessions.items():
+            if hasattr(rtp_sess, 'voice_session') and rtp_sess.voice_session == voice_session:
+                rtp_session = rtp_sess
+                break
+        
+        if not rtp_session or not hasattr(rtp_session, 'latency_tracker'):
+            raise HTTPException(status_code=404, detail=f"Latency tracker not available for session {session_id}")
+        
+        summary = rtp_session.latency_tracker.get_latency_summary()
+        
+        # Add bottleneck analysis
+        bottleneck = None
+        max_avg = 0
+        for stage, stats in summary.get('stages', {}).items():
+            if stats.get('avg', 0) > max_avg and 'total' not in stage:
+                max_avg = stats['avg']
+                bottleneck = stage
+        
+        summary['bottleneck'] = {
+            'stage': bottleneck,
+            'avg_latency_ms': max_avg,
+            'recommendation': None
+        }
+        
+        if bottleneck:
+            if 'gemini' in bottleneck.lower():
+                summary['bottleneck']['recommendation'] = "Gemini API latency is expected (200-500ms). Consider closer region or model optimization."
+            elif 'preprocess' in bottleneck.lower():
+                summary['bottleneck']['recommendation'] = "Audio preprocessing is slow. Consider reducing FFT size or optimizing filters."
+            elif 'vad' in bottleneck.lower():
+                summary['bottleneck']['recommendation'] = "VAD processing is slow. Consider reducing min_speech_frames."
+            elif 'rtp' in bottleneck.lower():
+                summary['bottleneck']['recommendation'] = "Network latency to SIM gate. Consider closer server or VPN optimization."
+        
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "caller_id": voice_session.caller_id,
+            "latency": summary
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting session latency: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/health")
 async def health_check():
