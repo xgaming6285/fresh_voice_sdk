@@ -30,8 +30,11 @@ import {
   Phone as PhoneIcon,
   Headset as HeadsetIcon,
   Description as DescriptionIcon,
+  Sms as SmsIcon,
+  Send as SendIcon,
 } from "@mui/icons-material";
 import { sessionAPI, voiceAgentAPI } from "../services/api";
+import { useAuth } from "../contexts/AuthContext";
 import { formatDateTime } from "../utils/dateUtils";
 
 function TabPanel({ children, value, index, ...other }) {
@@ -52,6 +55,7 @@ function TabPanel({ children, value, index, ...other }) {
 function SessionDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [session, setSession] = useState(null);
   const [recording, setRecording] = useState(null);
   const [transcripts, setTranscripts] = useState({});
@@ -62,6 +66,13 @@ function SessionDetail() {
   const [generatingSummary, setGeneratingSummary] = useState(false);
   const [languageDialogOpen, setLanguageDialogOpen] = useState(false);
   const [selectedLanguage, setSelectedLanguage] = useState("English");
+  
+  // SMS state
+  const [smsPhone, setSmsPhone] = useState("");
+  const [smsMessage, setSmsMessage] = useState("");
+  const [smsGateSlot, setSmsGateSlot] = useState(9);
+  const [sendingSms, setSendingSms] = useState(false);
+  const [smsResult, setSmsResult] = useState(null);
 
   // Helper to get recording URL with token (for local recordings)
   const getRecordingUrl = (audioPath) => {
@@ -197,6 +208,45 @@ function SessionDetail() {
       setGeneratingSummary(false);
     }
   };
+
+  // SMS handling
+  const handleSendSms = async () => {
+    if (!smsPhone.trim() || !smsMessage.trim()) {
+      setSmsResult({ success: false, error: "Phone number and message are required" });
+      return;
+    }
+
+    setSendingSms(true);
+    setSmsResult(null);
+    try {
+      const response = await voiceAgentAPI.sendSms(smsPhone, smsMessage, smsGateSlot);
+      setSmsResult({ success: true, message: response.data.message });
+      // Clear message after successful send
+      setSmsMessage("");
+    } catch (error) {
+      console.error("Error sending SMS:", error);
+      setSmsResult({ 
+        success: false, 
+        error: error.response?.data?.detail || "Failed to send SMS" 
+      });
+    } finally {
+      setSendingSms(false);
+    }
+  };
+
+  // Pre-populate SMS phone when session data is loaded
+  useEffect(() => {
+    if (session) {
+      // Use called_number (the number we called) as default SMS recipient
+      const defaultPhone = session.called_number || session.caller_id || "";
+      setSmsPhone(defaultPhone);
+      
+      // Use user's gate_slot if available, otherwise default to 9
+      if (user?.gate_slot) {
+        setSmsGateSlot(user.gate_slot);
+      }
+    }
+  }, [session, user]);
 
   const handlePlayAudio = (audioType) => {
     // Check if we have PBX recording (asterisk_linkedid)
@@ -538,6 +588,11 @@ function SessionDetail() {
           <Tab label="Audio Recordings" />
           <Tab label="Transcripts" />
           <Tab label="Session Details" />
+          <Tab 
+            label="Send SMS" 
+            icon={<SmsIcon sx={{ fontSize: 18 }} />}
+            iconPosition="start"
+          />
         </Tabs>
 
         <Box sx={{ flex: 1, overflow: 'auto', p: 3 }}>
@@ -1032,6 +1087,193 @@ function SessionDetail() {
                 </Card>
               </Box>
             )}
+          </TabPanel>
+
+          {/* SMS Tab */}
+          <TabPanel value={tabValue} index={3}>
+            <Typography variant="h6" gutterBottom fontWeight={700} color="primary.main">
+              Send SMS
+            </Typography>
+
+            <Grid container spacing={3}>
+              <Grid item xs={12} md={8}>
+                <Card className="glass-effect" sx={{ borderRadius: 2 }}>
+                  <CardContent sx={{ p: 3 }}>
+                    <Box display="flex" alignItems="center" gap={1.5} mb={3}>
+                      <Box
+                        sx={{
+                          p: 1.5,
+                          borderRadius: "50%",
+                          background: "linear-gradient(135deg, rgba(76, 175, 80, 0.15), rgba(46, 125, 50, 0.1))",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <SmsIcon sx={{ fontSize: 24, color: "success.main" }} />
+                      </Box>
+                      <Box>
+                        <Typography variant="h6" fontWeight={700}>
+                          Compose SMS
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          Send an SMS to the contact from this call
+                        </Typography>
+                      </Box>
+                    </Box>
+
+                    {/* SMS Form */}
+                    <Box display="flex" flexDirection="column" gap={2.5}>
+                      <TextField
+                        label="Phone Number"
+                        value={smsPhone}
+                        onChange={(e) => setSmsPhone(e.target.value)}
+                        placeholder="0888123456"
+                        fullWidth
+                        variant="outlined"
+                        InputProps={{
+                          startAdornment: (
+                            <PhoneIcon sx={{ mr: 1, color: "text.secondary" }} />
+                          ),
+                        }}
+                        sx={{
+                          "& .MuiOutlinedInput-root": {
+                            borderRadius: 2,
+                          },
+                        }}
+                      />
+
+                      <TextField
+                        select
+                        label="Sender (Gate Slot)"
+                        value={smsGateSlot}
+                        onChange={(e) => setSmsGateSlot(Number(e.target.value))}
+                        fullWidth
+                        variant="outlined"
+                        helperText="Select which SIM card to send from"
+                        sx={{
+                          "& .MuiOutlinedInput-root": {
+                            borderRadius: 2,
+                          },
+                        }}
+                      >
+                        {[9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19].map((slot) => (
+                          <MenuItem key={slot} value={slot}>
+                            Gate Slot {slot} {user?.gate_slot === slot ? "(Your default)" : ""}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+
+                      <TextField
+                        label="Message"
+                        value={smsMessage}
+                        onChange={(e) => setSmsMessage(e.target.value)}
+                        placeholder="Type your message here..."
+                        multiline
+                        rows={4}
+                        fullWidth
+                        variant="outlined"
+                        helperText={`${smsMessage.length} / 160 characters (${Math.ceil(smsMessage.length / 160) || 1} SMS)`}
+                        sx={{
+                          "& .MuiOutlinedInput-root": {
+                            borderRadius: 2,
+                          },
+                        }}
+                      />
+
+                      {/* Result Alert */}
+                      {smsResult && (
+                        <Alert 
+                          severity={smsResult.success ? "success" : "error"}
+                          onClose={() => setSmsResult(null)}
+                          sx={{ borderRadius: 2 }}
+                        >
+                          {smsResult.success ? smsResult.message : smsResult.error}
+                        </Alert>
+                      )}
+
+                      <Button
+                        variant="contained"
+                        color="success"
+                        size="large"
+                        onClick={handleSendSms}
+                        disabled={sendingSms || !smsPhone.trim() || !smsMessage.trim()}
+                        startIcon={sendingSms ? null : <SendIcon />}
+                        sx={{
+                          borderRadius: 2,
+                          textTransform: "none",
+                          fontWeight: 700,
+                          py: 1.5,
+                          background: "linear-gradient(135deg, #4caf50, #2e7d32)",
+                          "&:hover": {
+                            background: "linear-gradient(135deg, #43a047, #1b5e20)",
+                          },
+                        }}
+                      >
+                        {sendingSms ? "Sending..." : "Send SMS"}
+                      </Button>
+                    </Box>
+                  </CardContent>
+                </Card>
+              </Grid>
+
+              {/* Info Panel */}
+              <Grid item xs={12} md={4}>
+                <Card className="glass-effect" sx={{ borderRadius: 2, height: "100%" }}>
+                  <CardContent sx={{ p: 2.5 }}>
+                    <Typography variant="h6" fontWeight={700} gutterBottom>
+                      Call Information
+                    </Typography>
+                    <Box display="flex" flexDirection="column" gap={1.5}>
+                      <Box>
+                        <Typography variant="body2" color="text.secondary" fontWeight={600}>
+                          Called Number
+                        </Typography>
+                        <Typography variant="body1" fontWeight={500}>
+                          {sessionData.called_number || "Unknown"}
+                        </Typography>
+                      </Box>
+                      <Box>
+                        <Typography variant="body2" color="text.secondary" fontWeight={600}>
+                          Caller ID
+                        </Typography>
+                        <Typography variant="body1" fontWeight={500}>
+                          {sessionData.caller_id || "Unknown"}
+                        </Typography>
+                      </Box>
+                      {user?.gate_slot && (
+                        <Box>
+                          <Typography variant="body2" color="text.secondary" fontWeight={600}>
+                            Your Default Gate Slot
+                          </Typography>
+                          <Chip 
+                            label={`Slot ${user.gate_slot}`} 
+                            size="small" 
+                            color="primary"
+                            sx={{ fontWeight: 600, mt: 0.5 }}
+                          />
+                        </Box>
+                      )}
+                    </Box>
+
+                    <Box mt={3}>
+                      <Typography variant="subtitle2" color="text.secondary" fontWeight={600} gutterBottom>
+                        SMS Tips
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                        • Standard SMS is 160 characters
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                        • Longer messages are split into multiple SMS
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        • The gate slot determines which SIM card sends the message
+                      </Typography>
+                    </Box>
+                  </CardContent>
+                </Card>
+              </Grid>
+            </Grid>
           </TabPanel>
         </Box>
       </Paper>

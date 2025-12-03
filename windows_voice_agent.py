@@ -1712,6 +1712,11 @@ async def lifespan(app: FastAPI):
 class GenerateSummaryRequest(BaseModel):
     language: str = "English"
 
+class SendSMSRequest(BaseModel):
+    phone_number: str
+    message: str
+    gate_slot: int = 9  # Default gate slot, can be overridden
+
 app = FastAPI(title="Windows VoIP Voice Agent", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
@@ -8971,6 +8976,93 @@ async def get_specific_transcript(session_id: str, audio_type: str):
     except Exception as e:
         logger.error(f"Error getting transcript for session {session_id}, audio type {audio_type}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/sms/send")
+async def send_sms(request: SendSMSRequest):
+    """
+    Send SMS via the PBX system using the SIM card gateway.
+    
+    Parameters:
+    - phone_number: Target phone number (e.g., "0888123456")
+    - message: SMS content to send
+    - gate_slot: Gate slot number (9-19) to use as sender
+    """
+    # Suppress SSL warnings for internal PBX
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    
+    try:
+        # Validate gate_slot
+        if request.gate_slot < 9 or request.gate_slot > 19:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid gate slot {request.gate_slot}. Must be between 9 and 19"
+            )
+        
+        # Clean phone number (remove spaces, dashes)
+        phone = request.phone_number.strip().replace(" ", "").replace("-", "")
+        
+        # Validate phone number format (basic validation)
+        if not phone or len(phone) < 8:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid phone number format"
+            )
+        
+        # URL encode the message
+        import urllib.parse
+        encoded_message = urllib.parse.quote(request.message)
+        
+        # Build the SMS API URL
+        sms_api_url = (
+            f"https://pbx.voipsystems.bg/public/sms_evolvs.php"
+            f"?api_key=GytVjPdThdfsdo29bngbut8so-AI-rt63go06ty22"
+            f"&from={request.gate_slot}"
+            f"&phone={phone}"
+            f"&sms={encoded_message}"
+        )
+        
+        logger.info(f"📱 Sending SMS to {phone} via gate slot {request.gate_slot}")
+        logger.info(f"📝 Message length: {len(request.message)} characters")
+        logger.info(f"🔗 SMS API URL: {sms_api_url}")
+        
+        # Make the request to the SMS gateway
+        # verify=False for internal PBX systems that may have self-signed certs
+        response = requests.get(sms_api_url, timeout=(10, 60), verify=False)
+        
+        logger.info(f"📡 SMS gateway response status: {response.status_code}")
+        logger.info(f"📡 SMS gateway response: {response.text[:500] if response.text else 'empty'}")
+        
+        if response.status_code == 200:
+            logger.info(f"✅ SMS sent successfully to {phone}")
+            return {
+                "status": "success",
+                "message": "SMS sent successfully",
+                "phone_number": phone,
+                "gate_slot": request.gate_slot,
+                "sms_length": len(request.message),
+                "response": response.text
+            }
+        else:
+            logger.error(f"❌ SMS gateway returned status {response.status_code}: {response.text}")
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"SMS gateway error: {response.text}"
+            )
+            
+    except requests.exceptions.Timeout:
+        logger.error("❌ SMS gateway request timed out")
+        raise HTTPException(status_code=504, detail="SMS gateway request timed out")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ SMS gateway connection error: {e}")
+        raise HTTPException(status_code=502, detail=f"SMS gateway connection error: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error sending SMS: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 async def _background_transcribe_session(session_dir: Path, caller_id: str):
     """Background task function for transcribing a session using the fast Gemini script"""

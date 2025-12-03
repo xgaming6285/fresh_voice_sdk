@@ -116,6 +116,12 @@ export const voiceAgentAPI = {
   generateSummary: (sessionId, language = "English") =>
     api.post(`/api/transcripts/${sessionId}/generate_summary`, { language }),
   getSummary: (sessionId) => api.get(`/api/transcripts/${sessionId}/summary`),
+  sendSms: (phoneNumber, message, gateSlot = 9) =>
+    api.post("/api/sms/send", {
+      phone_number: phoneNumber,
+      message: message,
+      gate_slot: gateSlot,
+    }),
   makeCall: (
     phoneNumber,
     callConfig = null,
