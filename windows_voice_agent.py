@@ -4043,10 +4043,11 @@ class RTPSession:
             processed_pcm = filtered_audio
             
             # --- 8. PROFESSIONAL: Debounced EOT Detection ---
-            # Update EOT detector (won't trigger during AI speaking due to state awareness)
-            eot_triggered = self.eot_detector.update(is_speech_active, self.conversation_state)
-            if eot_triggered:
-                self.on_user_stop_speaking()
+            # NOTE: Disabled separate eot_detector - using inline detection below instead
+            # This prevents duplicate EOT signals and conflicting state machine updates
+            # The eot_detector is still updated for tracking but doesn't trigger state changes
+            self.eot_detector.update(is_speech_active, self.conversation_state)
+            # DON'T call on_user_stop_speaking() here - it's called when EOT is actually sent
             
             # ⚡ LATENCY FIX: Compute EOT decision HERE (not in async send loop)
             # This eliminates duplicate processing that was causing 450ms+ delays
@@ -4071,25 +4072,27 @@ class RTPSession:
                         
                     silence_duration = current_time - self._silence_start_time
                     
-                    # ⚡ EOT COOLDOWN: Don't send another EOT within 2.5s of the last one
-                    # This prevents multiple EOTs during natural speech pauses
+                    # ⚡ EOT COOLDOWN: Don't send another EOT within 5s of the last one
+                    # Increased from 2.5s to prevent multiple EOTs causing Gemini to restart
                     time_since_last_eot = current_time - self._last_eot_time
-                    eot_cooldown_ok = time_since_last_eot >= 2.5
+                    eot_cooldown_ok = time_since_last_eot >= 5.0
                     
                     # Only send EOT if:
-                    # 1. Silence duration exceeds threshold (700ms)
-                    # 2. We haven't already sent EOT (or cooldown has passed)
+                    # 1. Silence duration exceeds threshold (350ms)
+                    # 2. We haven't already sent EOT (strict, no cooldown bypass)
                     # 3. We've detected speech since the last EOT (prevent spamming)
-                    # 4. EOT cooldown has passed (2.5s between EOTs)
+                    # 4. EOT cooldown has passed (5s between EOTs - increased from 2.5s)
                     if (silence_duration >= self._silence_threshold_sec and 
-                        (not self._end_of_turn_sent or eot_cooldown_ok) and
-                        getattr(self, '_speech_detected_this_turn', False)):
+                        not self._end_of_turn_sent and
+                        getattr(self, '_speech_detected_this_turn', False) and
+                        eot_cooldown_ok):
                         should_send_eot = True
                         self._end_of_turn_sent = True
                         self._is_speaking_turn = False
                         self._speech_detected_this_turn = False
                         self._last_eot_time = current_time  # Update cooldown timer
-                        self.on_user_stop_speaking()
+                        # ⏱️ LATENCY FIX: DON'T call on_user_stop_speaking() here!
+                        # It will be called when EOT is actually sent to Gemini
                         logger.debug(f"🔇 EOT computed: silence={silence_duration:.2f}s, state={self.conversation_state.name}")
                 else:
                     # User is speaking - reset silence tracking but NOT eot_sent flag
@@ -4097,8 +4100,8 @@ class RTPSession:
                     # This prevents rapid EOT→speech→EOT cycles
                     if self._silence_start_time is not None:
                         self._silence_start_time = None
-                        # Only allow new EOT if 2.5+ seconds since last EOT
-                        if current_time - self._last_eot_time >= 2.5:
+                        # Only allow new EOT if 5+ seconds since last EOT (increased from 2.5s)
+                        if current_time - self._last_eot_time >= 5.0:
                             self._end_of_turn_sent = False
                         self._last_speech_time = current_time
                     
@@ -4399,9 +4402,12 @@ class RTPSession:
                     if self._slow_send_count <= 5 or self._slow_send_count % 50 == 0:
                         logger.warning(f"⏱️ Slow Gemini send #{self._slow_send_count}: {send_duration*1000:.0f}ms")
                 
-                # Log EOT if sent
+                # Log EOT if sent and update state machine + latency tracking
                 if should_send_eot:
                     logger.info(f"✅ End-of-turn sent (state: {self.conversation_state.name})")
+                    # ⏱️ LATENCY FIX: Mark EOT when ACTUALLY sent to Gemini (not when detected)
+                    # on_user_stop_speaking() also calls latency_tracker.mark_user_end_of_turn()
+                    self.on_user_stop_speaking()
                     
             except asyncio.TimeoutError:
                 if not hasattr(self, '_send_timeout_count'):
