@@ -2537,7 +2537,7 @@ IMPORTANT:
                 start_of_speech_sensitivity="START_SENSITIVITY_HIGH",
                 end_of_speech_sensitivity="END_SENSITIVITY_HIGH",  # HIGH = aggressive end detection for lowest latency
                 prefix_padding_ms=0,  # LATENCY FIX: No padding for minimum latency
-                silence_duration_ms=150,  # LATENCY FIX: Reduced from 200ms to 150ms for snappy "Yes/No" responses
+                silence_duration_ms=50,  # AGGRESSIVE LATENCY: Reduced to 50ms for instant responses
             )
         ),
         speech_config=types.SpeechConfig(
@@ -3505,7 +3505,7 @@ class RTPServer:
             # Low latency settings: Keep Receive buffer large for safety, 
             # but drastically REDUCE Send buffer to prevent "ghost audio" after interruption.
             try:
-                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2 * 1024 * 1024)
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 64 * 1024)  # 64KB for low latency
                 # Set Send buffer to ~1 second max (8KB/s * 1s = ~8192 bytes). 
                 # 16384 gives us a safe margin without buffering seconds of audio.
                 self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16 * 1024)
@@ -3705,7 +3705,7 @@ class RTPSession:
         # PROFESSIONAL COLD CALLING: Debounced End-of-Turn Detection
         # =================================================================
         self.eot_detector = DebouncedEndOfTurnDetector(
-            silence_threshold_sec=0.40,  # 400ms - professional standard
+            silence_threshold_sec=0.35,  # 350ms - aggressive
             confirmation_frames=3,        # Require 3 consecutive silence frames
             cooldown_sec=0.5              # 500ms cooldown between triggers
         )
@@ -3807,7 +3807,7 @@ class RTPSession:
         # ⚡ LATENCY FIX: Increased silence threshold for natural Bulgarian speech patterns
         # 400ms was too short - users often pause mid-sentence, causing premature EOT
         # 700ms allows for natural pauses while still feeling responsive
-        self._silence_threshold_sec = 0.70  # OPTIMIZED: 700ms silence (was 400ms - too aggressive for Bulgarian)
+        self._silence_threshold_sec = 0.35  # AGGRESSIVE: 350ms silence for faster turn-taking
         self._last_eot_time = 0  # Track last EOT time for cooldown
         
         # Higher threshold for GSM noise rejection (adaptive system will tune this)

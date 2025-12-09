@@ -130,54 +130,26 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
 
   const handleMakeCall = async () => {
     setLoading(true);
-    setGreetingStatus("generating");
+    setGreetingStatus("ready");
 
     try {
-      // Step 1: Generate custom greeting
-      console.log("Generating custom greeting...");
-      const greetingResponse = await fetch(
-        "http://localhost:8000/api/generate_greeting",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            phone_number: lead.full_phone,
-            call_config: callConfig,
-          }),
-        }
+      // ✅ BYPASS greeting audio generation - let Gemini speak the greeting live
+      // This uses the user's API key instead of the environment variable
+      console.log("Using Gemini live greeting (gemini_greeting=true)");
+      
+      // Add gemini_greeting flag to callConfig so Gemini speaks the greeting live
+      const configWithLiveGreeting = {
+        ...callConfig,
+        gemini_greeting: true,  // ✅ Let Gemini speak greeting live
+      };
+      
+      // Make call directly - Gemini will speak the greeting_instruction live
+      await onMakeCall(
+        lead,
+        configWithLiveGreeting,
+        null,  // No pre-generated greeting file
+        callConfig.greeting_instruction || null  // Pass greeting text for context
       );
-
-      if (!greetingResponse.ok) {
-        const error = await greetingResponse.json();
-        console.error("Failed to generate greeting:", error);
-
-        // Check if it's because greeting generator is not available
-        if (greetingResponse.status === 503) {
-          // Proceed without custom greeting
-          console.log(
-            "Greeting generator not available, using default greeting"
-          );
-          await onMakeCall(lead, callConfig);
-        } else {
-          throw new Error(error.detail || "Failed to generate greeting");
-        }
-      } else {
-        // Greeting generated successfully
-        const greetingData = await greetingResponse.json();
-        console.log("Greeting generated:", greetingData);
-        setGreetingStatus("ready");
-
-        // Step 2: Make call with custom greeting AND greeting transcript for context
-        // ✅ Pass greeting transcript so Gemini knows what was already said
-        await onMakeCall(
-          lead,
-          callConfig,
-          greetingData.greeting_file,
-          greetingData.transcript || greetingData.greeting_text
-        );
-      }
 
       onClose();
       // Reset form
@@ -892,23 +864,20 @@ const CustomCallDialog = ({ open, onClose, lead, onMakeCall }) => {
             !callConfig.special_offer
           }
           startIcon={
-            greetingStatus === "generating" ? (
+            loading ? (
               <CircularProgress size={20} color="inherit" />
             ) : (
               getObjectiveIcon(callConfig.call_objective)
             )
           }
           sx={{
-            background:
-              greetingStatus === "generating"
-                ? "linear-gradient(135deg, #666 0%, #444 100%)"
-                : "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
+            background: loading
+              ? "linear-gradient(135deg, #666 0%, #444 100%)"
+              : "linear-gradient(135deg, #C85C3C 0%, #A0462A 100%)",
             minWidth: 180,
           }}
         >
-          {loading && greetingStatus === "generating"
-            ? "Generating Greeting..."
-            : loading
+          {loading
             ? "Calling..."
             : `Make ${
                 callConfig.call_objective === "appointment"
