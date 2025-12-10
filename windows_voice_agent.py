@@ -1038,10 +1038,11 @@ class VoiceActivityDetector:
     5. Ring buffer for smoother hysteresis and better noise rejection.
     """
     
-    def __init__(self, sample_rate: int = 8000, aggressiveness: int = 3):
+    def __init__(self, sample_rate: int = 8000, aggressiveness: int = 1):
         """
         aggressiveness: 0 (Least aggressive) to 3 (Most aggressive). 
-        3 is best for telephony to filter out static/breathing.
+        Mode 1 is best for AI speech recognition - Mode 3 clips too much speech,
+        cutting off faint consonants like 'H', 'S', 'F' that AI models need.
         """
         self.sample_rate = sample_rate
         self.vad = webrtcvad.Vad(aggressiveness)
@@ -1058,7 +1059,7 @@ class VoiceActivityDetector:
         
         # ENHANCED: Tuning parameters (professional cold calling optimized)
         self.min_speech_frames = 3   # 60ms of speech to start sending (prevents clicks)
-        self.min_silence_frames = 15  # 300ms of silence to stop sending (smoother, prevents choppy words)
+        self.min_silence_frames = 25  # 500ms of silence to stop sending (prevents cutting off mid-sentence pauses)
         
         # ENHANCED: Ring buffer for smoother decisions (professional feature)
         self.ring_buffer_size = 10  # Track last 10 frames (200ms)
@@ -1373,7 +1374,7 @@ class AudioPreprocessor:
     NOISE_FFT_SIZE = 256              # ~32ms at 8kHz - good frequency resolution
     NOISE_HOP_SIZE = 80               # 10ms hop for low latency overlap-add
     NOISE_FLOOR_FRAMES = 8            # ~80ms to estimate noise floor
-    NOISE_REDUCTION_STRENGTH = 0.7    # 0.0-1.0, higher = more aggressive
+    NOISE_REDUCTION_STRENGTH = 0.2    # 0.0-1.0, lower = less aggressive. Let Gemini handle noise - AI models prefer constant static over digital artifacts
     SPECTRAL_FLOOR = 0.01             # Minimum magnitude to prevent musical noise
     
     def __init__(self, sample_rate: int = 8000):
@@ -3705,7 +3706,7 @@ class RTPSession:
         # PROFESSIONAL COLD CALLING: Debounced End-of-Turn Detection
         # =================================================================
         self.eot_detector = DebouncedEndOfTurnDetector(
-            silence_threshold_sec=0.35,  # 350ms - aggressive
+            silence_threshold_sec=0.80,  # 800ms - allows natural pauses while thinking
             confirmation_frames=3,        # Require 3 consecutive silence frames
             cooldown_sec=0.5              # 500ms cooldown between triggers
         )
@@ -7964,9 +7965,9 @@ class WindowsVoiceSession:
             # and produces cleaner audio for Gemini's speech recognition.
             in_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
             
-            # resample_poly with kaiser window provides excellent quality/speed balance
-            # window=('kaiser', 5.0) gives good stopband attenuation without excessive latency
-            out_array = resample_poly(in_array, 3, 1, window=('kaiser', 5.0))
+            # Hamming window is smoother for speech and introduces fewer ringing artifacts
+            # compared to kaiser which can cause phase distortion on low-quality telephony audio
+            out_array = resample_poly(in_array, 3, 1, window='hamming')
             
             # Clip and convert back to int16
             out_array = np.clip(out_array, -32768, 32767).astype(np.int16)
