@@ -26,8 +26,8 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
 import queue
-import scipy.signal
-from scipy.signal import resample_poly, butter, sosfilt, sosfilt_zi
+# import scipy.signal
+# from scipy.signal import resample_poly, butter, sosfilt, sosfilt_zi
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -49,7 +49,7 @@ logging.getLogger('google_genai.types').setLevel(logging.ERROR)
 
 import pyaudio
 import requests
-import numpy as np
+# import numpy as np
 import webrtcvad  # High-performance VAD
 
 # Asterisk AMI Monitor for linkedid capture
@@ -431,9 +431,9 @@ class AdaptiveSilenceDetector:
         noise_energies = [e for e, is_speech in self.energy_history if not is_speech]
         
         if speech_energies:
-            self.speech_level = np.mean(speech_energies)
+            self.speech_level = sum(speech_energies) / len(speech_energies)
         if noise_energies:
-            self.noise_floor = np.mean(noise_energies)
+            self.noise_floor = sum(noise_energies) / len(noise_energies)
         
         # Set initial threshold
         self.threshold = self.noise_floor + 0.4 * (self.speech_level - self.noise_floor)
@@ -1083,14 +1083,10 @@ class VoiceActivityDetector:
         logger.info(f"🎤 WebRTC VAD initialized (Rate={sample_rate}, Mode={aggressiveness}, SilenceFrames={self.min_silence_frames})")
     
     def _calculate_energy(self, frame: bytes) -> float:
-        """Calculate RMS energy of audio frame"""
+        """Calculate RMS energy using C-based audioop"""
         try:
-            num_samples = len(frame) // 2
-            if num_samples == 0:
-                return 0.0
-            samples = struct.unpack(f'{num_samples}h', frame[:num_samples * 2])
-            sum_squares = sum(s * s for s in samples)
-            return (sum_squares / num_samples) ** 0.5
+            # audioop.rms is significantly faster than struct.unpack + math
+            return float(audioop.rms(frame, 2))
         except:
             return 0.0
     
@@ -1347,308 +1343,56 @@ class GoodbyeDetector:
 
 class AudioPreprocessor:
     """
-    Professional Cold Calling Audio Preprocessing Pipeline for Gemini AI.
-    
-    4-Stage Pipeline (ITU-T G.712 Telephony Standard):
-    1. Bandpass Filter (300-3400Hz): Removes 50/60Hz hum and high-freq noise
-    2. Spectral Noise Suppression: FFT-based noise reduction for cleaner speech
-    3. AGC (Automatic Gain Control): Normalizes voice levels for consistent input
-    4. Soft Limiter: Prevents clipping with gentle knee compression
-    
-    Optimized for 8kHz μ-law telephony audio with ~7-10ms additional latency.
+    Ultra-Low Latency Audio Preprocessor using pure audioop (C-based).
+    Replaces heavy DSP (numpy/scipy) with simple byte manipulation.
     """
-    
-    # === TELEPHONY-OPTIMIZED CONSTANTS (ITU-T G.712) ===
-    TELEPHONY_BANDPASS_LOW = 300      # Hz - cuts 50/60Hz hum
-    TELEPHONY_BANDPASS_HIGH = 3400    # Hz - telephony upper limit
-    NOISE_GATE_THRESHOLD_DB = -42.0   # dB - telephony noise floor (adjusted from -45)
-    AGC_TARGET_DB = -16.0             # dB - optimal level for Gemini speech recognition
-    AGC_MAX_GAIN_DB = 15.0            # dB - max boost (increased from 12 for quiet callers)
-    AGC_MIN_GAIN_DB = -6.0            # dB - max attenuation for loud callers
-    AGC_ATTACK_MS = 5                 # ms - fast attack for speech onset
-    AGC_RELEASE_MS = 100              # ms - slow release for natural decay
-    LIMITER_THRESHOLD = 0.9           # Soft knee starts here
-    LIMITER_KNEE_DB = 6.0             # dB - soft knee width
-    
-    # Spectral noise suppression settings
-    NOISE_FFT_SIZE = 256              # ~32ms at 8kHz - good frequency resolution
-    NOISE_HOP_SIZE = 80               # 10ms hop for low latency overlap-add
-    NOISE_FLOOR_FRAMES = 8            # ~80ms to estimate noise floor
-    NOISE_REDUCTION_STRENGTH = 0.2    # 0.0-1.0, lower = less aggressive. Let Gemini handle noise - AI models prefer constant static over digital artifacts
-    SPECTRAL_FLOOR = 0.01             # Minimum magnitude to prevent musical noise
     
     def __init__(self, sample_rate: int = 8000):
         self.sample_rate = sample_rate
-        
-        # === STAGE 1: Bandpass Filter (IIR for low latency) ===
-        # 4th order Butterworth - good balance of selectivity and phase response
-        self.sos = butter(
-            4, 
-            [self.TELEPHONY_BANDPASS_LOW, self.TELEPHONY_BANDPASS_HIGH], 
-            btype='bandpass', 
-            fs=sample_rate, 
-            output='sos'
-        )
-        self.filter_state = sosfilt_zi(self.sos)
-        
-        # === STAGE 2: Spectral Noise Suppression State ===
-        self.noise_fft_size = self.NOISE_FFT_SIZE
-        self.noise_hop_size = self.NOISE_HOP_SIZE
-        self.noise_buffer = np.zeros(self.noise_fft_size, dtype=np.float32)
-        self.output_buffer = np.zeros(self.noise_hop_size, dtype=np.float32)
-        self.noise_floor = None  # Will be estimated from first frames
-        self.noise_floor_frames_collected = 0
-        self.noise_magnitude_history = []
-        
-        # Hann window for smooth overlap-add
-        self.window = np.hanning(self.noise_fft_size).astype(np.float32)
-        self.window_sum = np.zeros(self.noise_hop_size, dtype=np.float32)
-        
-        # === STAGE 3: AGC State ===
-        self.agc_target_db = self.AGC_TARGET_DB
-        self.agc_max_gain_db = self.AGC_MAX_GAIN_DB
-        self.agc_min_gain_db = self.AGC_MIN_GAIN_DB
-        
-        # Time constants for smooth gain changes
-        # attack_coeff: how fast gain increases (speech onset)
-        # release_coeff: how fast gain decreases (speech offset)
-        self.agc_attack_coeff = np.exp(-1.0 / (sample_rate * self.AGC_ATTACK_MS / 1000.0))
-        self.agc_release_coeff = np.exp(-1.0 / (sample_rate * self.AGC_RELEASE_MS / 1000.0))
-        self.current_gain_db = 0.0
-        self.current_gain_linear = 1.0
-        
-        # === STAGE 4: Noise Gate State (before AGC) ===
-        self.noise_gate_threshold_db = self.NOISE_GATE_THRESHOLD_DB
-        self.gate_envelope = 0.0
-        self.gate_attack_coeff = np.exp(-1.0 / (sample_rate * 0.005))  # 5ms attack
-        self.gate_release_coeff = np.exp(-1.0 / (sample_rate * 0.100)) # 100ms release
-        
-        # === Overlap-add buffer for spectral processing ===
-        self.overlap_buffer = np.zeros(self.noise_fft_size - self.noise_hop_size, dtype=np.float32)
-        
-        logger.info(f"🎵 Professional AudioPreprocessor initialized:")
-        logger.info(f"   📊 Bandpass: {self.TELEPHONY_BANDPASS_LOW}-{self.TELEPHONY_BANDPASS_HIGH}Hz (ITU-T G.712)")
-        logger.info(f"   🔇 Noise Gate: {self.noise_gate_threshold_db}dB threshold")
-        logger.info(f"   📈 AGC: Target {self.agc_target_db}dB, Attack {self.AGC_ATTACK_MS}ms, Release {self.AGC_RELEASE_MS}ms")
-        logger.info(f"   🎚️ Spectral Noise Suppression: {self.NOISE_REDUCTION_STRENGTH*100:.0f}% strength")
+        # Simple Noise Gate Threshold (RMS energy)
+        # Adjust this if it cuts off quiet voices. 
+        # 300-500 is usually good for 16-bit PCM.
+        self.noise_threshold = 300
     
-    def _estimate_noise_floor(self, magnitude: np.ndarray):
-        """Collect initial frames to estimate noise floor spectrum."""
-        self.noise_magnitude_history.append(magnitude.copy())
-        self.noise_floor_frames_collected += 1
-        
-        if self.noise_floor_frames_collected >= self.NOISE_FLOOR_FRAMES:
-            # Use minimum statistics across frames for robust noise estimate
-            stacked = np.stack(self.noise_magnitude_history, axis=0)
-            self.noise_floor = np.percentile(stacked, 10, axis=0)  # 10th percentile
-            self.noise_magnitude_history = []  # Clear history
-            logger.debug(f"🔇 Noise floor estimated from {self.NOISE_FLOOR_FRAMES} frames")
     
-    def _spectral_subtraction(self, samples: np.ndarray) -> np.ndarray:
-        """
-        Apply spectral noise suppression using overlap-add FFT processing.
-        Low-latency implementation with 10ms hop size.
-        """
-        if len(samples) == 0:
-            return samples
-            
-        output = np.zeros(len(samples), dtype=np.float32)
-        sample_idx = 0
-        
-        while sample_idx < len(samples):
-            # Fill noise buffer
-            remaining = len(samples) - sample_idx
-            to_copy = min(remaining, self.noise_hop_size)
-            
-            # Shift buffer and add new samples
-            self.noise_buffer[:-self.noise_hop_size] = self.noise_buffer[self.noise_hop_size:]
-            self.noise_buffer[-to_copy:] = samples[sample_idx:sample_idx + to_copy]
-            
-            if to_copy < self.noise_hop_size:
-                # Not enough samples for a full hop
-                break
-            
-            # Apply window and FFT
-            windowed = self.noise_buffer * self.window
-            spectrum = np.fft.rfft(windowed)
-            magnitude = np.abs(spectrum)
-            phase = np.angle(spectrum)
-            
-            # Estimate or update noise floor
-            if self.noise_floor is None:
-                self._estimate_noise_floor(magnitude)
-                # During calibration, pass through with minimal processing
-                processed_magnitude = magnitude
-            else:
-                # Spectral subtraction with oversubtraction factor
-                noise_estimate = self.noise_floor * (1.0 + self.NOISE_REDUCTION_STRENGTH)
-                processed_magnitude = np.maximum(
-                    magnitude - noise_estimate,
-                    magnitude * self.SPECTRAL_FLOOR  # Spectral floor to prevent musical noise
-                )
-                
-                # Adaptive noise floor update (slow tracking)
-                # Only update during likely silence (low energy frames)
-                frame_energy = np.mean(magnitude)
-                noise_energy = np.mean(self.noise_floor)
-                if frame_energy < noise_energy * 2.0:  # Likely noise frame
-                    self.noise_floor = 0.98 * self.noise_floor + 0.02 * magnitude
-            
-            # Reconstruct signal
-            processed_spectrum = processed_magnitude * np.exp(1j * phase)
-            processed_frame = np.fft.irfft(processed_spectrum)
-            
-            # Overlap-add
-            processed_frame = processed_frame[:self.noise_fft_size]  # Ensure correct length
-            output_start = sample_idx
-            output_end = min(sample_idx + self.noise_hop_size, len(output))
-            
-            # Add overlapped portion
-            overlap_len = min(len(self.overlap_buffer), output_end - output_start)
-            if overlap_len > 0:
-                output[output_start:output_start + overlap_len] += self.overlap_buffer[:overlap_len]
-            
-            # Add new frame portion
-            frame_contribution = processed_frame[:self.noise_hop_size]
-            contrib_len = min(len(frame_contribution), output_end - output_start)
-            output[output_start:output_start + contrib_len] += frame_contribution[:contrib_len] * 0.5
-            
-            # Store overlap for next iteration
-            self.overlap_buffer = processed_frame[self.noise_hop_size:self.noise_fft_size] * 0.5
-            
-            sample_idx += self.noise_hop_size
-        
-        return output
     
-    def _apply_noise_gate(self, samples: np.ndarray, rms_db: float) -> np.ndarray:
-        """Apply smooth noise gate with hysteresis."""
-        if rms_db > self.noise_gate_threshold_db:
-            # Above threshold - open gate (fast attack)
-            target_envelope = 1.0
-            coeff = self.gate_attack_coeff
-        else:
-            # Below threshold - close gate (slow release)
-            target_envelope = 0.0
-            coeff = self.gate_release_coeff
-        
-        # Smooth envelope transition
-        self.gate_envelope = coeff * self.gate_envelope + (1 - coeff) * target_envelope
-        
-        return samples * self.gate_envelope
     
-    def _apply_agc(self, samples: np.ndarray, rms_db: float) -> np.ndarray:
-        """
-        Apply Automatic Gain Control with fast attack and slow release.
-        Normalizes voice levels for consistent Gemini input.
-        """
-        if self.gate_envelope < 0.1:
-            # Gate is closed - don't adjust gain, let it decay slowly
-            target_gain_db = 0.0
-            coeff = self.agc_release_coeff
-        else:
-            # Calculate desired gain to reach target level
-            target_gain_db = self.agc_target_db - rms_db
-            
-            # Clamp gain to safe range
-            target_gain_db = np.clip(target_gain_db, self.agc_min_gain_db, self.agc_max_gain_db)
-            
-            # Use attack or release coefficient based on direction
-            if target_gain_db > self.current_gain_db:
-                coeff = self.agc_attack_coeff  # Increasing gain - fast
-            else:
-                coeff = self.agc_release_coeff  # Decreasing gain - slow
-        
-        # Smooth gain transition
-        self.current_gain_db = coeff * self.current_gain_db + (1 - coeff) * target_gain_db
-        self.current_gain_linear = 10 ** (self.current_gain_db / 20.0)
-        
-        return samples * self.current_gain_linear
     
-    def _apply_soft_limiter(self, samples: np.ndarray) -> np.ndarray:
-        """
-        Apply soft knee limiter to prevent clipping.
-        Gentler than tanh - preserves more dynamics while preventing distortion.
-        """
-        threshold = self.LIMITER_THRESHOLD
-        knee_db = self.LIMITER_KNEE_DB
-        
-        # Calculate soft knee compression
-        abs_samples = np.abs(samples)
-        
-        # Below threshold: pass through
-        # Above threshold: soft compression
-        output = np.where(
-            abs_samples <= threshold,
-            samples,
-            np.sign(samples) * (threshold + (1 - threshold) * np.tanh((abs_samples - threshold) / (1 - threshold + 0.001) * 2))
-        )
-        
-        # Final hard clip at 0.99 to prevent any overflow
-        return np.clip(output, -0.99, 0.99)
     
     def process_audio(self, audio_data: bytes) -> bytes:
         """
-        Process audio through the full professional pipeline:
-        Bandpass → Spectral Noise Suppression → Noise Gate → AGC → Soft Limiter
-        
-        Args:
-            audio_data: Raw 16-bit PCM audio bytes at 8kHz
-            
-        Returns:
-            Processed 16-bit PCM audio bytes, cleaned and normalized
+        Pass-through audio with simple noise gating.
+        No FFT, no filtering, just raw speed.
         """
+        if not audio_data:
+            return b""
+
         try:
-            if not audio_data:
-                return b""
+            # 1. Calculate Energy (RMS) using C-optimized audioop
+            # width=2 means 16-bit audio
+            rms = audioop.rms(audio_data, 2)
             
-            # Convert to float32 (-1.0 to 1.0)
-            samples = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
-            
-            if len(samples) == 0:
-                return audio_data
-            
-            # === STAGE 1: Bandpass Filtering ===
-            # Removes 50/60Hz hum and high-frequency noise
-            samples, self.filter_state = sosfilt(self.sos, samples, zi=self.filter_state)
-            
-            # === STAGE 2: Spectral Noise Suppression ===
-            # FFT-based noise reduction for cleaner speech
-            samples = self._spectral_subtraction(samples)
-            
-            # Calculate RMS for gate and AGC decisions
-            rms = np.sqrt(np.mean(samples ** 2) + 1e-10)
-            rms_db = 20 * np.log10(rms + 1e-9)
-            
-            # === STAGE 3: Noise Gate ===
-            # Silences very quiet passages to prevent ghost words
-            samples = self._apply_noise_gate(samples, rms_db)
-            
-            # === STAGE 4: AGC (Automatic Gain Control) ===
-            # Normalizes voice levels for consistent Gemini input
-            samples = self._apply_agc(samples, rms_db)
-            
-            # === STAGE 5: Soft Limiter ===
-            # Prevents clipping with gentle knee compression
-            samples = self._apply_soft_limiter(samples)
-            
-            # Convert back to int16
-            return (samples * 32767).astype(np.int16).tobytes()
-            
+            # 2. Simple Noise Gate
+            # If audio is too quiet, return silence to prevent static hiss 
+            # from triggering the model or VAD unnecessarily.
+            if rms < self.noise_threshold:
+                # Return digital silence of the same length
+                return b'\x00' * len(audio_data)
+
+            # 3. Optional: Simple Limiter (Scaling)
+            # If audio is clipping (too loud), scale it down slightly.
+            # max_val = audioop.max(audio_data, 2)
+            # if max_val > 32000:
+            #     return audioop.mul(audio_data, 2, 0.9)
+
+            return audio_data
+
         except Exception as e:
-            logger.error(f"Error in AudioPreprocessor: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+            logger.error(f"Error in audioop preprocessing: {e}")
             return audio_data
     
     def reset_noise_floor(self):
-        """Reset noise floor estimation (call at start of new conversation)."""
-        self.noise_floor = None
-        self.noise_floor_frames_collected = 0
-        self.noise_magnitude_history = []
-        self.gate_envelope = 0.0
-        self.current_gain_db = 0.0
-        self.current_gain_linear = 1.0
-        logger.debug("🔄 AudioPreprocessor noise floor reset")
+        pass # No state to reset in this simple version
 
 # Import our existing voice agent components
 from main import SessionLogger, SEND_SAMPLE_RATE, RECEIVE_SAMPLE_RATE, FORMAT, CHANNELS
@@ -3340,27 +3084,36 @@ class CallRecorder:
                     outgoing_audio = wav.readframes(wav.getnframes())
             
             # Convert to numpy arrays for mixing
-            incoming_array = np.frombuffer(incoming_audio, dtype=np.int16) if incoming_audio else np.array([], dtype=np.int16)
-            outgoing_array = np.frombuffer(outgoing_audio, dtype=np.int16) if outgoing_audio else np.array([], dtype=np.int16)
+            # Mix audio using audioop
+            import audioop
             
-            # Pad shorter array with zeros to match lengths
-            max_length = max(len(incoming_array), len(outgoing_array))
-            if len(incoming_array) < max_length:
-                incoming_array = np.pad(incoming_array, (0, max_length - len(incoming_array)))
-            if len(outgoing_array) < max_length:
-                outgoing_array = np.pad(outgoing_array, (0, max_length - len(outgoing_array)))
+            # Ensure we have bytes
+            incoming_audio = incoming_audio or b""
+            outgoing_audio = outgoing_audio or b""
             
-            # Mix audio (average to avoid clipping)
-            if max_length > 0:
-                mixed_array = (incoming_array.astype(np.int32) + outgoing_array.astype(np.int32)) // 2
-                mixed_array = np.clip(mixed_array, -32768, 32767).astype(np.int16)
+            incoming_len = len(incoming_audio)
+            outgoing_len = len(outgoing_audio)
+            max_len = max(incoming_len, outgoing_len)
+            
+            # Pad with silence
+            if incoming_len < max_len:
+                incoming_audio += b'\x00' * (max_len - incoming_len)
+            if outgoing_len < max_len:
+                outgoing_audio += b'\x00' * (max_len - outgoing_len)
+            
+            if max_len > 0:
+                # Average to prevent clipping: (a/2 + b/2)
+                # This works well for simple mixing
+                inc_scaled = audioop.mul(incoming_audio, 2, 0.5)
+                out_scaled = audioop.mul(outgoing_audio, 2, 0.5)
+                mixed_data = audioop.add(inc_scaled, out_scaled, 2)
                 
                 # Save mixed audio
                 with wave.open(str(self.mixed_wav_path), 'wb') as mixed_wav:
                     mixed_wav.setnchannels(1)  # Mono
                     mixed_wav.setsampwidth(2)  # 16-bit
                     mixed_wav.setframerate(8000)  # 8kHz
-                    mixed_wav.writeframes(mixed_array.tobytes())
+                    mixed_wav.writeframes(mixed_data)
                 
                 logger.info(f"✅ Mixed recording saved: {self.mixed_wav_path}")
             else:
@@ -4923,19 +4676,19 @@ class RTPSession:
     
     def send_audio(self, pcm16: bytes):
         """
-        Takes 16-bit mono PCM at 8000 Hz, μ-law encodes, then enqueues for real-time transmission.
-        Optimized for 20ms packets (standard VoIP packet size).
+        Takes 16-bit mono PCM at 8000 Hz, encodes to u-law using C-lib, queues.
         """
-        # Record outgoing audio before encoding
         if self.call_recorder:
             self.call_recorder.record_outgoing_audio(pcm16)
         
-        ulaw = self.pcm_to_ulaw(pcm16)  # your existing encoder
-        packet_size = 160  # 20ms @ 8000 Hz, 1 byte/sample for G.711 - optimal for real-time VoIP
+        # Direct conversion using C library - extremely fast
+        # Removed soft_limit checks for pure speed
+        ulaw = audioop.lin2ulaw(pcm16, 2) 
+        
+        packet_size = 160 # 20ms
         for i in range(0, len(ulaw), packet_size):
             self.output_queue.put(ulaw[i:i + packet_size])
-        
-        # ⏱️ LATENCY TRACKING: Mark RTP send (queued for transmission to SIM gate)
+            
         self.latency_tracker.mark_rtp_send(len(pcm16))
     
     def play_greeting_file(self, greeting_file: str = "greeting.wav"):
@@ -5020,21 +4773,11 @@ class RTPSession:
                 # Resample to 8kHz if needed
                 if sample_rate != 8000:
                     import numpy as np
-                    from scipy.signal import resample
+                    # Resample using audioop
+                    # ratecv(fragment, width, nchannels, inrate, outrate, state, weightA=1, weightB=0)
+                    audio_data, _ = audioop.ratecv(audio_data, 2, 1, sample_rate, 8000, None)
                     
-                    # Convert to numpy array for resampling
-                    audio_array = np.frombuffer(audio_data, dtype=np.int16)
-                    
-                    # Calculate target sample count
-                    target_samples = int(len(audio_array) * 8000 / sample_rate)
-                    
-                    # Resample
-                    resampled_array = resample(audio_array, target_samples)
-                    
-                    # Convert back to bytes
-                    audio_data = resampled_array.astype(np.int16).tobytes()
-                    
-                    # Update duration for resampled audio
+                    target_samples = len(audio_data) // 2
                     duration_seconds = target_samples / 8000.0
                     
                     logger.info(f"Resampled from {sample_rate}Hz to 8000Hz, new duration: {duration_seconds:.2f}s")
@@ -7641,9 +7384,10 @@ class WindowsVoiceSession:
         self.connection_backoff = 1.0  # seconds
         self.last_connection_attempt = 0
         
-        # Audio resampling state for fast conversion
-        self._to16k_state = None  # 8k -> 16k state
-        self._to8k_state = None   # 24k -> 8k state
+        # Audio resampling state tuples for audioop.ratecv
+        # Format: (last_fragment, combined_state)
+        self._resample_in_state = None  
+        self._resample_out_state = None
         
         # Log call start with language info
         system_text = ''
@@ -7952,65 +7696,45 @@ class WindowsVoiceSession:
     def convert_telephony_to_gemini(self, audio_data: bytes) -> bytes:
         """
         Input: 16-bit mono PCM at 8000 Hz.
-        Output: 16-bit mono PCM at 24000 Hz for the model.
-        Uses high-quality polyphase resampling for better voice clarity.
+        Output: 16-bit mono PCM at 24000 Hz.
+        Using audioop.ratecv (C-implementation) for minimum latency.
         """
         try:
-            import numpy as np
-            from scipy.signal import resample_poly
-            
-            # HIGH-QUALITY METHOD: Polyphase resampling with anti-aliasing
-            # 8kHz -> 24kHz is exactly 3x upsample (up=3, down=1)
-            # This uses a proper lowpass filter to avoid aliasing artifacts
-            # and produces cleaner audio for Gemini's speech recognition.
-            in_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
-            
-            # Hamming window is smoother for speech and introduces fewer ringing artifacts
-            # compared to kaiser which can cause phase distortion on low-quality telephony audio
-            out_array = resample_poly(in_array, 3, 1, window='hamming')
-            
-            # Clip and convert back to int16
-            out_array = np.clip(out_array, -32768, 32767).astype(np.int16)
-            return out_array.tobytes()
+            # ratecv(fragment, width, nchannels, inrate, outrate, state, weightA=1, weightB=0)
+            # We use weightA=1, weightB=0 for simple linear interpolation (fastest)
+            new_fragment, self._resample_in_state = audioop.ratecv(
+                audio_data, 
+                2, # 16-bit
+                1, # Mono
+                8000, 
+                24000, 
+                self._resample_in_state
+            )
+            return new_fragment
         except Exception as e:
-            logger.warning(f"High-quality conversion failed, using fallback: {e}")
-            # Fallback to simple repetition if scipy fails
-            try:
-                in_array = np.frombuffer(audio_data, dtype=np.int16)
-                out_array = np.repeat(in_array, 3)
-                return out_array.tobytes()
-            except:
-                return audio_data
+            logger.warning(f"audioop upsample failed: {e}")
+            return audio_data # Fail safe (audio will sound slow/deep but stream continues)
 
     def convert_gemini_to_telephony(self, model_pcm: bytes) -> bytes:
         """
-        Input: model PCM as 16-bit mono at 24000 Hz (typical).
-        Output: 16-bit mono PCM at 8000 Hz ready for μ-law encode.
-        Uses resample_poly with optimized settings for speed + quality balance.
+        Input: 16-bit mono PCM at 24000 Hz.
+        Output: 16-bit mono PCM at 8000 Hz.
+        Using audioop.ratecv for minimum latency.
         """
         try:
-            # Convert bytes to numpy array
-            in_array = np.frombuffer(model_pcm, dtype=np.int16)
-            
-            # 24000 Hz -> 8000 Hz is exactly 3:1 decimation
-            # resample_poly(x, up, down) is optimized for integer ratios
-            # Use window=('kaiser', 5.0) for good quality with minimal latency
-            out_array = resample_poly(in_array, 1, 3, window=('kaiser', 5.0))
-            
-            # Convert back to int16
-            out_array = np.clip(out_array, -32768, 32767).astype(np.int16)
-            
-            return out_array.tobytes()
+            # Downsample 24k -> 8k
+            new_fragment, self._resample_out_state = audioop.ratecv(
+                model_pcm, 
+                2, # 16-bit
+                1, # Mono
+                24000, 
+                8000, 
+                self._resample_out_state
+            )
+            return new_fragment
         except Exception as e:
-            logger.warning(f"Resample poly failed: {e}")
-            # Fallback to audioop
-            try:
-                converted, _ = audioop.ratecv(model_pcm, 2, 1, 24000, 8000, None)
-                return converted
-            except:
-                # Last resort: simple decimation
-                in_array = np.frombuffer(model_pcm, dtype=np.int16)
-                return in_array[::3].tobytes()
+            logger.warning(f"audioop downsample failed: {e}")
+            return model_pcm # Fail safe
     
     
     def cleanup(self):
