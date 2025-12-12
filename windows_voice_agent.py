@@ -3862,15 +3862,14 @@ class RTPSession:
                         self._turn_start_time = current_time
                 
                 # --- MAX TURN DURATION (Safety Net) ---
-                # DISABLED per user request
-                # if hasattr(self, '_is_speaking_turn') and self._is_speaking_turn:
-                #     turn_duration = current_time - self._turn_start_time
-                #     if turn_duration > 8.0:  # 8 seconds max
-                #         logger.warning(f"⚠️ Max turn duration reached (8s) - forcing EOT")
-                #         should_send_eot = True
-                #         self._end_of_turn_sent = True
-                #         self._last_eot_time = current_time
-                #         self._turn_start_time = current_time
+                if hasattr(self, '_is_speaking_turn') and self._is_speaking_turn:
+                    turn_duration = current_time - self._turn_start_time
+                    if turn_duration > 8.0:  # 8 seconds max
+                        logger.warning(f"⚠️ Max turn duration reached (8s) - forcing EOT")
+                        should_send_eot = True
+                        self._end_of_turn_sent = True
+                        self._last_eot_time = current_time
+                        self._turn_start_time = current_time
             else:
                 # AI is speaking or call is ending - reset EOT state
                 self._silence_start_time = None
@@ -4302,13 +4301,12 @@ class RTPSession:
                 # --- MAX TURN DURATION (Safety Net) ---
                 # If speech continues for > 8 seconds without a break, force a flush
                 # Increased from 5s to 8s for more natural long utterances
-                # DISABLED per user request
-                # if hasattr(self, '_is_speaking_turn') and self._is_speaking_turn:
-                #     turn_duration = current_time - self._turn_start_time
-                #     if turn_duration > 8.0:  # 8 seconds max (increased from 5s)
-                #         logger.warning(f"⚠️ Max turn duration reached (8s) - forcing end_of_turn")
-                #         should_send_eot = True
-                #         self._turn_start_time = current_time
+                if hasattr(self, '_is_speaking_turn') and self._is_speaking_turn:
+                    turn_duration = current_time - self._turn_start_time
+                    if turn_duration > 8.0:  # 8 seconds max (increased from 5s)
+                        logger.warning(f"⚠️ Max turn duration reached (8s) - forcing end_of_turn")
+                        should_send_eot = True
+                        self._turn_start_time = current_time
             else:
                 # AI is speaking or call is ending - reset EOT state
                 self._silence_start_time = None
