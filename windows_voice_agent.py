@@ -26,8 +26,9 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
 import queue
-# import scipy.signal
-# from scipy.signal import resample_poly, butter, sosfilt, sosfilt_zi
+import scipy.signal
+from scipy.signal import resample_poly, butter, sosfilt
+import numpy as np
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -49,7 +50,6 @@ logging.getLogger('google_genai.types').setLevel(logging.ERROR)
 
 import pyaudio
 import requests
-# import numpy as np
 import webrtcvad  # High-performance VAD
 
 # Asterisk AMI Monitor for linkedid capture
@@ -1343,56 +1343,50 @@ class GoodbyeDetector:
 
 class AudioPreprocessor:
     """
-    Ultra-Low Latency Audio Preprocessor using pure audioop (C-based).
-    Replaces heavy DSP (numpy/scipy) with simple byte manipulation.
+    Hybrid Low-Latency Preprocessor.
+    Removes FFT/Spectral Denoising (heavy) but keeps IIR Bandpass (fast & essential).
     """
     
     def __init__(self, sample_rate: int = 8000):
         self.sample_rate = sample_rate
-        # Simple Noise Gate Threshold (RMS energy)
-        # Adjust this if it cuts off quiet voices. 
-        # 300-500 is usually good for 16-bit PCM.
-        self.noise_threshold = 300
-    
-    
-    
-    
-    
+        # 4th order Butterworth Bandpass (300-3400Hz)
+        # 'sos' (Second-Order Sections) is the fastest/most stable implementation in scipy
+        self.sos = butter(4, [300, 3400], btype='bandpass', fs=sample_rate, output='sos')
+        # Filter state for continuous streaming
+        self.filter_state = np.zeros((self.sos.shape[0], 2))
+        
+        # Simple Noise Gate Threshold (300 is standard for 16-bit)
+        self.noise_threshold = 300 
     
     def process_audio(self, audio_data: bytes) -> bytes:
-        """
-        Pass-through audio with simple noise gating.
-        No FFT, no filtering, just raw speed.
-        """
         if not audio_data:
             return b""
-
-        try:
-            # 1. Calculate Energy (RMS) using C-optimized audioop
-            # width=2 means 16-bit audio
-            rms = audioop.rms(audio_data, 2)
             
-            # 2. Simple Noise Gate
-            # If audio is too quiet, return silence to prevent static hiss 
-            # from triggering the model or VAD unnecessarily.
+        try:
+            # 1. FAST CHECK: Energy (using audioop)
+            # If silence, return immediately (saves CPU)
+            rms = audioop.rms(audio_data, 2)
             if rms < self.noise_threshold:
-                # Return digital silence of the same length
                 return b'\x00' * len(audio_data)
 
-            # 3. Optional: Simple Limiter (Scaling)
-            # If audio is clipping (too loud), scale it down slightly.
-            # max_val = audioop.max(audio_data, 2)
-            # if max_val > 32000:
-            #     return audioop.mul(audio_data, 2, 0.9)
+            # 2. FAST CONVERSION: Bytes -> Float32
+            # Use float32 for speed (AVX/SSE optimization in numpy)
+            samples = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
 
-            return audio_data
+            # 3. IIR FILTERING (Bandpass)
+            # Removes 50Hz hum and high freq hiss. Very fast calculation.
+            samples, self.filter_state = sosfilt(self.sos, samples, zi=self.filter_state)
+
+            # 4. Convert back to int16
+            return samples.astype(np.int16).tobytes()
 
         except Exception as e:
-            logger.error(f"Error in audioop preprocessing: {e}")
+            logger.error(f"Preprocessor error: {e}")
             return audio_data
-    
+            
     def reset_noise_floor(self):
-        pass # No state to reset in this simple version
+        # Reset filter state on new call
+        self.filter_state = np.zeros((self.sos.shape[0], 2))
 
 # Import our existing voice agent components
 from main import SessionLogger, SEND_SAMPLE_RATE, RECEIVE_SAMPLE_RATE, FORMAT, CHANNELS
@@ -3868,14 +3862,15 @@ class RTPSession:
                         self._turn_start_time = current_time
                 
                 # --- MAX TURN DURATION (Safety Net) ---
-                if hasattr(self, '_is_speaking_turn') and self._is_speaking_turn:
-                    turn_duration = current_time - self._turn_start_time
-                    if turn_duration > 8.0:  # 8 seconds max
-                        logger.warning(f"⚠️ Max turn duration reached (8s) - forcing EOT")
-                        should_send_eot = True
-                        self._end_of_turn_sent = True
-                        self._last_eot_time = current_time
-                        self._turn_start_time = current_time
+                # DISABLED per user request
+                # if hasattr(self, '_is_speaking_turn') and self._is_speaking_turn:
+                #     turn_duration = current_time - self._turn_start_time
+                #     if turn_duration > 8.0:  # 8 seconds max
+                #         logger.warning(f"⚠️ Max turn duration reached (8s) - forcing EOT")
+                #         should_send_eot = True
+                #         self._end_of_turn_sent = True
+                #         self._last_eot_time = current_time
+                #         self._turn_start_time = current_time
             else:
                 # AI is speaking or call is ending - reset EOT state
                 self._silence_start_time = None
@@ -3978,16 +3973,24 @@ class RTPSession:
                 
                 # Only send nudge if call was actually answered
                 if self.call_answered:
-                    logger.info("📞 Call answered! Sending nudge to start conversation...")
+                    # --- FIX: Wait 1.5s before triggering greeting ---
+                    # Enable protection immediately to ignore initial "Hello?"
+                    self.greeting_protection_active = True
+                    logger.info("🛡️ Greeting protection ENABLED (pre-greeting wait)")
+                    
+                    logger.info("⏳ Waiting 1.5s before triggering greeting...")
+                    await asyncio.sleep(1.5)
+                    
+                    logger.info("📞 Call answered & wait complete! Sending nudge...")
                     try:
                         # --- FIX 3: Enable greeting protection ---
-                        # This blinds the bot to user audio (Hello?) for 4 seconds while it starts speaking
-                        self.greeting_protection_active = True
-                        logger.info("🛡️ Greeting protection ENABLED - blocking user audio for 4s")
+                        # This blinds the bot to user audio (Hello?) for 2.5s while it starts speaking
+                        # self.greeting_protection_active is already True
+                        logger.info("🛡️ Greeting protection CONTINUES - blocking user audio for 2.5s more")
                         
-                        # Background task to disable protection after 4 seconds
+                        # Background task to disable protection after 2.5 seconds
                         def disable_protection():
-                            time.sleep(4)  # Wait for greeting to likely start playing
+                            time.sleep(2.5)  # Protection during greeting
                             self.greeting_protection_active = False
                             logger.info("🛡️ Greeting protection DISABLED - listening to user now")
                         
@@ -4299,12 +4302,13 @@ class RTPSession:
                 # --- MAX TURN DURATION (Safety Net) ---
                 # If speech continues for > 8 seconds without a break, force a flush
                 # Increased from 5s to 8s for more natural long utterances
-                if hasattr(self, '_is_speaking_turn') and self._is_speaking_turn:
-                    turn_duration = current_time - self._turn_start_time
-                    if turn_duration > 8.0:  # 8 seconds max (increased from 5s)
-                        logger.warning(f"⚠️ Max turn duration reached (8s) - forcing end_of_turn")
-                        should_send_eot = True
-                        self._turn_start_time = current_time
+                # DISABLED per user request
+                # if hasattr(self, '_is_speaking_turn') and self._is_speaking_turn:
+                #     turn_duration = current_time - self._turn_start_time
+                #     if turn_duration > 8.0:  # 8 seconds max (increased from 5s)
+                #         logger.warning(f"⚠️ Max turn duration reached (8s) - forcing end_of_turn")
+                #         should_send_eot = True
+                #         self._turn_start_time = current_time
             else:
                 # AI is speaking or call is ending - reset EOT state
                 self._silence_start_time = None
@@ -4675,17 +4679,14 @@ class RTPSession:
     # Removed _process_chunk - we use continuous streaming instead
     
     def send_audio(self, pcm16: bytes):
-        """
-        Takes 16-bit mono PCM at 8000 Hz, encodes to u-law using C-lib, queues.
-        """
         if self.call_recorder:
             self.call_recorder.record_outgoing_audio(pcm16)
         
-        # Direct conversion using C library - extremely fast
-        # Removed soft_limit checks for pure speed
-        ulaw = audioop.lin2ulaw(pcm16, 2) 
+        # audioop is perfect here. 
+        # The noise was coming from resampling, not u-law encoding.
+        ulaw = audioop.lin2ulaw(pcm16, 2)
         
-        packet_size = 160 # 20ms
+        packet_size = 160
         for i in range(0, len(ulaw), packet_size):
             self.output_queue.put(ulaw[i:i + packet_size])
             
@@ -7695,46 +7696,40 @@ class WindowsVoiceSession:
     
     def convert_telephony_to_gemini(self, audio_data: bytes) -> bytes:
         """
-        Input: 16-bit mono PCM at 8000 Hz.
-        Output: 16-bit mono PCM at 24000 Hz.
-        Using audioop.ratecv (C-implementation) for minimum latency.
+        Input path (User -> AI): Prioritize Latency.
+        Use audioop.ratecv. 
+        The AI model is robust against minor upsampling artifacts.
         """
         try:
-            # ratecv(fragment, width, nchannels, inrate, outrate, state, weightA=1, weightB=0)
-            # We use weightA=1, weightB=0 for simple linear interpolation (fastest)
+            # Linear interpolation is extremely fast
             new_fragment, self._resample_in_state = audioop.ratecv(
-                audio_data, 
-                2, # 16-bit
-                1, # Mono
-                8000, 
-                24000, 
-                self._resample_in_state
+                audio_data, 2, 1, 8000, 24000, self._resample_in_state
             )
             return new_fragment
-        except Exception as e:
-            logger.warning(f"audioop upsample failed: {e}")
-            return audio_data # Fail safe (audio will sound slow/deep but stream continues)
+        except Exception:
+            return audio_data
 
     def convert_gemini_to_telephony(self, model_pcm: bytes) -> bytes:
         """
-        Input: 16-bit mono PCM at 24000 Hz.
-        Output: 16-bit mono PCM at 8000 Hz.
-        Using audioop.ratecv for minimum latency.
+        Output path (AI -> User): Prioritize Quality (No "Radio Noise").
+        Use scipy resample_poly to prevent aliasing, but optimized.
         """
         try:
-            # Downsample 24k -> 8k
-            new_fragment, self._resample_out_state = audioop.ratecv(
-                model_pcm, 
-                2, # 16-bit
-                1, # Mono
-                24000, 
-                8000, 
-                self._resample_out_state
-            )
-            return new_fragment
+            # Convert to numpy float32 (fastest math type)
+            in_array = np.frombuffer(model_pcm, dtype=np.int16).astype(np.float32)
+            
+            # Polyphase Resampling (3:1 decimation)
+            # window='hamming' is faster than 'kaiser' and has fewer ringing artifacts
+            # This handles the Anti-Aliasing automatically, removing the radio noise.
+            out_array = resample_poly(in_array, 1, 3, window='hamming')
+            
+            # Clip and convert back
+            return np.clip(out_array, -32768, 32767).astype(np.int16).tobytes()
         except Exception as e:
-            logger.warning(f"audioop downsample failed: {e}")
-            return model_pcm # Fail safe
+            logger.warning(f"Resample error: {e}")
+            # Fallback to simple slicing (will have noise, but keeps stream alive)
+            in_array = np.frombuffer(model_pcm, dtype=np.int16)
+            return in_array[::3].tobytes()
     
     
     def cleanup(self):
